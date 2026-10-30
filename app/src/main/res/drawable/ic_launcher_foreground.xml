@@ -4,24 +4,24 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- NOVA orb: violet circle with glow ring -->
+    <!-- Vorv sigil: cyan core with orbital arcs -->
     <path
-        android:fillColor="#A855F7"
+        android:fillColor="#22D3EE"
         android:pathData="M54,30 A24,24 0 1,1 53.99,30 Z" />
     <path
-        android:fillColor="#7C3AED"
+        android:fillColor="#0E7490"
         android:pathData="M54,36 A18,18 0 1,1 53.99,36 Z" />
     <path
-        android:fillColor="#C4B5FD"
+        android:fillColor="#67E8F9"
         android:pathData="M48,42 A6,6 0 1,1 47.99,42 Z" />
     <!-- Orbital arcs -->
     <path
-        android:strokeColor="#A855F7"
+        android:strokeColor="#22D3EE"
         android:strokeWidth="1.5"
         android:fillColor="#00000000"
         android:pathData="M20,54 A34,14 0 1,0 88,54" />
     <path
-        android:strokeColor="#7C3AED"
+        android:strokeColor="#0E7490"
         android:strokeWidth="1.5"
         android:fillColor="#00000000"
         android:pathData="M22,54 A32,12 0 1,1 86,54" />

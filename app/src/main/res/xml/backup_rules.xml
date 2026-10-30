@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <include domain="database" path="nova.db"/>
+    <include domain="database" path="vorv.db"/>
 </full-backup-content>
