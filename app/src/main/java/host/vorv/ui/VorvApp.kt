@@ -32,20 +32,21 @@ fun VorvApp(vm: AgentViewModel) {
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             AppHeader(busy = state.busy, llmLabel = state.currentLlmLabel)
-            when (state.screen) {
-                "chat" -> ChatScreen(state, vm::send)
-                "tasks" -> TasksScreen(state)
-                "memory" -> MemoryScreen(state, vm::teach)
-                "tools" -> ToolsScreen(state)
-                "files" -> FilesScreen(state, vm::setWorkspaceUri)
-                "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode)
+            Box(modifier = Modifier.weight(1f)) {
+                when (state.screen) {
+                    "chat" -> ChatScreen(state, vm::send)
+                    "tasks" -> TasksScreen(state)
+                    "memory" -> MemoryScreen(state, vm::teach)
+                    "tools" -> ToolsScreen(state)
+                    "files" -> FilesScreen(state, vm::setWorkspaceUri)
+                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode)
+                }
             }
+            BottomNav(
+                current = state.screen,
+                onChange = vm::setScreen,
+            )
         }
-        BottomNav(
-            current = state.screen,
-            onChange = vm::setScreen,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
     }
 }
 
