@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface KnowledgeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(entry: KnowledgeEntry): String
+    suspend fun upsert(entry: KnowledgeEntry)
 
     @Query("SELECT * FROM knowledge_entries WHERE topic LIKE '%' || :query || '%' ORDER BY updatedAt DESC LIMIT :limit")
     suspend fun recallByTopic(query: String, limit: Int = 5): List<KnowledgeEntry>
@@ -37,7 +37,7 @@ interface SkillDao {
 @Dao
 interface ConversationDao {
     @Insert
-    suspend fun insert(conversation: Conversation): String
+    suspend fun insert(conversation: Conversation)
 
     @Update
     suspend fun update(conversation: Conversation)
@@ -52,7 +52,7 @@ interface ConversationDao {
 @Dao
 interface CodeArtifactDao {
     @Insert
-    suspend fun insert(artifact: CodeArtifact): String
+    suspend fun insert(artifact: CodeArtifact)
 
     @Update
     suspend fun update(artifact: CodeArtifact)
@@ -103,7 +103,7 @@ interface EvolutionDao {
 @Dao
 interface ResearchDao {
     @Insert
-    suspend fun insert(session: ResearchSession): String
+    suspend fun insert(session: ResearchSession)
 
     @Query("SELECT * FROM research_sessions ORDER BY createdAt DESC LIMIT 20")
     fun observeRecent(): Flow<List<ResearchSession>>

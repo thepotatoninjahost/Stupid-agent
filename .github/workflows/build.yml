@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,3 +36,22 @@ jobs:
           name: NOVA-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 90
+
+      - name: Rename APK
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/NOVA-debug.apk
+          sha=$(git rev-parse --short HEAD)
+          echo "APK_SHA=$sha" >> $GITHUB_ENV
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0-${{ env.APK_SHA }}
+          name: NOVA build ${{ env.APK_SHA }}
+          body: |
+            NOVA autonomous coding agent — debug build.
+
+            **Install:** Settings → Apps → Special access → Install unknown apps → Chrome (or your browser) → Allow. Then tap the APK below.
+          files: release/NOVA-debug.apk
+          prerelease: true
