@@ -40,7 +40,7 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/NOVA-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release/Vorv-debug.apk
           sha=$(git rev-parse --short HEAD)
           echo "APK_SHA=$sha" >> $GITHUB_ENV
 
@@ -48,10 +48,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0-${{ env.APK_SHA }}
-          name: NOVA build ${{ env.APK_SHA }}
+          name: Vorv build ${{ env.APK_SHA }}
           body: |
-            NOVA autonomous coding agent — debug build.
+            Vorv — local-first autonomous agent.
 
-            **Install:** Settings → Apps → Special access → Install unknown apps → Chrome (or your browser) → Allow. Then tap the APK below.
-          files: release/NOVA-debug.apk
+            **Install:** Settings → Apps → Special access → Install unknown apps → Chrome → Allow. Then tap the APK below.
+
+            **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key).
+          files: release/Vorv-debug.apk
           prerelease: true
