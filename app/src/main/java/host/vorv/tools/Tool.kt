@@ -18,9 +18,9 @@ data class Citation(
 data class ToolResult(
     val ok: Boolean,
     val output: String,
+    val durationMs: Long,
     val stderr: String = "",
     val error: String? = null,
-    val durationMs: Long,
     val citation: Citation? = null,
     val exitCode: Int = if (ok) 0 else 1,
 )
