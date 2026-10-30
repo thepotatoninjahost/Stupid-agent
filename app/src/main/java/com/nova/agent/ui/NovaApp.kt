@@ -1,31 +1,64 @@
 package com.nova.agent.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nova.agent.NovaViewModel
 import com.nova.agent.ChatMessage
+import com.nova.agent.NovaState
+import com.nova.agent.NovaViewModel
 import com.nova.agent.ReasoningStep
-import com.nova.agent.ui.theme.*
+import com.nova.agent.ui.theme.Background
+import com.nova.agent.ui.theme.Border
+import com.nova.agent.ui.theme.OnBackground
+import com.nova.agent.ui.theme.OnPrimary
+import com.nova.agent.ui.theme.OnSurfaceVariant
+import com.nova.agent.ui.theme.Primary
+import com.nova.agent.ui.theme.PrimaryLight
+import com.nova.agent.ui.theme.Success
+import com.nova.agent.ui.theme.SurfaceVariant
 
 @Composable
-fun NovaApp(vm: NovaViewModel = viewModel()) {
+fun NovaApp(vm: NovaViewModel) {
     val state by vm.state.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
@@ -53,7 +86,6 @@ private fun AppHeader(busy: Boolean) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Pulsing orb (simplified)
         Box(
             modifier = Modifier.size(40.dp).clip(RoundedCornerShape(50)).background(
                 Brush.radialGradient(listOf(PrimaryLight, Primary))
@@ -88,7 +120,6 @@ private fun ChatScreen(state: NovaState, onSend: (String) -> Unit) {
     var input by remember { mutableStateOf("") }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Messages
         LazyColumn(
             modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -106,12 +137,10 @@ private fun ChatScreen(state: NovaState, onSend: (String) -> Unit) {
             items(state.messages) { msg ->
                 MessageBubble(msg)
             }
-            // Live reasoning trace
             if (state.busy && state.liveTrace.isNotEmpty()) {
                 item { TraceCard(state.liveTrace) }
             }
         }
-        // Input bar
         Row(
             modifier = Modifier.padding(12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.Bottom,
@@ -148,11 +177,7 @@ private fun MessageBubble(msg: ChatMessage) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
-            shape = RoundedCornerShape(
-                topStart = 16.dp, topEnd = 16.dp,
-                bottomStart = if (isUser) 16.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 16.dp,
-            ),
+            shape = RoundedCornerShape(16.dp),
             color = if (isUser) Primary else SurfaceVariant,
         ) {
             Text(
@@ -187,7 +212,10 @@ private fun TraceCard(steps: List<ReasoningStep>) {
 private fun TeachScreen(onTeach: (String, String) -> Unit) {
     var topic by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Text("Teach NOVA", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("Tell me something I don't know. I'll store it as a permanent lesson.", color = OnSurfaceVariant, fontSize = 13.sp)
         OutlinedTextField(
@@ -214,7 +242,10 @@ private fun TeachScreen(onTeach: (String, String) -> Unit) {
 @Composable
 private fun AutoLearnScreen(state: NovaState, vm: NovaViewModel) {
     var topic by remember { mutableStateOf("") }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Text("Auto-Learn", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("Give me a topic — I'll search the live web, read top results, and store what I learn.", color = OnSurfaceVariant, fontSize = 13.sp)
         OutlinedTextField(
@@ -229,13 +260,19 @@ private fun AutoLearnScreen(state: NovaState, vm: NovaViewModel) {
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(50),
         ) { Text("Research") }
+        if (state.busy && state.liveTrace.isNotEmpty()) {
+            TraceCard(state.liveTrace)
+        }
     }
 }
 
 @Composable
 private fun CodeScreen(state: NovaState, onSend: (String) -> Unit) {
     var input by remember { mutableStateOf("") }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Text("Code Studio", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("Describe a task — I'll plan it, write the code, self-review, and execute it.", color = OnSurfaceVariant, fontSize = 13.sp)
         OutlinedTextField(
@@ -267,9 +304,9 @@ private fun MindScreen(state: NovaState) {
         item { Text("NOVA's Mind", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatCard("Memories", state.memoryCount.toString())
-                StatCard("Skills", state.skillCount.toString())
-                StatCard("Total XP", state.totalXp.toString())
+                StatCard("Memories", state.memoryCount.toString(), Modifier.weight(1f))
+                StatCard("Skills", state.skillCount.toString(), Modifier.weight(1f))
+                StatCard("XP", state.totalXp.toString(), Modifier.weight(1f))
             }
         }
         item { Text("Skill Tree", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
@@ -306,8 +343,8 @@ private fun MindScreen(state: NovaState) {
 }
 
 @Composable
-private fun StatCard(label: String, value: String) {
-    Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.weight(1f)) {
+private fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = modifier) {
         Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(value, color = Primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Text(label, color = OnSurfaceVariant, fontSize = 10.sp)
@@ -317,7 +354,13 @@ private fun StatCard(label: String, value: String) {
 
 @Composable
 private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    val items = listOf("chat" to "Chat", "teach" to "Teach", "autolearn" to "Learn", "code" to "Code", "mind" to "Mind")
+    val items = listOf(
+        "chat" to "Chat",
+        "teach" to "Teach",
+        "autolearn" to "Learn",
+        "code" to "Code",
+        "mind" to "Mind",
+    )
     Surface(
         modifier = modifier.fillMaxWidth().navigationBarsPadding(),
         color = Background,
@@ -329,14 +372,12 @@ private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Mod
             items.forEach { (key, label) ->
                 val selected = current == key
                 TextButton(onClick = { onChange(key) }) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            label,
-                            color = if (selected) Primary else OnSurfaceVariant,
-                            fontSize = 11.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    }
+                    Text(
+                        label,
+                        color = if (selected) Primary else OnSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    )
                 }
             }
         }

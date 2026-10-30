@@ -288,11 +288,11 @@ class NovaViewModel(
     }
 
     private fun guessDomain(topic: String): String = when {
-        topic.contains("react|next|css|frontend|ui", ignoreCase = true) -> "frontend"
-        topic.contains("node|server|api|database|backend", ignoreCase = true) -> "backend"
-        topic.contains("python|numpy|pandas|ml", ignoreCase = true) -> "data"
-        topic.contains("rust|c\\+\\+|algorithm", ignoreCase = true) -> "algorithms"
-        topic.contains("android|ios|mobile|kotlin|swift", ignoreCase = true) -> "mobile"
+        Regex("react|next|css|frontend|ui", RegexOption.IGNORE_CASE).containsMatchIn(topic) -> "frontend"
+        Regex("node|server|api|database|backend", RegexOption.IGNORE_CASE).containsMatchIn(topic) -> "backend"
+        Regex("python|numpy|pandas|ml", RegexOption.IGNORE_CASE).containsMatchIn(topic) -> "data"
+        Regex("rust|algorithm|complexity", RegexOption.IGNORE_CASE).containsMatchIn(topic) -> "algorithms"
+        Regex("android|ios|mobile|kotlin|swift", RegexOption.IGNORE_CASE).containsMatchIn(topic) -> "mobile"
         else -> "general"
     }
 
