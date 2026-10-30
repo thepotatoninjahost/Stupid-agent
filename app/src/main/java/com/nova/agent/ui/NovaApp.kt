@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -35,20 +36,24 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import com.nova.agent.ChatMessage
 import com.nova.agent.NovaState
 import com.nova.agent.NovaViewModel
 import com.nova.agent.ReasoningStep
 import com.nova.agent.ui.theme.Background
 import com.nova.agent.ui.theme.Border
+import com.nova.agent.ui.theme.Error
 import com.nova.agent.ui.theme.OnBackground
 import com.nova.agent.ui.theme.OnPrimary
 import com.nova.agent.ui.theme.OnSurfaceVariant
@@ -70,6 +75,7 @@ fun NovaApp(vm: NovaViewModel) {
                 "autolearn" -> AutoLearnScreen(state, vm)
                 "code" -> CodeScreen(state, vm::send)
                 "mind" -> MindScreen(state)
+                "settings" -> SettingsScreen(state, vm::setApiKey)
             }
         }
         BottomNav(
@@ -360,6 +366,7 @@ private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Mod
         "autolearn" to "Learn",
         "code" to "Code",
         "mind" to "Mind",
+        "settings" to "Setup",
     )
     Surface(
         modifier = modifier.fillMaxWidth().navigationBarsPadding(),
@@ -380,6 +387,103 @@ private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Mod
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(state: NovaState, onSave: (String) -> Unit) {
+    var key by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("Settings", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        }
+        item {
+            Text(
+                "Z.ai API Key",
+                color = OnBackground,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        item {
+            Text(
+                "Required for Chat, Auto-Learn, and Code screens. Stored only on this device — never uploaded to GitHub, never sent anywhere except Z.ai.",
+                color = OnSurfaceVariant,
+                fontSize = 12.sp,
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it; saved = false },
+                placeholder = { Text("Paste your Z.ai API key…") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Primary,
+                    unfocusedBorderColor = Border,
+                ),
+            )
+        }
+        item {
+            Button(
+                onClick = {
+                    if (key.isNotBlank()) {
+                        onSave(key)
+                        saved = true
+                    }
+                },
+                enabled = key.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(50),
+            ) {
+                Text(if (saved) "Saved ✓" else "Save Key")
+            }
+        }
+        if (state.hasApiKey) {
+            item {
+                Surface(shape = RoundedCornerShape(12.dp), color = Success.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "✓ API key set. NOVA is online.",
+                        color = Success,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+            item {
+                Button(
+                    onClick = { onSave(""); key = ""; saved = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Error),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Remove Key") }
+            }
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "How to get a free key",
+                color = OnBackground,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        item {
+            Text(
+                "1. Open z.ai in Chrome\n2. Sign in (Google or email)\n3. Tap your avatar → API Keys\n4. Create Standard Key → copy\n5. Paste above → Save",
+                color = OnSurfaceVariant,
+                fontSize = 12.sp,
+            )
         }
     }
 }

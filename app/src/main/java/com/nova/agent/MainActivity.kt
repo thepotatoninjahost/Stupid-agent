@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
+import com.nova.agent.data.KeyStore
 import com.nova.agent.data.NovaDatabase
 import com.nova.agent.ui.NovaApp
 import com.nova.agent.ui.theme.NOVATheme
@@ -23,9 +24,11 @@ class MainActivity : ComponentActivity() {
             "nova.db"
         ).fallbackToDestructiveMigration().build()
 
+        val keyStore = KeyStore(applicationContext)
+
         setContent {
             NOVATheme {
-                val vm: NovaViewModel = viewModel(factory = NovaViewModel.factory(db))
+                val vm: NovaViewModel = viewModel(factory = NovaViewModel.factory(db, keyStore))
                 NovaApp(vm = vm)
             }
         }

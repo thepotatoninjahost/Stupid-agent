@@ -4,9 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.nova.agent.cognitive.*
+import com.nova.agent.data.KeyStore
 import com.nova.agent.data.NovaDatabase
 import com.nova.agent.data.entity.*
-import com.nova.agent.llm.ApiKey
 import com.nova.agent.llm.LlmClient
 import com.nova.agent.sandbox.CodeSandbox
 import kotlinx.coroutines.Dispatchers
@@ -31,20 +31,22 @@ data class NovaState(
     val messages: List<ChatMessage> = emptyList(),
     val liveTrace: List<ReasoningStep> = emptyList(),
     val busy: Boolean = false,
-    val mode: String = "chat",       // "chat" | "teach" | "autolearn" | "code"
+    val mode: String = "chat",       // "chat" | "teach" | "autolearn" | "code" | "mind" | "settings"
     val memoryCount: Int = 0,
     val skillCount: Int = 0,
     val totalXp: Int = 0,
     val evolutionEvents: List<EvolutionEvent> = emptyList(),
     val skills: List<SkillNode> = emptyList(),
     val profile: UserProfile? = null,
+    val hasApiKey: Boolean = false,
 )
 
 class NovaViewModel(
     private val db: NovaDatabase,
+    private val keyStore: KeyStore,
 ) : ViewModel() {
 
-    private val llm = LlmClient(apiKey = ApiKey.ZAI_API_KEY)
+    private var llm: LlmClient? = null
     private val sandbox = CodeSandbox()
 
     private val _state = MutableStateFlow(NovaState())
@@ -72,6 +74,13 @@ class NovaViewModel(
             _state.update { it.copy(profile = profile) }
             bootstrapIfEmpty()
         }
+        // Observe API key — rebuild LlmClient when it changes
+        viewModelScope.launch {
+            keyStore.apiKey.collect { key ->
+                llm = if (key.isNotBlank()) LlmClient(key) else null
+                _state.update { it.copy(hasApiKey = key.isNotBlank()) }
+            }
+        }
     }
 
     private suspend fun bootstrapIfEmpty() {
@@ -96,6 +105,10 @@ class NovaViewModel(
         _state.update { it.copy(messages = emptyList(), liveTrace = emptyList()) }
     }
 
+    fun setApiKey(key: String) {
+        viewModelScope.launch(Dispatchers.IO) { keyStore.setApiKey(key) }
+    }
+
     /**
      * Send a message via the cognitive kernel.
      */
@@ -113,6 +126,15 @@ class NovaViewModel(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
+            val activeLlm = llm
+            if (activeLlm == null) {
+                val errMsg = ChatMessage(
+                    role = "assistant",
+                    content = "I need a Z.ai API key to think.\n\nTap Settings at the bottom → paste your key → Save.\n\nGet a free key at z.ai/manage-apikey."
+                )
+                _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                return@launch
+            }
             try {
                 val perception = perceive(trimmed)
                 emitStep(ReasoningStep("thinking", "Perception: ${perception.questionType.name.lowercase()} (${perception.complexity.name.lowercase()})", perception.intentSignature))
@@ -142,7 +164,7 @@ class NovaViewModel(
                     if (cap == Capability.LLM || cap == Capability.CLARIFY) continue
                     val t0 = System.currentTimeMillis()
                     emitStep(ReasoningStep("tool_call", "Running: ${cap.name}"))
-                    val output = executeCapability(cap, perception, trimmed)
+                    val output = executeCapability(cap, perception, trimmed, activeLlm)
                     val result = CapabilityResult(cap, output, System.currentTimeMillis() - t0)
                     results.add(result)
                     if (output.isNotBlank() && output != "(synthesis step)") {
@@ -165,7 +187,7 @@ class NovaViewModel(
                         appendLine("Answer the user's question directly, using the context above. Be accurate and concise.")
                     }
                     try {
-                        llm.chat(
+                        activeLlm.chat(
                             listOf(
                                 LlmClient.Message("system", systemPrompt),
                                 LlmClient.Message("user", trimmed),
@@ -200,7 +222,7 @@ class NovaViewModel(
         _state.update { it.copy(liveTrace = it.liveTrace + step) }
     }
 
-    private suspend fun executeCapability(cap: Capability, perception: Perception, userInput: String): String {
+    private suspend fun executeCapability(cap: Capability, perception: Perception, userInput: String, llm: LlmClient): String {
         return when (cap) {
             Capability.EXECUTE -> {
                 val code = perception.codeExtracted ?: return "No code to execute"
@@ -304,9 +326,9 @@ class NovaViewModel(
     }
 
     companion object {
-        fun factory(db: NovaDatabase) = object : ViewModelProvider.Factory {
+        fun factory(db: NovaDatabase, keyStore: KeyStore) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = NovaViewModel(db) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = NovaViewModel(db, keyStore) as T
         }
     }
 }
