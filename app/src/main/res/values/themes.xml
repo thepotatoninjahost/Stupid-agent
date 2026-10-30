@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.NOVAAgent" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/nova_bg</item>
-        <item name="android:statusBarColor">@color/nova_bg</item>
-        <item name="android:navigationBarColor">@color/nova_bg</item>
+    <style name="Theme.Vorv" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/vorv_bg</item>
+        <item name="android:statusBarColor">@color/vorv_bg</item>
+        <item name="android:navigationBarColor">@color/vorv_bg</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
-    <color name="nova_bg">#0A0A0F</color>
+    <color name="vorv_bg">#0B0F14</color>
 </resources>

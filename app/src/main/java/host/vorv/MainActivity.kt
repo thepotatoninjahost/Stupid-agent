@@ -1,4 +1,4 @@
-package com.nova.agent
+package host.vorv
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -8,10 +8,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
-import com.nova.agent.data.KeyStore
-import com.nova.agent.data.NovaDatabase
-import com.nova.agent.ui.NovaApp
-import com.nova.agent.ui.theme.NOVATheme
+import host.vorv.data.KeyStore
+import host.vorv.data.VorvDatabase
+import host.vorv.ui.VorvApp
+import host.vorv.ui.theme.VorvTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,16 +20,16 @@ class MainActivity : ComponentActivity() {
 
         val db = Room.databaseBuilder(
             applicationContext,
-            NovaDatabase::class.java,
-            "nova.db"
+            VorvDatabase::class.java,
+            "vorv.db"
         ).fallbackToDestructiveMigration().build()
 
         val keyStore = KeyStore(applicationContext)
 
         setContent {
-            NOVATheme {
-                val vm: NovaViewModel = viewModel(factory = NovaViewModel.factory(db, keyStore))
-                NovaApp(vm = vm)
+            VorvTheme {
+                val vm: AgentViewModel = viewModel(factory = AgentViewModel.factory(db, keyStore, applicationContext))
+                VorvApp(vm = vm)
             }
         }
     }

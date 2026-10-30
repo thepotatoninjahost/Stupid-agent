@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace = "com.nova.agent"
+    namespace = "host.vorv"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.nova.agent"
-        minSdk = 31          // Android 12 — Galaxy S25 ships Android 15
+        applicationId = "host.vorv"
+        minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "0.1.0-vorv"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -51,6 +51,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.documentfile)
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)

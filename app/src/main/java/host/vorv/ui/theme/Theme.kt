@@ -1,12 +1,13 @@
-package com.nova.agent.ui.theme
+package host.vorv.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 
-private val NovaColorScheme = darkColorScheme(
+private val VorvColorScheme = darkColorScheme(
     primary = Primary,
     onPrimary = OnPrimary,
+    primaryContainer = PrimaryDim,
     background = Background,
     onBackground = OnBackground,
     surface = Surface,
@@ -18,9 +19,9 @@ private val NovaColorScheme = darkColorScheme(
 )
 
 @Composable
-fun NOVATheme(content: @Composable () -> Unit) {
+fun VorvTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = NovaColorScheme,
+        colorScheme = VorvColorScheme,
         typography = Typography,
         content = content,
     )

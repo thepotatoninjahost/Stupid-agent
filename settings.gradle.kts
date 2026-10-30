@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NOVA Agent"
+rootProject.name = "Vorv"
 include(":app")

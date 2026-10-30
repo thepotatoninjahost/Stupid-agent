@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">NOVA</string>
-    <string name="nova_full_name">Neural Operations &amp; Versatile Assistant</string>
+    <string name="app_name">Vorv</string>
+    <string name="app_full_name">Vorv — local-first autonomous agent</string>
 </resources>
