@@ -2,6 +2,7 @@ package host.vorv.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,7 +31,7 @@ fun VorvApp(vm: AgentViewModel) {
     val state by vm.state.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
             AppHeader(busy = state.busy, llmLabel = state.currentLlmLabel)
             Box(modifier = Modifier.weight(1f)) {
                 when (state.screen) {

@@ -13,13 +13,28 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.0-vorv"
+        versionCode = 3
+        versionName = "0.1.1-vorv"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // Use a committed keystore so every CI build signs with the same key.
+            // This lets users update the app without uninstalling first.
+            // Debug key — NOT for production. Passwords are public.
+            storeFile = file("../../vorv-debug.keystore")
+            storePassword = "android"
+            keyAlias = "vorvdebug"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
