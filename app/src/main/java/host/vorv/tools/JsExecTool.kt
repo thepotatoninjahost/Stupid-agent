@@ -28,7 +28,7 @@ class JsExecTool : Tool {
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
-        val code = input.get("code")?.asString ?: return@withContext ToolResult(false, "", "missing code", System.currentTimeMillis() - t0)
+        val code = input.get("code")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing code", durationMs = System.currentTimeMillis() - t0)
 
         val stdout = StringBuilder()
         val stderr = StringBuilder()

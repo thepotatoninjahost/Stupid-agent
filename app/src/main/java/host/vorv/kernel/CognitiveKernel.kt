@@ -126,7 +126,7 @@ class CognitiveKernel(
                             val result = try {
                                 tool.run(input, tCtx)
                             } catch (e: Exception) {
-                                ToolResult(false, "", "", e.message, System.currentTimeMillis() - t0)
+                                ToolResult(ok = false, output = "", stderr = "", error = e.message, durationMs = System.currentTimeMillis() - t0)
                             }
                             val actualMs = System.currentTimeMillis() - t0
 

@@ -28,8 +28,8 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult {
         val t0 = System.currentTimeMillis()
-        val topic = input.get("topic")?.asString ?: return ToolResult(false, "", "missing topic", System.currentTimeMillis() - t0)
-        val content = input.get("content")?.asString ?: return ToolResult(false, "", "missing content", System.currentTimeMillis() - t0)
+        val topic = input.get("topic")?.asString ?: return ToolResult(ok = false, output = "", error = "missing topic", durationMs = System.currentTimeMillis() - t0)
+        val content = input.get("content")?.asString ?: return ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
         val entry = KnowledgeEntry(
             topic = topic,
             content = content,
@@ -77,7 +77,7 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult {
         val t0 = System.currentTimeMillis()
-        val query = input.get("query")?.asString ?: return ToolResult(false, "", "missing query", System.currentTimeMillis() - t0)
+        val query = input.get("query")?.asString ?: return ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
         val limit = input.get("limit")?.takeIf { !it.isJsonNull }?.asInt ?: 5
 
         // Try FTS first; fall back to LIKE

@@ -28,14 +28,14 @@ class FileListTool(private val appContext: Context) : Tool {
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
         if (ctx.workspaceUri.isNullOrBlank()) {
-            return@withContext ToolResult(false, "", "No workspace granted. Ask user to open Files tab and pick a folder.", System.currentTimeMillis() - t0)
+            return@withContext ToolResult(ok = false, output = "", error = "No workspace granted. Ask user to open Files tab and pick a folder.", durationMs = System.currentTimeMillis() - t0)
         }
         val sub = input.get("path")?.asString ?: ""
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
-            ?: return@withContext ToolResult(false, "", "Invalid workspace URI", System.currentTimeMillis() - t0)
+            ?: return@withContext ToolResult(ok = false, output = "", error = "Invalid workspace URI", durationMs = System.currentTimeMillis() - t0)
 
         val target = if (sub.isBlank()) root else navigate(root, sub)
-            ?: return@withContext ToolResult(false, "", "Path not found: $sub", System.currentTimeMillis() - t0)
+            ?: return@withContext ToolResult(ok = false, output = "", error = "Path not found: $sub", durationMs = System.currentTimeMillis() - t0)
 
         val listing = StringBuilder()
         listRecursive(target, "", listing)
@@ -91,15 +91,15 @@ class FileReadTool(private val appContext: Context) : Tool {
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
         if (ctx.workspaceUri.isNullOrBlank()) {
-            return@withContext ToolResult(false, "", "No workspace granted.", System.currentTimeMillis() - t0)
+            return@withContext ToolResult(ok = false, output = "", error = "No workspace granted.", durationMs = System.currentTimeMillis() - t0)
         }
-        val path = input.get("path")?.asString ?: return@withContext ToolResult(false, "", "missing path", System.currentTimeMillis() - t0)
+        val path = input.get("path")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing path", durationMs = System.currentTimeMillis() - t0)
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
-            ?: return@withContext ToolResult(false, "", "Invalid workspace URI", System.currentTimeMillis() - t0)
+            ?: return@withContext ToolResult(ok = false, output = "", error = "Invalid workspace URI", durationMs = System.currentTimeMillis() - t0)
 
         val file = navigate(root, path)
         if (file == null || !file.isFile) {
-            return@withContext ToolResult(false, "", "File not found: $path", System.currentTimeMillis() - t0)
+            return@withContext ToolResult(ok = false, output = "", error = "File not found: $path", durationMs = System.currentTimeMillis() - t0)
         }
 
         try {
@@ -111,9 +111,9 @@ class FileReadTool(private val appContext: Context) : Tool {
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("file", file.uri.toString(), "file: $path"),
                 )
-            } ?: ToolResult(false, "", "Could not open stream", System.currentTimeMillis() - t0)
+            } ?: ToolResult(ok = false, output = "", error = "Could not open stream", durationMs = System.currentTimeMillis() - t0)
         } catch (e: Exception) {
-            ToolResult(false, "", "Read failed: ${e.message}", System.currentTimeMillis() - t0)
+            ToolResult(ok = false, output = "", error = "Read failed: ${e.message}", durationMs = System.currentTimeMillis() - t0)
         }
     }
 
@@ -151,12 +151,12 @@ class FileWriteTool(private val appContext: Context) : Tool {
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
         if (ctx.workspaceUri.isNullOrBlank()) {
-            return@withContext ToolResult(false, "", "No workspace granted.", System.currentTimeMillis() - t0)
+            return@withContext ToolResult(ok = false, output = "", error = "No workspace granted.", durationMs = System.currentTimeMillis() - t0)
         }
-        val path = input.get("path")?.asString ?: return@withContext ToolResult(false, "", "missing path", System.currentTimeMillis() - t0)
-        val content = input.get("content")?.asString ?: return@withContext ToolResult(false, "", "missing content", System.currentTimeMillis() - t0)
+        val path = input.get("path")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing path", durationMs = System.currentTimeMillis() - t0)
+        val content = input.get("content")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
-            ?: return@withContext ToolResult(false, "", "Invalid workspace URI", System.currentTimeMillis() - t0)
+            ?: return@withContext ToolResult(ok = false, output = "", error = "Invalid workspace URI", durationMs = System.currentTimeMillis() - t0)
 
         // Walk path, creating directories as needed
         val segments = path.trim('/').split('/').filter { it.isNotBlank() }
@@ -167,13 +167,13 @@ class FileWriteTool(private val appContext: Context) : Tool {
                 val existing = current.findFile(segment)
                 val target = existing?.takeIf { it.isFile }
                     ?: current.createFile("text/plain", segment)
-                    ?: return@withContext ToolResult(false, "", "Could not create file: $segment", System.currentTimeMillis() - t0)
+                    ?: return@withContext ToolResult(ok = false, output = "", error = "Could not create file: $segment", durationMs = System.currentTimeMillis() - t0)
                 try {
                     appContext.contentResolver.openOutputStream(target.uri, "wt")?.use { os ->
                         os.write(content.toByteArray())
-                    } ?: return@withContext ToolResult(false, "", "Could not open output stream", System.currentTimeMillis() - t0)
+                    } ?: return@withContext ToolResult(ok = false, output = "", error = "Could not open output stream", durationMs = System.currentTimeMillis() - t0)
                 } catch (e: Exception) {
-                    return@withContext ToolResult(false, "", "Write failed: ${e.message}", System.currentTimeMillis() - t0)
+                    return@withContext ToolResult(ok = false, output = "", error = "Write failed: ${e.message}", durationMs = System.currentTimeMillis() - t0)
                 }
                 return@withContext ToolResult(
                     ok = true,
@@ -185,9 +185,9 @@ class FileWriteTool(private val appContext: Context) : Tool {
                 // Directory
                 current = current.findFile(segment)?.takeIf { it.isDirectory }
                     ?: current.createDirectory(segment)
-                    ?: return@withContext ToolResult(false, "", "Could not create directory: $segment", System.currentTimeMillis() - t0)
+                    ?: return@withContext ToolResult(ok = false, output = "", error = "Could not create directory: $segment", durationMs = System.currentTimeMillis() - t0)
             }
         }
-        ToolResult(false, "", "Empty path", System.currentTimeMillis() - t0)
+        ToolResult(ok = false, output = "", error = "Empty path", durationMs = System.currentTimeMillis() - t0)
     }
 }
