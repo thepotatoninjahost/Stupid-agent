@@ -214,7 +214,7 @@ class NovaViewModel(
                 if (hits.isEmpty()) "Web search returned no results."
                 else "Searched: ${hits.joinToString("\n") { "• ${it.title} — ${it.url}\n  ${it.snippet.take(120)}" }}"
             }
-            Capability.MEMORY -> "Recalled from local store."
+            Capability.AST, Capability.MEMORY -> "Recalled from local store."
             Capability.CONVERSATIONS -> "Recent conversations reviewed."
             Capability.PROJECT -> "Project context loaded."
             Capability.PERSONA -> "Persona state loaded."

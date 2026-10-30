@@ -159,15 +159,14 @@ class CodeSandbox {
             is String -> value
             is Number, is Boolean -> value.toString()
             else -> {
+                val enteredHere = Context.getCurrentContext() == null
+                if (enteredHere) Context.enter()
                 try {
-                    val cx = Context.getCurrentContext() ?: Context.enter()
-                    try {
-                        cx.toString(value)
-                    } finally {
-                        if (Context.getCurrentContext() != null) Context.exit()
-                    }
+                    Context.toString(value)
                 } catch (e: Exception) {
                     value.toString()
+                } finally {
+                    if (enteredHere) Context.exit()
                 }
             }
         }
