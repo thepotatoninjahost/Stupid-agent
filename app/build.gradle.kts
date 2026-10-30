@@ -24,7 +24,7 @@ android {
             // Use a committed keystore so every CI build signs with the same key.
             // This lets users update the app without uninstalling first.
             // Debug key — NOT for production. Passwords are public.
-            storeFile = file("../../vorv-debug.keystore")
+            storeFile = file("../vorv-debug.keystore")
             storePassword = "android"
             keyAlias = "vorvdebug"
             keyPassword = "android"
