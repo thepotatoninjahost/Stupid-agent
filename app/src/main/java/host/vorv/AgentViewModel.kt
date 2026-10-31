@@ -66,6 +66,13 @@ data class AgentState(
     val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
     val currentLlmLabel: String = "GLM-4.6 (cloud)",
+    /**
+     * Setup-screen error message — when a download or model operation fails,
+     * the error is surfaced here so the SettingsScreen can display it inline
+     * below the affected model card. NEVER added to the chat message list.
+     * Cleared on next successful operation or explicit user dismissal.
+     */
+    val setupError: String? = null,
 )
 
 class AgentViewModel(
@@ -254,7 +261,7 @@ class AgentViewModel(
     fun downloadLocalModel() {
         if (_state.value.downloadingModel) return
         val choice = ModelChoice.fromId(_state.value.selectedModelId)
-        _state.update { it.copy(downloadingModel = true, downloadProgress = 0) }
+        _state.update { it.copy(downloadingModel = true, downloadProgress = 0, setupError = null) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (ModelManager.isDownloaded(choice)) {
@@ -279,15 +286,26 @@ class AgentViewModel(
                         downloadingModel = false,
                         downloadedModelIds = newDownloaded,
                         currentLlmLabel = engineLabel(it.llmMode, true, it.hasApiKey, choice),
+                        setupError = null,
                     )
                 }
-                db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded: ${choice.id} — offline mode available"))
+                db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded: ${choice.id} — NPU offline mode available"))
             } catch (e: Exception) {
-                _state.update { it.copy(downloadingModel = false, downloadProgress = 0) }
-                val errMsg = ChatMessage(role = "assistant", content = "Model download failed: ${e.message}")
-                _state.update { it.copy(messages = it.messages + errMsg) }
+                _state.update {
+                    it.copy(
+                        downloadingModel = false,
+                        downloadProgress = 0,
+                        setupError = "Download failed: ${e.message ?: "unknown error"}",
+                    )
+                }
+                db.episodeDao().insert(Episode(kind = "error", summary = "Model download failed for ${choice.id}: ${e.message}"))
             }
         }
+    }
+
+    /** Clear the setup error after the user dismisses it. */
+    fun clearSetupError() {
+        _state.update { it.copy(setupError = null) }
     }
 
     fun deleteLocalModel(choice: ModelChoice) {

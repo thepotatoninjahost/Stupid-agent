@@ -40,7 +40,7 @@ fun VorvApp(vm: AgentViewModel) {
                     "memory" -> MemoryScreen(state, vm::teach)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
-                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::setLocalModel, vm::downloadLocalModel, vm::deleteLocalModel)
+                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::setLocalModel, vm::downloadLocalModel, vm::deleteLocalModel, vm::clearSetupError)
                 }
             }
             BottomNav(
@@ -63,15 +63,20 @@ private fun AppHeader(busy: Boolean, llmLabel: String) {
             )
         )
         Spacer(Modifier.width(12.dp))
-        Column {
+        // Constrain the title+subtitle column so a long label like
+        // "Local — Qwen2.5-Coder-7B-Instruct not pulled" can't push the
+        // Idle/Live pill off the right edge of the screen.
+        Column(modifier = Modifier.weight(1f)) {
             Text("Vorv", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Text(
                 if (busy) "Working…" else llmLabel,
                 color = OnSurfaceVariant,
                 fontSize = 11.sp,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
         Surface(shape = RoundedCornerShape(50), color = if (busy) Warning.copy(alpha = 0.15f) else Success.copy(alpha = 0.15f)) {
             Text(
                 if (busy) "Live" else "Idle",

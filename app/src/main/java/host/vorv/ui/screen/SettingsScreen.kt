@@ -23,6 +23,7 @@ fun SettingsScreen(
     onSetLocalModel: (String) -> Unit,
     onDownloadModel: () -> Unit,
     onDeleteModel: (ModelChoice) -> Unit,
+    onClearSetupError: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -32,6 +33,33 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Setup", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+        // ------------------------------------------------ setup error banner
+        // Shows up here when a download fails — NOT in the chat.
+        state.setupError?.let { errMsg ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Error.copy(alpha = 0.12f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "⚠ $errMsg",
+                        color = Error,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = onClearSetupError,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text("Dismiss", color = OnSurfaceVariant, fontSize = 11.sp) }
+                }
+            }
+        }
 
         // ------------------------------------------------ local models
         Text("Local Models (offline engine)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)

@@ -63,7 +63,7 @@ class LocalLlm(
         llmWrapper?.let { return it }
 
         val paths = ModelManager.getPaths(modelChoice)
-            ?: error("Model ${modelChoice.geniexModelId()} not pulled yet - call ModelManager.pull() first")
+            ?: error("Model ${modelChoice.hfRepo} not pulled yet - call ModelManager.pull() first")
 
         val llmCreateInput = LlmCreateInput(
             model_path = paths.model_path,
