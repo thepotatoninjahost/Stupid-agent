@@ -11,18 +11,17 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * LLM abstraction. Two backends:
- *   - Local: MLC LLM Android, Llama 3.2 1B. (Stub for now — real impl in Phase 4.)
- *   - Cloud: Z.ai GLM-4.6 with native function calling.
+ * LLM contract. Vorv uses GLM-4.6 via Z.ai with native function calling.
  *
- * Both expose the same interface so the cognitive kernel doesn't care which is active.
+ * A local-first LLM (MLC LLM Android, Llama 3.2 1B) is the next milestone —
+ * when integrated, it will implement this same interface so the cognitive
+ * kernel does not change. For now: cloud only. No stub.
  */
-sealed interface Llm {
+interface Llm {
     /** Returns either a final answer or a tool call request. */
     suspend fun step(messages: List<Message>, tools: List<ToolSpec>): LlmResponse
 
     val label: String
-    val isLocal: Boolean
 
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
@@ -48,15 +47,14 @@ sealed interface Llm {
 
 /**
  * Cloud LLM via Z.ai GLM-4.6. Native OpenAI-style function calling.
- * If apiKey is blank, refuses to call.
+ * Throws if apiKey is blank — caller must check first.
  */
 class CloudLlm(
     private val apiKey: String,
     private val baseUrl: String = "https://api.z.ai/api/paas/v4",
     private val model: String = "glm-4.6",
 ) : Llm {
-    override val label = "GLM-4.6 (cloud)"
-    override val isLocal = false
+    override val label = "GLM-4.6"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -66,7 +64,7 @@ class CloudLlm(
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
-            require(apiKey.isNotBlank()) { "Cloud LLM requires an API key" }
+            require(apiKey.isNotBlank()) { "GLM-4.6 requires an API key — add one in Setup tab." }
 
             val body = JsonObject().apply {
                 addProperty("model", model)
@@ -161,36 +159,4 @@ class CloudLlm(
             }
             throw RuntimeException("LLM call failed after retries: $lastErr")
         }
-}
-
-/**
- * Stub local LLM — returns "not yet bundled" message.
- * Will be replaced with MLC LLM Android integration in Phase 4.
- */
-class LocalLlmStub : Llm {
-    override val label = "Local (stub — MLC pending)"
-    override val isLocal = true
-
-    override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
-        // If user is asking a question that doesn't need a tool, we can respond minimally.
-        val lastUser = messages.lastOrNull { it.role == "user" }?.content.orEmpty()
-        return Llm.LlmResponse.Text(
-            content = "Local LLM not yet bundled. Question was: \"$lastUser\".\n\n" +
-                "MLC LLM Android integration is pending — for now, enable cloud mode in Settings to use GLM-4.6.",
-            done = true,
-        )
-    }
-}
-
-/**
- * Picks the right LLM based on the user's preference and key availability.
- */
-class LlmRouter(
-    private val local: Llm = LocalLlmStub(),
-    private val cloudFactory: (String) -> Llm = { key -> CloudLlm(key) },
-) {
-    fun pick(mode: String, apiKey: String): Llm = when {
-        mode == "cloud" && apiKey.isNotBlank() -> cloudFactory(apiKey)
-        else -> local
-    }
 }

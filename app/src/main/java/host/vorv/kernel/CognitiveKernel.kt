@@ -57,6 +57,12 @@ class CognitiveKernel(
 
     private val toolMap: Map<String, Tool> = tools.associateBy { it.name }
 
+    /**
+     * Callback the ViewModel can use to write iteration count back to the task record
+     * after each loop iteration. Fixes the "0 iters" bug.
+     */
+    var onIteration: suspend (taskId: String, iterations: Int) -> Unit = { _, _ -> }
+
     suspend fun run(taskId: String, prompt: String, llm: Llm, workspaceUri: String?): TaskResult {
         db.episodeDao().insert(Episode(kind = "task_started", summary = prompt.take(200), detailsJson = "{\"id\":\"$taskId\"}"))
 
@@ -75,6 +81,8 @@ class CognitiveKernel(
         try {
             while (iterations < MAX_ITERATIONS) {
                 iterations++
+                // Fix: write iteration count back to task record every iteration
+                onIteration(taskId, iterations)
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
                 val resp = try {

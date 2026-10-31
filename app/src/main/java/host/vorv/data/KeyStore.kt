@@ -19,9 +19,6 @@ class KeyStore(private val context: Context) {
     /** URI of the SAF-granted workspace folder. Empty until user picks one in Files screen. */
     val workspaceUri: Flow<String> = context.vorvPrefs.data.map { it[WORKSPACE_URI] ?: "" }
 
-    /** "local" | "cloud" — which LLM is the default engine. */
-    val llmMode: Flow<String> = context.vorvPrefs.data.map { it[LLM_MODE] ?: "local" }
-
     suspend fun setZaiApiKey(key: String) {
         context.vorvPrefs.edit { it[ZAI_KEY] = key.trim() }
     }
@@ -30,13 +27,8 @@ class KeyStore(private val context: Context) {
         context.vorvPrefs.edit { it[WORKSPACE_URI] = uri }
     }
 
-    suspend fun setLlmMode(mode: String) {
-        context.vorvPrefs.edit { it[LLM_MODE] = mode }
-    }
-
     companion object {
         private val ZAI_KEY = stringPreferencesKey("zai_api_key")
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
-        private val LLM_MODE = stringPreferencesKey("llm_mode")
     }
 }

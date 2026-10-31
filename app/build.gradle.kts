@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.chaquopy)
 }
 
 android {
@@ -13,17 +14,18 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.1-vorv"
+        versionCode = 4
+        versionName = "0.2.0-vorv"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+        ndk {
+            // Chaquopy ABI selection — keep APK size reasonable
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     signingConfigs {
         getByName("debug") {
-            // Use a committed keystore so every CI build signs with the same key.
-            // This lets users update the app without uninstalling first.
-            // Debug key — NOT for production. Passwords are public.
             storeFile = file("../vorv-debug.keystore")
             storePassword = "android"
             keyAlias = "vorvdebug"
@@ -48,6 +50,16 @@ android {
     buildFeatures { compose = true }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pip {
+            // Real Python packages shipped in the APK
+            install("requests")
+        }
     }
 }
 

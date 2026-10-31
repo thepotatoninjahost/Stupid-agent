@@ -13,16 +13,21 @@ import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.TraceStep
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.Llm
-import host.vorv.llm.LlmRouter
+import host.vorv.tools.AppIntentTool
 import host.vorv.tools.FileListTool
 import host.vorv.tools.FileReadTool
 import host.vorv.tools.FileWriteTool
 import host.vorv.tools.JsExecTool
 import host.vorv.tools.MemoryRecallTool
 import host.vorv.tools.MemoryWriteTool
+import host.vorv.tools.NotifyTool
+import host.vorv.tools.PythonExecTool
+import host.vorv.tools.ScheduleTool
+import host.vorv.tools.ShellTool
+import host.vorv.tools.WebFetchTool
+import host.vorv.tools.WebSearchTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -47,10 +52,9 @@ data class AgentState(
     val recentTasks: List<AgentTask> = emptyList(),
     val skills: List<Skill> = emptyList(),
     val episodes: List<Episode> = emptyList(),
-    val llmMode: String = "local",  // "local" | "cloud"
     val hasApiKey: Boolean = false,
     val workspaceUri: String = "",
-    val currentLlmLabel: String = "Local (stub)",
+    val currentLlmLabel: String = "GLM-4.6 (cloud)",
 )
 
 class AgentViewModel(
@@ -66,17 +70,25 @@ class AgentViewModel(
         FileReadTool(appContext),
         FileWriteTool(appContext),
         FileListTool(appContext),
+        PythonExecTool(appContext),
+        WebSearchTool { _state.value.run { if (hasApiKey) keyStore.zaiApiKey.first() else "" } },
+        WebFetchTool(),
+        AppIntentTool(appContext),
+        ShellTool(appContext),
+        NotifyTool(appContext),
+        ScheduleTool(appContext),
     )
 
-    private val kernel = CognitiveKernel(db, tools)
-
-    private val llmRouter = LlmRouter()
+    private val kernel = CognitiveKernel(db, tools).apply {
+        onIteration = { taskId, iters ->
+            db.taskDao().setIterations(taskId, iters)
+        }
+    }
 
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
     init {
-        // Reactive DB observers
         viewModelScope.launch {
             db.knowledgeDao().observeRecent(100).collect { entries ->
                 _state.update { it.copy(memoryCount = entries.size) }
@@ -97,8 +109,6 @@ class AgentViewModel(
                 _state.update { it.copy(episodes = episodes) }
             }
         }
-
-        // Settings observers
         viewModelScope.launch {
             keyStore.zaiApiKey.collect { key ->
                 _state.update { it.copy(hasApiKey = key.isNotBlank()) }
@@ -109,19 +119,10 @@ class AgentViewModel(
                 _state.update { it.copy(workspaceUri = uri) }
             }
         }
-        viewModelScope.launch {
-            keyStore.llmMode.collect { mode ->
-                _state.update { it.copy(llmMode = mode, currentLlmLabel = currentLlmLabel(mode)) }
-            }
-        }
-
-        // Bootstrap: log boot episode + seed skills if empty
         viewModelScope.launch(Dispatchers.IO) {
-            db.episodeDao().insert(Episode(kind = "boot", summary = "Vorv booted"))
+            db.episodeDao().insert(Episode(kind = "boot", summary = "Vorv booted — ${tools.size} tools ready"))
             bootstrapSkills()
         }
-
-        // Subscribe to kernel trace
         viewModelScope.launch {
             kernel.trace.collect { step ->
                 _state.update { it.copy(liveTrace = it.liveTrace + step) }
@@ -147,16 +148,24 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) { keyStore.setWorkspaceUri(uri) }
     }
 
-    fun setLlmMode(mode: String) {
-        viewModelScope.launch(Dispatchers.IO) { keyStore.setLlmMode(mode) }
-    }
-
     /**
      * Send a chat message — kicks off the ReAct kernel.
      */
     fun send(message: String) {
         val trimmed = message.trim()
         if (trimmed.isEmpty() || _state.value.busy) return
+
+        // Pre-check: API key must be set
+        if (!_state.value.hasApiKey) {
+            val errMsg = ChatMessage(
+                role = "assistant",
+                content = "I need a Z.ai API key to think.\n\nOpen Setup tab → paste your key from z.ai/manage-apikey → Save.\n\nThen ask again.",
+            )
+            _state.update {
+                it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed) + errMsg)
+            }
+            return
+        }
 
         val userMsg = ChatMessage(role = "user", content = trimmed)
         _state.update {
@@ -168,17 +177,20 @@ class AgentViewModel(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            // Create task record
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
             db.taskDao().insert(task)
 
-            // Start foreground service
             host.vorv.service.AgentService.start(appContext, "Working: ${trimmed.take(40)}")
 
             try {
-                val mode = _state.value.llmMode
-                val apiKey = keyStore.zaiApiKey.first()
-                val llm = llmRouter.pick(mode, apiKey)
+                val key = keyStore.zaiApiKey.first()
+                if (key.isBlank()) {
+                    val errMsg = ChatMessage(role = "assistant", content = "No API key set. Open Setup tab.")
+                    _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                    db.taskDao().fail(task.id, "no_api_key")
+                    return@launch
+                }
+                val llm: Llm = CloudLlm(key)
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 val result = kernel.run(task.id, trimmed, llm, wsUri)
@@ -212,7 +224,6 @@ class AgentViewModel(
     fun teach(topic: String, content: String) {
         if (topic.isBlank() || content.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
-            // Reuse the memory_write tool path
             val t = tools.firstOrNull { it.name == "memory_write" }
             val input = com.google.gson.JsonObject().apply {
                 addProperty("topic", topic)
@@ -220,11 +231,6 @@ class AgentViewModel(
             }
             t?.run(input, host.vorv.tools.ToolContext("", 0, _state.value.workspaceUri))
         }
-    }
-
-    private fun currentLlmLabel(mode: String): String = when (mode) {
-        "cloud" -> if (_state.value.hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
-        else -> "Local (stub — MLC pending)"
     }
 
     companion object {
