@@ -70,7 +70,7 @@ object ModelManager {
         return f.exists() && f.length() > (choice.approxBytes * 7 / 10)
     }
 
-    fun anyDownloaded(ctx: Context): ModelChoice? = entries.firstOrNull { isDownloaded(ctx, it) }
+    fun anyDownloaded(ctx: Context): ModelChoice? = ModelChoice.entries.firstOrNull { isDownloaded(ctx, it) }
 
     /**
      * Stream the model to disk, emitting (0..100) progress.
