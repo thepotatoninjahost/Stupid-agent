@@ -32,7 +32,13 @@ fun ToolsScreen(state: AgentState) {
         "browser_automate" to "In-app WebView: load/click/type/extract/run JS",
     )
     val engines = listOf(
-        "local_llm" to if (state.localModelReady) "Qwen2.5-0.5B via llama.cpp — downloaded, offline ready" else "Qwen2.5-0.5B via llama.cpp — download in Setup (~400MB, one time)",
+        "local_llm" to if (state.localModelReady) {
+            val m = host.vorv.llm.ModelChoice.fromId(state.selectedModelId)
+            "${m.displayName.substringBefore("(").trim()} via llama.cpp — downloaded, offline ready"
+        } else {
+            val m = host.vorv.llm.ModelChoice.fromId(state.selectedModelId)
+            "${m.displayName.substringBefore("(").trim()} via llama.cpp — download in Setup (~${"%,.1f".format(m.approxBytes / 1_000_000_000.0)} GB, one time)"
+        },
         "cloud_llm" to "GLM-4.6 with native function calling — needs Z.ai API key",
     )
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -22,6 +22,9 @@ class KeyStore(private val context: Context) {
     /** "local" | "cloud" — which reasoning engine to use. */
     val llmMode: Flow<String> = context.vorvPrefs.data.map { it[LLM_MODE] ?: "cloud" }
 
+    /** "qwen7b" | "qwen3b" — which local model to use when llmMode = "local". See ModelManager.ModelChoice. */
+    val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "qwen7b" }
+
     suspend fun setZaiApiKey(key: String) {
         context.vorvPrefs.edit { it[ZAI_KEY] = key.trim() }
     }
@@ -34,9 +37,14 @@ class KeyStore(private val context: Context) {
         context.vorvPrefs.edit { it[LLM_MODE] = if (mode == "local") "local" else "cloud" }
     }
 
+    suspend fun setLocalModelId(id: String) {
+        context.vorvPrefs.edit { it[LOCAL_MODEL_ID] = id }
+    }
+
     companion object {
         private val ZAI_KEY = stringPreferencesKey("zai_api_key")
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
+        private val LOCAL_MODEL_ID = stringPreferencesKey("local_model_id")
     }
 }

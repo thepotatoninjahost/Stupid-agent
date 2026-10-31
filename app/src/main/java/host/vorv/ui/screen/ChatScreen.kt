@@ -67,22 +67,36 @@ fun ChatScreen(state: AgentState, onSend: (String) -> Unit) {
 @Composable
 private fun MessageBubble(msg: ChatMessage) {
     val isUser = msg.role == "user"
+    // Detect [uncited] prefix on assistant answers — kernel tags facts with no tool/citation backing.
+    val uncited = !isUser && msg.content.startsWith("[uncited]")
+    val body = if (uncited) msg.content.removePrefix("[uncited]").trim() else msg.content
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Surface(shape = RoundedCornerShape(16.dp), color = if (isUser) Primary else SurfaceVariant) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = if (isUser) Primary else if (uncited) Warning.copy(alpha = 0.10f) else SurfaceVariant,
+        ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(msg.content, color = if (isUser) OnPrimary else OnBackground, fontSize = 14.sp)
-                if (msg.citations.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        msg.citations.forEach { c ->
-                            Surface(shape = RoundedCornerShape(50), color = Citation.copy(alpha = 0.2f)) {
-                                Text(
-                                    "[${c.type}] ${c.label}",
-                                    color = Citation,
-                                    fontSize = 9.sp,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                )
-                            }
+                Text(body, color = if (isUser) OnPrimary else OnBackground, fontSize = 14.sp)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (uncited) {
+                        Surface(shape = RoundedCornerShape(50), color = Warning.copy(alpha = 0.25f)) {
+                            Text(
+                                "uncited — no tool evidence",
+                                color = Warning,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    msg.citations.forEach { c ->
+                        Surface(shape = RoundedCornerShape(50), color = Citation.copy(alpha = 0.2f)) {
+                            Text(
+                                "[${c.type}] ${c.label}",
+                                color = Citation,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
                         }
                     }
                 }

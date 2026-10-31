@@ -97,11 +97,17 @@ class CognitiveKernel(
                     is Llm.LlmResponse.Text -> {
                         // Done. Check for inline citations, post answer.
                         val clean = stripCitationTags(resp.content, citations)
+                        // Citation enforcement: if no tool was called AND no inline citation
+                        // was attached, the model produced an uncited answer. Flag it so the
+                        // UI can render a warning chip. This is not a block — the user still
+                        // sees the answer — but it is honest about provenance.
+                        val uncited = citations.isEmpty() && iterations == 1
+                        val finalClean = if (uncited) "[uncited] $clean" else clean
                         messages.add(Llm.Message("assistant", resp.content))
-                        _trace.emit(TraceStep.Answer(clean, citations.toList()))
-                        _trace.emit(TraceStep.Done(clean.take(200), iterations))
-                        db.episodeDao().insert(Episode(kind = "task_completed", summary = clean.take(200), detailsJson = "{\"iterations\":$iterations}"))
-                        return TaskResult(true, clean, iterations, citations.toList(), iterations - 1)
+                        _trace.emit(TraceStep.Answer(finalClean, citations.toList()))
+                        _trace.emit(TraceStep.Done(finalClean.take(200), iterations))
+                        db.episodeDao().insert(Episode(kind = "task_completed", summary = finalClean.take(200), detailsJson = "{\"iterations\":$iterations,\"uncited\":$uncited}"))
+                        return TaskResult(true, finalClean, iterations, citations.toList(), iterations - 1)
                     }
                     is Llm.LlmResponse.ToolUse -> {
                         // Record assistant message with tool_calls

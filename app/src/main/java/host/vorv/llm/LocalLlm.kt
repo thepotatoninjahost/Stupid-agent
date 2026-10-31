@@ -12,12 +12,17 @@ import java.io.File
 /**
  * Local LLM — real on-device inference via llama.cpp (GGUF).
  *
- * Model: Qwen2.5-0.5B-Instruct Q4_K_M (~400MB) — no auth, no cloud, no API key.
- * Downloaded once from HuggingFace into the app's private storage (see ModelManager).
- * After that single download, inference runs fully offline.
+ * Default model: Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB) — sized for the
+ * Samsung Galaxy S25 (Snapdragon 8 Elite, 12 GB RAM). Picked because Qwen2.5-7B
+ * is the strongest open coding + structured-output model under 10B.
+ * Qwen2.5-3B (~2.0 GB) is offered as a smaller fallback.
  *
- * Small models can't do native OpenAI-style function calling, so per the build spec
- * we use a rigid text format + regex parser:
+ * No auth, no cloud, no API key. Downloaded once from HuggingFace into the app's
+ * private storage (see ModelManager). After that single download, inference is
+ * fully offline.
+ *
+ * Small/quantized models can't reliably emit OpenAI-style function-call JSON,
+ * so we use a rigid text format + regex parser:
  *
  *   TOOL_CALL: <name>
  *   ARGS: {"k": "v"}
@@ -27,9 +32,10 @@ import java.io.File
 class LocalLlm(
     appContext: Context,
     private val modelFile: File,
+    private val displayLabel: String = "Qwen2.5-7B (local, offline)",
 ) : Llm {
 
-    override val label = "Qwen2.5-0.5B (local, offline)"
+    override val label = displayLabel
 
     private val threads = maxOf(2, Runtime.getRuntime().availableProcessors() / 2)
 
@@ -68,7 +74,7 @@ class LocalLlm(
                 model,
                 prompt = prompt,
                 systemPrompt = SYSTEM_HEADER,
-                maxTokens = 512,
+                maxTokens = 768,
             )
 
             parseToolCallOrAnswer(result.text.trim())

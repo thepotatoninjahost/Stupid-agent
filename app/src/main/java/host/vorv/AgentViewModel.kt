@@ -12,10 +12,10 @@ import host.vorv.data.entity.Skill
 import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.TraceStep
 import host.vorv.llm.CloudLlm
-import host.vorv.llm.EmbeddingCache
 import host.vorv.llm.Llm
 import host.vorv.llm.LlmRouter
 import host.vorv.llm.LocalLlm
+import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
 import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrowserAutomateTool
@@ -62,6 +62,8 @@ data class AgentState(
     val localModelReady: Boolean = false,
     val downloadingModel: Boolean = false,
     val downloadProgress: Int = 0,
+    val selectedModelId: String = "qwen7b",
+    val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
     val currentLlmLabel: String = "GLM-4.6 (cloud)",
 )
@@ -134,13 +136,37 @@ class AgentViewModel(
         }
         viewModelScope.launch {
             keyStore.llmMode.collect { mode ->
-                _state.update { it.copy(llmMode = mode, currentLlmLabel = engineLabel(mode)) }
+                val id = keyStore.localModelId.first()
+                val choice = ModelChoice.fromId(id)
+                val ready = ModelManager.isDownloaded(appContext, choice)
+                _state.update { it.copy(llmMode = mode, currentLlmLabel = engineLabel(mode, ready, it.hasApiKey, choice)) }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
-            val ready = ModelManager.isDownloaded(appContext)
-            if (ready) localLlm = LocalLlm(appContext, ModelManager.modelFile(appContext))
-            _state.update { it.copy(localModelReady = ready) }
+            val downloaded = ModelChoice.entries.filter { ModelManager.isDownloaded(appContext, it) }
+            _state.update { it.copy(downloadedModelIds = downloaded.map { m -> m.id }.toSet()) }
+        }
+        viewModelScope.launch {
+            keyStore.localModelId.collect { id ->
+                val choice = ModelChoice.fromId(id)
+                val ready = ModelManager.isDownloaded(appContext, choice)
+                if (ready) {
+                    localLlm = LocalLlm(
+                        appContext,
+                        ModelManager.modelFile(appContext, choice),
+                        displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                    )
+                } else {
+                    localLlm = null
+                }
+                _state.update {
+                    it.copy(
+                        selectedModelId = id,
+                        localModelReady = ready,
+                        currentLlmLabel = engineLabel(it.llmMode, ready, it.hasApiKey, choice),
+                    )
+                }
+            }
         }
         viewModelScope.launch(Dispatchers.IO) {
             db.episodeDao().insert(Episode(kind = "boot", summary = "Vorv booted — ${tools.size} tools ready"))
@@ -171,22 +197,60 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) { keyStore.setLlmMode(mode) }
     }
 
+    /** Switch the active local model. Triggers reload of LocalLlm with the new file. */
+    fun setLocalModel(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            localLlm = null
+            keyStore.setLocalModelId(id)
+            val choice = ModelChoice.fromId(id)
+            val ready = ModelManager.isDownloaded(appContext, choice)
+            if (ready) {
+                localLlm = LocalLlm(
+                    appContext,
+                    ModelManager.modelFile(appContext, choice),
+                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                )
+            }
+            _state.update {
+                it.copy(
+                    selectedModelId = id,
+                    localModelReady = ready,
+                    currentLlmLabel = engineLabel(it.llmMode, ready, it.hasApiKey, choice),
+                )
+            }
+        }
+    }
+
     fun setWorkspaceUri(uri: String) {
         viewModelScope.launch(Dispatchers.IO) { keyStore.setWorkspaceUri(uri) }
     }
 
-    /** One-time download of the local model (~400MB), with real progress in state. */
+    /** One-time download of the selected local model, with real progress in state. */
     fun downloadLocalModel() {
-        if (_state.value.downloadingModel || _state.value.localModelReady) return
+        if (_state.value.downloadingModel) return
+        val choice = ModelChoice.fromId(_state.value.selectedModelId)
+        if (ModelManager.isDownloaded(appContext, choice)) return
         _state.update { it.copy(downloadingModel = true, downloadProgress = 0) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                ModelManager.download(appContext).collect { pct ->
+                ModelManager.download(appContext, choice).collect { pct ->
                     _state.update { it.copy(downloadProgress = pct) }
                 }
-                localLlm = LocalLlm(appContext, ModelManager.modelFile(appContext))
-                _state.update { it.copy(localModelReady = true, downloadingModel = false) }
-                db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded — offline mode available"))
+                localLlm = LocalLlm(
+                    appContext,
+                    ModelManager.modelFile(appContext, choice),
+                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                )
+                val newDownloaded = _state.value.downloadedModelIds + choice.id
+                _state.update {
+                    it.copy(
+                        localModelReady = true,
+                        downloadingModel = false,
+                        downloadedModelIds = newDownloaded,
+                        currentLlmLabel = engineLabel(it.llmMode, true, it.hasApiKey, choice),
+                    )
+                }
+                db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded: ${choice.id} — offline mode available"))
             } catch (e: Exception) {
                 _state.update { it.copy(downloadingModel = false, downloadProgress = 0) }
                 val errMsg = ChatMessage(role = "assistant", content = "Model download failed: ${e.message}")
@@ -195,13 +259,27 @@ class AgentViewModel(
         }
     }
 
-    fun deleteLocalModel() {
+    fun deleteLocalModel(choice: ModelChoice) {
         viewModelScope.launch(Dispatchers.IO) {
-            ModelManager.modelFile(appContext).delete()
-            localLlm = null
-            EmbeddingCache // embeddings die with the process anyway
-            _state.update { it.copy(localModelReady = false, llmMode = "cloud", currentLlmLabel = engineLabel("cloud")) }
-            keyStore.setLlmMode("cloud")
+            ModelManager.modelFile(appContext, choice).delete()
+            val activeId = _state.value.selectedModelId
+            if (activeId == choice.id) {
+                localLlm = null
+                val newDownloaded = _state.value.downloadedModelIds - choice.id
+                _state.update {
+                    it.copy(
+                        localModelReady = false,
+                        llmMode = "cloud",
+                        downloadedModelIds = newDownloaded,
+                        currentLlmLabel = engineLabel("cloud", false, it.hasApiKey, choice),
+                    )
+                }
+                keyStore.setLlmMode("cloud")
+            } else {
+                _state.update {
+                    it.copy(downloadedModelIds = it.downloadedModelIds - choice.id)
+                }
+            }
         }
     }
 
@@ -276,11 +354,14 @@ class AgentViewModel(
         }
     }
 
-    private fun engineLabel(mode: String): String {
-        val s = _state.value
+    private fun engineLabel(mode: String, ready: Boolean, hasApiKey: Boolean, choice: ModelChoice): String {
         return when (mode) {
-            "local" -> if (s.localModelReady) "Qwen2.5-0.5B (local, offline)" else "Local — model not downloaded"
-            else -> if (s.hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
+            "local" -> if (ready) {
+                "${choice.displayName.substringBefore("(").trim()} (local, offline)"
+            } else {
+                "Local — ${choice.displayName.substringBefore("(").trim()} not downloaded"
+            }
+            else -> if (hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
         }
     }
 
