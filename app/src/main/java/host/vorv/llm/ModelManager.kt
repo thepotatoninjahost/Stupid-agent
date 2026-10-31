@@ -20,12 +20,20 @@ import java.util.concurrent.TimeUnit
  * "Prebuilt llama.cpp AAR for Android — on-device LLM inference, GGUF models,
  * arm64-v8a").
  *
- * URLs and file sizes were verified by fetching the HuggingFace file listings
- * on 2026-10-31:
- *   - 7B official Qwen repo splits Q4_K_M into 2 parts. Bartowski's mirror
- *     hosts a single unsplit file at 4.68 GB. We use the mirror so the
- *     downloader stays simple and so peak disk usage is one copy, not two.
- *   - 3B official Qwen repo has the single Q4_K_M file at 2.10 GB.
+ * MODEL CHOICE — why Coder, not the general Instruct:
+ * Vorv is an autonomous CODING agent. Qwen2.5-Coder-7B-Instruct is the same
+ * architecture as Qwen2.5-7B-Instruct (qwen2, same chat template, same Q4_K_M
+ * quant) but trained specifically on code — so it loads through the same
+ * llama.cpp path and the existing TOOL_CALL/ARGS/ANSWER prompt works unchanged,
+ * but its tool-selection and code-generation are markedly better for the
+ * agent's actual job. Same RAM/disk cost.
+ *
+ * URLs and file sizes verified 2026-10-31 by fetching the HuggingFace file
+ * listings AND curl-ing the resolve URLs to confirm HTTP 200 + Content-Length:
+ *   - 7B Coder Q4_K_M: official Qwen repo has a single unsplit file at
+ *     4,683,073,536 bytes (4.68 GB). Verified.
+ *   - 3B Coder Q4_K_M: official Qwen repo has a single unsplit file at
+ *     2,104,932,800 bytes (2.10 GB). Verified.
  *
  * Throughput (tok/s) is NOT stated here — it depends on the device and is
  * reported live by the LLM via result.tokensPerSecond, surfaced in the
@@ -40,28 +48,42 @@ enum class ModelChoice(
     val shortDesc: String,
 ) {
     QWEN_7B(
+        // Pref id stays "qwen7b" so existing installs don't get a pref reset
+        // on upgrade — but the URL/filename now point at the Coder variant.
         id = "qwen7b",
-        displayName = "Qwen2.5-7B-Instruct (Q4_K_M, 4.68 GB)",
-        // Verified 2026-10-31: bartowski mirror has a single unsplit file.
-        // The official Qwen repo splits this same quant into 2 parts.
-        url = "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-        fileName = "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-        approxBytes = 4_680_000_000L,
-        shortDesc = "Default. Strongest open coding/tool-use model under 10B. " +
-            "Largest sensible fit on a 12 GB RAM phone via CPU llama.cpp.",
+        displayName = "Qwen2.5-Coder-7B-Instruct (Q4_K_M, 4.68 GB)",
+        // Verified 2026-10-31: official Qwen repo has a single unsplit file.
+        url = "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+        fileName = "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+        approxBytes = 4_683_073_536L,
+        shortDesc = "Default. Coding-specialized, instruction-tuned, supports " +
+            "tool calling. Largest sensible fit on a 12 GB RAM phone via CPU llama.cpp.",
     ),
     QWEN_3B(
         id = "qwen3b",
-        displayName = "Qwen2.5-3B-Instruct (Q4_K_M, 2.10 GB)",
+        displayName = "Qwen2.5-Coder-3B-Instruct (Q4_K_M, 2.10 GB)",
         // Verified 2026-10-31: official Qwen repo has a single unsplit file.
-        url = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-        fileName = "qwen2.5-3b-instruct-q4_k_m.gguf",
-        approxBytes = 2_100_000_000L,
+        url = "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        fileName = "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        approxBytes = 2_104_932_800L,
         shortDesc = "Lighter + faster, weaker reasoning. Pick if 7B is too slow.",
     );
 
     companion object {
         fun fromId(id: String?): ModelChoice = entries.firstOrNull { it.id == id } ?: QWEN_7B
+
+        /**
+         * Filenames from prior versions that are no longer selectable. We delete
+         * these on boot so an upgrade from a version that downloaded the old
+         * Qwen2.5-7B-Instruct (non-Coder) variant doesn't leave 4.68 GB of
+         * orphaned files in app private storage with no UI to clean them up.
+         */
+        val LEGACY_FILENAMES: List<String> = listOf(
+            "Qwen2.5-7B-Instruct-Q4_K_M.gguf",           // pre-Coder swap (v0.3.1)
+            "qwen2.5-7b-instruct-q4_k_m.gguf",           // pre-fix (v0.3.0) — never resolved but listed
+            "qwen2.5-3b-instruct-q4_k_m.gguf",          // pre-Coder swap (v0.3.1)
+            "qwen2.5-0.5b-instruct-q4_k_m.gguf",        // original 0.5B model (v0.2.0)
+        )
     }
 }
 
@@ -81,6 +103,23 @@ object ModelManager {
     }
 
     fun anyDownloaded(ctx: Context): ModelChoice? = ModelChoice.entries.firstOrNull { isDownloaded(ctx, it) }
+
+    /**
+     * Delete orphaned files from prior versions. Called once at app boot.
+     * Idempotent — safe to call every boot. Only deletes files matching the
+     * LEGACY_FILENAMES list, never anything user-selected now.
+     */
+    fun cleanupLegacyModels(ctx: Context): Int {
+        val dir = File(ctx.filesDir, "models").apply { mkdirs() }
+        var deleted = 0
+        ModelChoice.LEGACY_FILENAMES.forEach { name ->
+            val f = File(dir, name)
+            if (f.exists()) {
+                if (f.delete()) deleted++
+            }
+        }
+        return deleted
+    }
 
     /**
      * Stream the model to disk, emitting (0..100) progress.
@@ -105,7 +144,7 @@ object ModelManager {
 
         val builder = Request.Builder()
             .url(choice.url)
-            .addHeader("User-Agent", "Vorv/0.3 (local-first agent; S25 target)")
+            .addHeader("User-Agent", "Vorv/0.4 (local-first coding agent; S25 target)")
         if (resumeFrom > 0) {
             builder.addHeader("Range", "bytes=$resumeFrom-")
         }

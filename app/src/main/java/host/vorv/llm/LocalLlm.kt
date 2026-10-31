@@ -22,11 +22,17 @@ import java.io.File
  *     Adreno 830 GPU and Hexagon NPU are NOT engaged. All inference
  *     runs on the 8 Oryon CPU cores.
  *
- * MODELS (verified 2026-10-31 against HuggingFace file listings):
- *   - Default: Qwen2.5-7B-Instruct Q4_K_M, 4.68 GB, single file from
- *     bartowski's mirror (official Qwen repo splits it into 2 parts).
- *   - Fallback: Qwen2.5-3B-Instruct Q4_K_M, 2.10 GB, single file from
- *     official Qwen repo.
+ * MODELS (verified 2026-10-31 against HuggingFace file listings AND
+ * curl-ed the resolve URLs to confirm HTTP 200 + Content-Length):
+ *   - Default: Qwen2.5-Coder-7B-Instruct Q4_K_M, 4,683,073,536 bytes (4.68 GB),
+ *     single unsplit file from the official Qwen Coder repo.
+ *   - Fallback: Qwen2.5-Coder-3B-Instruct Q4_K_M, 2,104,932,800 bytes (2.10 GB),
+ *     single unsplit file from the official Qwen Coder repo.
+ *
+ * Why Coder, not the general Instruct: Vorv is an autonomous CODING agent.
+ * Coder is the same qwen2 architecture + same chat template + same Q4_K_M
+ * quant, but trained specifically on code — better tool selection + code
+ * generation for this app's actual job, at the same RAM/disk cost.
  *
  * Throughput is NOT promised in advance — it depends on the device.
  * `result.tokensPerSecond` (Float, verified field on LlamaResult) is
@@ -44,7 +50,7 @@ import java.io.File
 class LocalLlm(
     appContext: Context,
     private val modelFile: File,
-    private val displayLabel: String = "Qwen2.5-7B (local, offline)",
+    private val displayLabel: String = "Qwen2.5-Coder-7B-Instruct (local, offline)",
 ) : Llm {
 
     override val label = displayLabel

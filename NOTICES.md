@@ -44,7 +44,7 @@ Source: https://github.com/mozilla/rhino
 - **dev.ffmpegkit-maintained:llama-android** — MIT (prebuilt llama.cpp AAR for Android)
 
 Source: https://github.com/ffmpegkit-maintained/llama-android
-- Bundled model: **Qwen2.5-0.5B-Instruct GGUF (Q4_K_M)** — Qwen license (Apache 2.0), downloaded at runtime from HuggingFace, not bundled in the APK.
+- Bundled model: **Qwen2.5-Coder-7B-Instruct GGUF (Q4_K_M)** or **Qwen2.5-Coder-3B-Instruct GGUF (Q4_K_M)** — Qwen license (Apache 2.0), downloaded at runtime from HuggingFace, not bundled in the APK.
 - llama.cpp itself: MIT — https://github.com/ggml-org/llama.cpp
 
 ## Python runtime

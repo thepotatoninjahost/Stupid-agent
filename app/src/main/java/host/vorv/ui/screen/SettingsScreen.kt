@@ -185,8 +185,8 @@ fun SettingsScreen(
         Text(
             "Vorv is a local-first autonomous agent. Coined name — no existing product.\n\n" +
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
-                "14 real tools. Local engine: Qwen2.5-7B via llama.cpp (offline after one download). " +
-                "Cloud engine: GLM-4.6 (optional).\n\n" +
+                "14 real tools. Local engine: Qwen2.5-Coder-7B-Instruct via llama.cpp " +
+                "(offline after one download). Cloud engine: GLM-4.6 (optional).\n\n" +
                 "Honest limits: the local 7B Q4_K_M model is weaker than GLM-4.6 at long multi-tool " +
                 "chains but is genuinely usable for short reasoning + tool choice. " +
                 "First model download needs internet once; after that airplane mode works.",

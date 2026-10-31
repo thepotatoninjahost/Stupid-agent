@@ -154,6 +154,12 @@ class AgentViewModel(
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
+            // One-shot cleanup of orphaned files from prior versions. Safe to
+            // call every boot — only deletes files matching the LEGACY list.
+            val deleted = ModelManager.cleanupLegacyModels(appContext)
+            if (deleted > 0) {
+                db.episodeDao().insert(Episode(kind = "lesson", summary = "Cleaned up $deleted legacy model file(s) from prior version"))
+            }
             val downloaded = ModelChoice.entries.filter { ModelManager.isDownloaded(appContext, it) }
             _state.update { it.copy(downloadedModelIds = downloaded.map { m -> m.id }.toSet()) }
         }
