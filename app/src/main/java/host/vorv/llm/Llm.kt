@@ -163,9 +163,9 @@ class CloudLlm(
 
 /**
  * Picks the reasoning engine:
- *  - "local"  → llama.cpp on-device (requires the model downloaded once)
+ *  - "local"  → llama.cpp on-device (requires the model downloaded once, ~2–4.7 GB)
  *  - "cloud"  → GLM-4.6 (requires a Z.ai API key)
- * If the requested engine isn't available, falls back with a REAL error — never a stub.
+ * If the requested engine isn't available, throws with a REAL, actionable error — never a stub.
  */
 object LlmRouter {
     fun pick(mode: String, apiKey: String, local: LocalLlm?): Llm = when (mode) {
@@ -174,7 +174,7 @@ object LlmRouter {
             CloudLlm(apiKey)
         }
         else -> {
-            requireNotNull(local) { "Local model not downloaded yet — open Setup and download it (one time, ~400MB), or switch to Cloud." }
+            requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~2–4.7 GB depending on choice)." }
             local
         }
     }
