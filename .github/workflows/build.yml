@@ -2,7 +2,7 @@ name: Build Vorv APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   workflow_dispatch:
 
 jobs:
@@ -42,7 +42,10 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 90
 
+      # Publish Release only on main — feature branches build-only (no release).
+      # This lets me verify CI is green on a feature branch BEFORE merging.
       - name: Rename APK
+        if: github.ref == 'refs/heads/main'
         run: |
           mkdir -p release
           cp app/build/outputs/apk/debug/app-debug.apk release/Vorv-debug.apk
@@ -50,6 +53,7 @@ jobs:
           echo "APK_SHA=$sha" >> $GITHUB_ENV
 
       - name: Publish Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0-${{ env.APK_SHA }}

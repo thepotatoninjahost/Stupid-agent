@@ -41,11 +41,13 @@ Source: https://github.com/google/gson
 Source: https://github.com/mozilla/rhino
 
 ## Local LLM inference
-- **dev.ffmpegkit-maintained:llama-android** — MIT (prebuilt llama.cpp AAR for Android)
+- **com.qualcomm.qti:geniex-android** — BSD-3-Clause (Qualcomm's first-party on-device Gen-AI runtime for Android; bundles libggml-hexagon.so, libQnnHtpV81.so, libggml-opencl.so, libggml-cpu.so, libllama.so, libnpu_jni.so for the S25's Hexagon NPU + Adreno GPU + CPU)
 
-Source: https://github.com/ffmpegkit-maintained/llama-android
-- Bundled model: **Qwen2.5-Coder-7B-Instruct GGUF (Q4_K_M)** or **Qwen2.5-Coder-3B-Instruct GGUF (Q4_K_M)** — Qwen license (Apache 2.0), downloaded at runtime from HuggingFace, not bundled in the APK.
-- llama.cpp itself: MIT — https://github.com/ggml-org/llama.cpp
+Source: https://github.com/qualcomm/GenieX
+Maven: https://repo1.maven.org/maven2/com/qualcomm/qti/geniex-android/0.10.0/
+- Runtime downloads: **Qwen2.5-Coder-7B-Instruct GGUF (Q4_0)** or **Qwen2.5-Coder-3B-Instruct GGUF (Q4_0)** — Qwen license (Apache 2.0), downloaded at runtime from HuggingFace via GenieX's ModelManagerWrapper, not bundled in the APK.
+- llama.cpp itself: MIT — https://github.com/ggml-org/llama.cpp (used internally by GenieX's llama_cpp plugin)
+- Qualcomm QNN/QAIRT runtime libs (vendored in the GenieX AAR under permissive OSS licenses per the AAR's NOTICE file)
 
 ## Python runtime
 - **com.chaquo.python (Chaquopy)** — MIT / Apache 2.0 (Chaquopy is open-source since v11)

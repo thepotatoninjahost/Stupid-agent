@@ -107,7 +107,8 @@ class AgentViewModel(
      */
     private fun bindLocalLlm(llm: LocalLlm) {
         llm.onTelemetry = { tps, ms ->
-            viewModelScope.launch { kernel.emitTelemetry(tps, ms, llm.label) }
+            // tps is Double now (GenieX ProfilingData.decodingSpeed)
+            viewModelScope.launch { kernel.emitTelemetry(tps.toFloat(), ms.toLong(), llm.label) }
         }
     }
 
@@ -149,32 +150,33 @@ class AgentViewModel(
             keyStore.llmMode.collect { mode ->
                 val id = keyStore.localModelId.first()
                 val choice = ModelChoice.fromId(id)
-                val ready = ModelManager.isDownloaded(appContext, choice)
+                val ready = ModelManager.isDownloaded(choice)
                 _state.update { it.copy(llmMode = mode, currentLlmLabel = engineLabel(mode, ready, it.hasApiKey, choice)) }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
             // One-shot cleanup of orphaned files from prior versions. Safe to
             // call every boot — only deletes files matching the LEGACY list.
-            val deleted = ModelManager.cleanupLegacyModels(appContext)
-            if (deleted > 0) {
-                db.episodeDao().insert(Episode(kind = "lesson", summary = "Cleaned up $deleted legacy model file(s) from prior version"))
+            ModelManager.cleanupLegacyModelsDir(appContext)
+            // isDownloaded is suspend — collect via map, not filter
+            val downloaded = mutableListOf<ModelChoice>()
+            for (m in ModelChoice.entries) {
+                if (ModelManager.isDownloaded(m)) downloaded.add(m)
             }
-            val downloaded = ModelChoice.entries.filter { ModelManager.isDownloaded(appContext, it) }
             _state.update { it.copy(downloadedModelIds = downloaded.map { m -> m.id }.toSet()) }
         }
         viewModelScope.launch {
             keyStore.localModelId.collect { id ->
                 val choice = ModelChoice.fromId(id)
-                val ready = ModelManager.isDownloaded(appContext, choice)
+                val ready = ModelManager.isDownloaded(choice)
                 // Free the previous model's native memory before swapping.
                 localLlm?.release()
                 localLlm = null
                 if (ready) {
                     val llm = LocalLlm(
                         appContext,
-                        ModelManager.modelFile(appContext, choice),
-                        displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                        choice,
+                        displayLabel = "${choice.displayName.substringBefore("(").trim()} (NPU, offline)",
                     )
                     bindLocalLlm(llm)
                     localLlm = llm
@@ -224,12 +226,12 @@ class AgentViewModel(
             localLlm = null
             keyStore.setLocalModelId(id)
             val choice = ModelChoice.fromId(id)
-            val ready = ModelManager.isDownloaded(appContext, choice)
+            val ready = ModelManager.isDownloaded(choice)
             if (ready) {
                 val llm = LocalLlm(
                     appContext,
-                    ModelManager.modelFile(appContext, choice),
-                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                    choice,
+                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (NPU, offline)",
                 )
                 bindLocalLlm(llm)
                 localLlm = llm
@@ -252,18 +254,21 @@ class AgentViewModel(
     fun downloadLocalModel() {
         if (_state.value.downloadingModel) return
         val choice = ModelChoice.fromId(_state.value.selectedModelId)
-        if (ModelManager.isDownloaded(appContext, choice)) return
         _state.update { it.copy(downloadingModel = true, downloadProgress = 0) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                ModelManager.download(appContext, choice).collect { pct ->
+                if (ModelManager.isDownloaded(choice)) {
+                    _state.update { it.copy(downloadingModel = false, downloadProgress = 100) }
+                    return@launch
+                }
+                ModelManager.pull(choice).collect { pct ->
                     _state.update { it.copy(downloadProgress = pct) }
                 }
                 localLlm?.release()
                 val llm = LocalLlm(
                     appContext,
-                    ModelManager.modelFile(appContext, choice),
-                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
+                    choice,
+                    displayLabel = "${choice.displayName.substringBefore("(").trim()} (NPU, offline)",
                 )
                 bindLocalLlm(llm)
                 localLlm = llm
@@ -293,7 +298,7 @@ class AgentViewModel(
                 localLlm?.release()
                 localLlm = null
             }
-            ModelManager.modelFile(appContext, choice).delete()
+            ModelManager.remove(choice)
             if (activeId == choice.id) {
                 val newDownloaded = _state.value.downloadedModelIds - choice.id
                 _state.update {
@@ -387,9 +392,9 @@ class AgentViewModel(
     private fun engineLabel(mode: String, ready: Boolean, hasApiKey: Boolean, choice: ModelChoice): String {
         return when (mode) {
             "local" -> if (ready) {
-                "${choice.displayName.substringBefore("(").trim()} (local, offline)"
+                "${choice.displayName.substringBefore("(").trim()} (NPU, offline)"
             } else {
-                "Local — ${choice.displayName.substringBefore("(").trim()} not downloaded"
+                "Local — ${choice.displayName.substringBefore("(").trim()} not pulled"
             }
             else -> if (hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
         }
