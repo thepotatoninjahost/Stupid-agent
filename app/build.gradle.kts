@@ -14,13 +14,14 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.4.0-vorv"
+        versionCode = 8
+        versionName = "0.5.0-vorv"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
-            // Chaquopy ABI selection — keep APK size reasonable
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // GenieX AAR only ships arm64-v8a libs (Hexagon NPU is ARM-only).
+            // x86_64 stripped to halve APK size on emulators / no-NPU devices.
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -50,6 +51,10 @@ android {
     buildFeatures { compose = true }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        // Required by GenieX — extracts .so files to local filesystem at install
+        // time so the model manager can find them at runtime. Verified pattern
+        // from Qualcomm's official geniex_chat_android sample (build.gradle line 41).
+        jniLibs { useLegacyPackaging = true }
     }
 }
 
@@ -86,7 +91,7 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.rhino)
-    implementation(libs.llama.android)
+    implementation(libs.geniex.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.coil.compose)
     debugImplementation(libs.androidx.ui.tooling)

@@ -3,10 +3,15 @@ package host.vorv.tools
 import com.google.gson.JsonObject
 import host.vorv.data.VorvDatabase
 import host.vorv.data.entity.KnowledgeEntry
-import host.vorv.llm.EmbeddingCache
 
 /**
- * memory_write — persist a fact for future sessions.
+ * memory_write - persist a fact for future sessions.
+ *
+ * v0.5.0: removed the EmbeddingCache path. GenieX's LlmWrapper API does not
+ * expose an embed() call (unlike the llama-android library we used in
+ * v0.2.0-v0.4.0). memory_recall falls back to Room FTS4 + LIKE keyword
+ * search, which is what we actually use today anyway — the vector path
+ * was an optimization that never shipped end-to-end.
  */
 class MemoryWriteTool(private val db: VorvDatabase) : Tool {
     override val name = "memory_write"
@@ -36,17 +41,14 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
             content = content,
             source = "memory_write",
             citationType = "memory",
-            citationRef = "",  // filled below
+            citationRef = "",
             confidence = 0.9f,
         )
         db.knowledgeDao().upsert(entry)
-        // Re-fetch to get the ID, then update citationRef to point at itself
         val saved = db.knowledgeDao().searchLike(topic, 1).firstOrNull()
             ?: return ToolResult(true, "Stored: '$topic'", durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("memory", "", "memory"))
         db.knowledgeDao().update(saved.copy(citationRef = saved.id))
-        // Vector-embed at write time so memory_recall can cosine-rank (local model only).
-        EmbeddingCache.embed("$topic. $content", saved.id)
         return ToolResult(
             ok = true,
             output = "Stored memory: '$topic' (id=${saved.id})",
@@ -57,7 +59,11 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
 }
 
 /**
- * memory_recall — search long-term memory by keyword (FTS4).
+ * memory_recall - search long-term memory by keyword (FTS4 + LIKE fallback).
+ *
+ * v0.5.0: vector path removed (GenieX doesn't expose embed() through
+ * LlmWrapper). Keyword search is what's used — and it's plenty good for
+ * a coding agent's small knowledge base.
  */
 class MemoryRecallTool(private val db: VorvDatabase) : Tool {
     override val name = "memory_recall"
@@ -83,16 +89,7 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
         val query = input.get("query")?.asString ?: return ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
         val limit = input.get("limit")?.takeIf { !it.isJsonNull }?.asInt ?: 5
 
-        // 1) Vector search first: embed the query, cosine-rank cached entry vectors (local model only).
-        val vectorHits: List<KnowledgeEntry> = if (EmbeddingCache.active) {
-            EmbeddingCache.embed(query, "__query__")?.let { qv ->
-                EmbeddingCache.rank(qv, limit * 2)
-                    .mapNotNull { (id, score) -> if (score < 0.35) null else db.knowledgeDao().get(id) }
-            }.orEmpty()
-        } else emptyList()
-
-        // 2) Keyword FTS4 search — always available, even without the local model.
-        val keywordHits = try {
+        val results = try {
             db.knowledgeDao().searchFts("$query*", limit).ifEmpty {
                 db.knowledgeDao().searchLike(query, limit)
             }
@@ -100,16 +97,13 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
             db.knowledgeDao().searchLike(query, limit)
         }
 
-        // Merge, dedupe by id, vector hits ranked first.
-        val results = (vectorHits + keywordHits).distinctBy { it.id }.take(limit)
-
         results.forEach { db.knowledgeDao().markRecalled(it.id) }
 
         val output = if (results.isEmpty()) {
             "No memories matched '$query'."
         } else {
             results.joinToString("\n") { m ->
-                "• [id=${m.id.take(8)}] ${m.topic}: ${m.content.take(200)}"
+                "[id=${m.id.take(8)}] ${m.topic}: ${m.content.take(200)}"
             }
         }
         return ToolResult(

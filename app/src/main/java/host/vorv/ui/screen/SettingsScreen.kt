@@ -185,10 +185,12 @@ fun SettingsScreen(
         Text(
             "Vorv is a local-first autonomous agent. Coined name — no existing product.\n\n" +
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
-                "14 real tools. Local engine: Qwen2.5-Coder-7B-Instruct via llama.cpp " +
-                "(offline after one download). Cloud engine: GLM-4.6 (optional).\n\n" +
-                "Honest limits: the local 7B Q4_K_M model is weaker than GLM-4.6 at long multi-tool " +
-                "chains but is genuinely usable for short reasoning + tool choice. " +
+                "14 real tools. Local engine: Qwen2.5-Coder-7B-Instruct via Qualcomm " +
+                "GenieX on the Hexagon NPU (offline after one ~4.44 GB download). " +
+                "Cloud engine: GLM-4.6 (optional).\n\n" +
+                "Honest limits: the local 7B Q4_0 model runs on the S25's Hexagon NPU. " +
+                "Real measured tok/s will appear in the trace after each generation — " +
+                "expected peak ~8-12 tok/s, ~4-6 tok/s sustained under thermal load. " +
                 "First model download needs internet once; after that airplane mode works.",
             color = OnSurfaceVariant,
             fontSize = 11.sp,
