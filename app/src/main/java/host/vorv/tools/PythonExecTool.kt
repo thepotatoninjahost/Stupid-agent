@@ -93,10 +93,11 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
             val result = resultRef.get()
                 ?: return@withContext ToolResult(ok = false, output = "", error = "no result returned", durationMs = System.currentTimeMillis() - t0)
 
-            val ok = result["ok"].toBoolean()
-            val stdout = result["stdout"].toString()
-            val stderr = result["stderr"].toString()
-            val error = result["error"].toString().takeIf { it != "None" && it.isNotBlank() }
+            val ok = result["ok"]?.toBoolean() ?: false
+            val stdout = result["stdout"]?.toString() ?: ""
+            val stderr = result["stderr"]?.toString() ?: ""
+            val errorStr = result["error"]?.toString()
+            val error = errorStr?.takeIf { it != "None" && it.isNotBlank() }
 
             ToolResult(
                 ok = ok,

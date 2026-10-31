@@ -10,12 +10,15 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
+import host.vorv.data.KeyStore
+import kotlinx.coroutines.flow.first
+
 /**
  * web_search — real web search.
  * Uses Z.ai's web_search function (cloud mode only — requires API key).
  * Returns list of {url, title, snippet}.
  */
-class WebSearchTool(private val apiKeyProvider: () -> String) : Tool {
+class WebSearchTool(private val keyStore: KeyStore) : Tool {
     override val name = "web_search"
     override val description = "Search the live web. Returns top results with URLs, titles, and snippets. Use to answer questions about current events or facts you don't know."
 
@@ -45,7 +48,7 @@ class WebSearchTool(private val apiKeyProvider: () -> String) : Tool {
             ?: return@withContext ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
         val num = input.get("num")?.takeIf { !it.isJsonNull }?.asInt ?: 5
 
-        val apiKey = apiKeyProvider()
+        val apiKey = keyStore.zaiApiKey.first()
         if (apiKey.isBlank()) {
             return@withContext ToolResult(
                 ok = false,

@@ -71,7 +71,7 @@ class AgentViewModel(
         FileWriteTool(appContext),
         FileListTool(appContext),
         PythonExecTool(appContext),
-        WebSearchTool { _state.value.run { if (hasApiKey) keyStore.zaiApiKey.first() else "" } },
+        WebSearchTool(keyStore),
         WebFetchTool(),
         AppIntentTool(appContext),
         ShellTool(appContext),
