@@ -56,10 +56,9 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.11"
-        pip {
-            // Real Python packages shipped in the APK
-            install("requests")
-        }
+        // No pip installs — uses Python 3.11 stdlib only. Avoids build environment
+        // Python version mismatch (CI runs Python 3.14, which some packages don't support yet).
+        pip { install("numpy==1.26.4") }
     }
 }
 
