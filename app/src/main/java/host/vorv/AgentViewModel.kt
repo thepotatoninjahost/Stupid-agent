@@ -100,6 +100,17 @@ class AgentViewModel(
         }
     }
 
+    /**
+     * Every place we create a LocalLlm, wire its telemetry hook into the kernel
+     * so the UI shows real measured tok/s (from LlamaResult.tokensPerSecond)
+     * — never fabricated estimates.
+     */
+    private fun bindLocalLlm(llm: LocalLlm) {
+        llm.onTelemetry = { tps, ms ->
+            viewModelScope.launch { kernel.emitTelemetry(tps, ms, llm.label) }
+        }
+    }
+
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
@@ -150,14 +161,17 @@ class AgentViewModel(
             keyStore.localModelId.collect { id ->
                 val choice = ModelChoice.fromId(id)
                 val ready = ModelManager.isDownloaded(appContext, choice)
+                // Free the previous model's native memory before swapping.
+                localLlm?.release()
+                localLlm = null
                 if (ready) {
-                    localLlm = LocalLlm(
+                    val llm = LocalLlm(
                         appContext,
                         ModelManager.modelFile(appContext, choice),
                         displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
                     )
-                } else {
-                    localLlm = null
+                    bindLocalLlm(llm)
+                    localLlm = llm
                 }
                 _state.update {
                     it.copy(
@@ -200,16 +214,19 @@ class AgentViewModel(
     /** Switch the active local model. Triggers reload of LocalLlm with the new file. */
     fun setLocalModel(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            localLlm?.release()
             localLlm = null
             keyStore.setLocalModelId(id)
             val choice = ModelChoice.fromId(id)
             val ready = ModelManager.isDownloaded(appContext, choice)
             if (ready) {
-                localLlm = LocalLlm(
+                val llm = LocalLlm(
                     appContext,
                     ModelManager.modelFile(appContext, choice),
                     displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
                 )
+                bindLocalLlm(llm)
+                localLlm = llm
             }
             _state.update {
                 it.copy(
@@ -236,11 +253,14 @@ class AgentViewModel(
                 ModelManager.download(appContext, choice).collect { pct ->
                     _state.update { it.copy(downloadProgress = pct) }
                 }
-                localLlm = LocalLlm(
+                localLlm?.release()
+                val llm = LocalLlm(
                     appContext,
                     ModelManager.modelFile(appContext, choice),
                     displayLabel = "${choice.displayName.substringBefore("(").trim()} (local, offline)",
                 )
+                bindLocalLlm(llm)
+                localLlm = llm
                 val newDownloaded = _state.value.downloadedModelIds + choice.id
                 _state.update {
                     it.copy(
@@ -261,10 +281,14 @@ class AgentViewModel(
 
     fun deleteLocalModel(choice: ModelChoice) {
         viewModelScope.launch(Dispatchers.IO) {
-            ModelManager.modelFile(appContext, choice).delete()
+            // Free native memory before deleting the underlying file.
             val activeId = _state.value.selectedModelId
             if (activeId == choice.id) {
+                localLlm?.release()
                 localLlm = null
+            }
+            ModelManager.modelFile(appContext, choice).delete()
+            if (activeId == choice.id) {
                 val newDownloaded = _state.value.downloadedModelIds - choice.id
                 _state.update {
                     it.copy(

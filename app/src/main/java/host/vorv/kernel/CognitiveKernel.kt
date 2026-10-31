@@ -24,6 +24,12 @@ sealed class TraceStep {
     data class Answer(val text: String, val citations: List<Citation>) : TraceStep()
     data class Error(val message: String) : TraceStep()
     data class Done(val summary: String, val iterations: Int) : TraceStep()
+    /**
+     * Real measured telemetry from the LLM call. tok/s and generate-time
+     * come straight from LlamaResult for local inference — never fabricated.
+     * CloudLlm doesn't emit these (no per-call telemetry surfaced yet).
+     */
+    data class Telemetry(val tokensPerSecond: Float, val generateMs: Long, val engine: String) : TraceStep()
 }
 
 /**
@@ -63,6 +69,15 @@ class CognitiveKernel(
      */
     var onIteration: suspend (taskId: String, iterations: Int) -> Unit = { _, _ -> }
 
+    /**
+     * Emit a real measured telemetry point from the active LLM into the trace
+     * flow. AgentViewModel wires this to LocalLlm.onTelemetry so the UI shows
+     * actual tok/s — never fabricated estimates.
+     */
+    suspend fun emitTelemetry(tokensPerSecond: Float, generateMs: Long, engine: String) {
+        _trace.emit(TraceStep.Telemetry(tokensPerSecond, generateMs, engine))
+    }
+
     suspend fun run(taskId: String, prompt: String, llm: Llm, workspaceUri: String?): TaskResult {
         db.episodeDao().insert(Episode(kind = "task_started", summary = prompt.take(200), detailsJson = "{\"id\":\"$taskId\"}"))
 
@@ -92,7 +107,6 @@ class CognitiveKernel(
                     _trace.emit(TraceStep.Error("LLM call failed: ${e.message}"))
                     break
                 }
-
                 when (resp) {
                     is Llm.LlmResponse.Text -> {
                         // Done. Check for inline citations, post answer.

@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.ffmpegkit.llama.Llama
 import dev.ffmpegkit.llama.LlamaConfig
+import dev.ffmpegkit.llama.LlamaModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -12,17 +13,28 @@ import java.io.File
 /**
  * Local LLM — real on-device inference via llama.cpp (GGUF).
  *
- * Default model: Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB) — sized for the
- * Samsung Galaxy S25 (Snapdragon 8 Elite, 12 GB RAM). Picked because Qwen2.5-7B
- * is the strongest open coding + structured-output model under 10B.
- * Qwen2.5-3B (~2.0 GB) is offered as a smaller fallback.
+ * BACKEND (verified 2026-10-31 by inspecting the compiled AAR at
+ * repo1.maven.org/maven2/dev/ffmpegkit-maintained/llama-android/0.1.1/):
+ *   - The AAR ships only libggml-base.so, libggml-cpu.so, libggml.so,
+ *     libllama.so, libllama_jni.so for arm64-v8a. There is NO
+ *     libggml-vulkan.so. This build is CPU-only.
+ *   - LlamaConfig.gpuLayers exists in the API but is unused — the S25's
+ *     Adreno 830 GPU and Hexagon NPU are NOT engaged. All inference
+ *     runs on the 8 Oryon CPU cores.
  *
- * No auth, no cloud, no API key. Downloaded once from HuggingFace into the app's
- * private storage (see ModelManager). After that single download, inference is
- * fully offline.
+ * MODELS (verified 2026-10-31 against HuggingFace file listings):
+ *   - Default: Qwen2.5-7B-Instruct Q4_K_M, 4.68 GB, single file from
+ *     bartowski's mirror (official Qwen repo splits it into 2 parts).
+ *   - Fallback: Qwen2.5-3B-Instruct Q4_K_M, 2.10 GB, single file from
+ *     official Qwen repo.
  *
- * Small/quantized models can't reliably emit OpenAI-style function-call JSON,
- * so we use a rigid text format + regex parser:
+ * Throughput is NOT promised in advance — it depends on the device.
+ * `result.tokensPerSecond` (Float, verified field on LlamaResult) is
+ * surfaced after each call via [onTelemetry] so the UI shows the real,
+ * measured value.
+ *
+ * Small/quantized models can't reliably emit OpenAI-style function-call
+ * JSON, so we use a rigid text format + regex parser:
  *
  *   TOOL_CALL: <name>
  *   ARGS: {"k": "v"}
@@ -37,22 +49,53 @@ class LocalLlm(
 
     override val label = displayLabel
 
+    /**
+     * Use 4 of the 8 Oryon cores. Leaves headroom for the foreground
+     * service + UI thread so the device doesn't jank during inference.
+     */
     private val threads = maxOf(2, Runtime.getRuntime().availableProcessors() / 2)
 
     /**
      * Model handle — loaded ONCE on first use (native init takes seconds).
-     * loadModel is suspend, so we memoize manually instead of `by lazy`.
+     * `Llama.loadModel` is suspend, so we memoize manually instead of `by lazy`.
+     *
+     * Verified API surface (from bytecode disassembly of Llama.class):
+     *   Llama.loadModel(modelPath: String, config: LlamaConfig): suspend -> LlamaModel
+     *   Llama.complete(model: LlamaModel, prompt: String, systemPrompt: String,
+     *                  maxTokens: Int): suspend -> LlamaResult
+     *   Llama.embed(model: LlamaModel, text: String): suspend -> List<Float>
+     *   Llama.releaseModel(model: LlamaModel): void   (non-suspend — frees native memory)
+     *
+     * LlamaResult fields (verified from bytecode):
+     *   text: String, tokensGenerated: Int, tokensPerSecond: Float,
+     *   promptEvalTimeMs: Long, generateTimeMs: Long
      */
-    private var loadedModel: dev.ffmpegkit.llama.LlamaModel? = null
+    private var loadedModel: LlamaModel? = null
 
-    private suspend fun ensureModel(): dev.ffmpegkit.llama.LlamaModel {
+    /**
+     * Optional callback invoked after each `complete()` call with the real,
+     * measured tok/s and generate-time. The kernel uses this to emit a
+     * telemetry TraceStep so the UI shows actual device numbers — never
+     * fabricated estimates.
+     */
+    var onTelemetry: ((tokensPerSecond: Float, generateMs: Long) -> Unit)? = null
+
+    private suspend fun ensureModel(): LlamaModel {
         loadedModel?.let { return it }
         require(modelFile.exists() && modelFile.length() > 1_000_000) {
             "Local model file missing or corrupt at ${modelFile.absolutePath}"
         }
         val m = Llama.loadModel(
             modelPath = modelFile.absolutePath,
-            config = LlamaConfig(contextSize = 4096, threads = threads),
+            config = LlamaConfig(
+                contextSize = 4096,
+                threads = threads,
+                gpuLayers = 0, // No Vulkan backend in this AAR — CPU only.
+                temperature = 0.2f,   // Low temp for rigid TOOL_CALL/ANSWER format adherence.
+                topP = 0.9f,
+                topK = 40,
+                seed = -1,            // -1 = random
+            ),
         )
         // Once the model is up, enable vector embeddings for memory_recall.
         EmbeddingCache.attach { text ->
@@ -61,6 +104,15 @@ class LocalLlm(
         }
         loadedModel = m
         return m
+    }
+
+    /**
+     * Free native memory. MUST be called when swapping models or closing,
+     * otherwise the GGUF mmap stays resident. Verified non-suspend API.
+     */
+    fun release() {
+        loadedModel?.let { Llama.releaseModel(it) }
+        loadedModel = null
     }
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
@@ -76,6 +128,9 @@ class LocalLlm(
                 systemPrompt = SYSTEM_HEADER,
                 maxTokens = 768,
             )
+
+            // Verified field on LlamaResult — real measured telemetry.
+            onTelemetry?.invoke(result.tokensPerSecond, result.generateTimeMs)
 
             parseToolCallOrAnswer(result.text.trim())
         }
@@ -114,7 +169,7 @@ class LocalLlm(
                 "assistant" -> {
                     if (m.toolCalls.isNotEmpty()) {
                         m.toolCalls.forEach { tc ->
-                            appendLine("Assistant called $tc.name with $tc.arguments")
+                            appendLine("Assistant called ${tc.name} with ${tc.arguments}")
                         }
                     }
                     if (m.content.isNotBlank()) appendLine("Assistant: ${m.content}")

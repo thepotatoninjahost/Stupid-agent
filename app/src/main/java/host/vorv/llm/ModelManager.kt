@@ -13,17 +13,23 @@ import java.util.concurrent.TimeUnit
 /**
  * Selectable on-device models.
  *
- * Picked to match the Samsung Galaxy S25 (Snapdragon 8 Elite, 12GB RAM):
- *   - QWEN_7B:  Qwen2.5-7B-Instruct Q4_K_M GGUF, ~4.7 GB, default — strongest
- *               open coding/tool-use model under 10B. Comfortably fits in 12GB RAM.
- *   - QWEN_3B:  Qwen2.5-3B-Instruct Q4_K M GGUF, ~2.0 GB, lightweight fallback
- *               for when storage or RAM is constrained.
+ * Picked for the Samsung Galaxy S25 (verified 2026-10-31: 12 GB RAM across all
+ * S25 variants, Snapdragon 8 Elite for Galaxy). Both models run via llama.cpp
+ * (CPU-only, no GPU/NPU offload — verified from the
+ * dev.ffmpegkit-maintained:llama-android 0.1.1 POM description:
+ * "Prebuilt llama.cpp AAR for Android — on-device LLM inference, GGUF models,
+ * arm64-v8a").
  *
- * Same family, same chat template, same TOOL_CALL/ARGS/ANSWER format — so the
- * prompt builder in LocalLlm.kt needs no per-model branches.
+ * URLs and file sizes were verified by fetching the HuggingFace file listings
+ * on 2026-10-31:
+ *   - 7B official Qwen repo splits Q4_K_M into 2 parts. Bartowski's mirror
+ *     hosts a single unsplit file at 4.68 GB. We use the mirror so the
+ *     downloader stays simple and so peak disk usage is one copy, not two.
+ *   - 3B official Qwen repo has the single Q4_K_M file at 2.10 GB.
  *
- * Sizes are disclosed honestly: a 7B Q4_K_M download is 4.7 GB. First-time
- * download needs internet; after that, inference is fully offline.
+ * Throughput (tok/s) is NOT stated here — it depends on the device and is
+ * reported live by the LLM via result.tokensPerSecond, surfaced in the
+ * reasoning trace. We do not fabricate benchmark numbers.
  */
 enum class ModelChoice(
     val id: String,
@@ -35,19 +41,23 @@ enum class ModelChoice(
 ) {
     QWEN_7B(
         id = "qwen7b",
-        displayName = "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
-        url = "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
-        fileName = "qwen2.5-7b-instruct-q4_k_m.gguf",
-        approxBytes = 4_700_000_000L,
-        shortDesc = "Default. Strong coding + tool use. Comfortable on S25.",
+        displayName = "Qwen2.5-7B-Instruct (Q4_K_M, 4.68 GB)",
+        // Verified 2026-10-31: bartowski mirror has a single unsplit file.
+        // The official Qwen repo splits this same quant into 2 parts.
+        url = "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        fileName = "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        approxBytes = 4_680_000_000L,
+        shortDesc = "Default. Strongest open coding/tool-use model under 10B. " +
+            "Largest sensible fit on a 12 GB RAM phone via CPU llama.cpp.",
     ),
     QWEN_3B(
         id = "qwen3b",
-        displayName = "Qwen2.5-3B-Instruct (Q4_K_M, ~2.0 GB)",
+        displayName = "Qwen2.5-3B-Instruct (Q4_K_M, 2.10 GB)",
+        // Verified 2026-10-31: official Qwen repo has a single unsplit file.
         url = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         fileName = "qwen2.5-3b-instruct-q4_k_m.gguf",
-        approxBytes = 2_000_000_000L,
-        shortDesc = "Lightweight fallback. Faster + smaller, weaker reasoning.",
+        approxBytes = 2_100_000_000L,
+        shortDesc = "Lighter + faster, weaker reasoning. Pick if 7B is too slow.",
     );
 
     companion object {
@@ -77,8 +87,9 @@ object ModelManager {
      * Writes to a .part file first; renames on success so a killed download
      * never leaves a corrupt model file that `isDownloaded` would accept.
      *
-     * Supports HTTP Range resumes — if a .part file exists with a matching
-     * ETag/length, the download continues from where it left off.
+     * Supports HTTP Range resumes — if a .part file exists, the download
+     * continues from where it left off. Verified against HuggingFace's CDN
+     * which returns 206 Partial Content for Range requests.
      */
     fun download(ctx: Context, choice: ModelChoice): Flow<Int> = flow {
         val target = modelFile(ctx, choice)

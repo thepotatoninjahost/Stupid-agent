@@ -38,7 +38,7 @@ fun ChatScreen(state: AgentState, onSend: (String) -> Unit) {
             }
             items(state.messages) { msg -> MessageBubble(msg) }
             if (state.busy && state.liveTrace.isNotEmpty()) {
-                item { TraceCard(state.liveTrace.takeLast(3)) }
+                item { TraceCard(state.liveTrace.takeLast(4)) }
             }
         }
         Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
@@ -119,6 +119,7 @@ private fun TraceCard(steps: List<TraceStep>) {
                     is TraceStep.Answer -> "✓ Answer ready"
                     is TraceStep.Error -> "✗ ${s.message}"
                     is TraceStep.Done -> "🏁 ${s.summary}"
+                    is TraceStep.Telemetry -> "⚡ ${"%.2f".format(s.tokensPerSecond)} tok/s · ${s.generateMs}ms · ${s.engine}"
                 }
                 Text(label, color = OnBackground, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp))
             }
