@@ -109,9 +109,10 @@ object ModelManager {
 
     /**
      * Whether a model has been pulled and is ready to load.
+     * Uses hfRepo (no precision suffix) — same convention as pull().
      */
     suspend fun isDownloaded(choice: ModelChoice): Boolean {
-        return ModelManagerWrapper.getPaths(choice.geniexModelId()) != null
+        return ModelManagerWrapper.getPaths(choice.hfRepo) != null
     }
 
     /**
@@ -122,11 +123,19 @@ object ModelManager {
      * The Flow emits Progress events with per-file byte counts. We aggregate
      * across files (a single .gguf is one file, but GenieX supports multi-
      * file model bundles for VLM) into a single 0-100 percent.
+     *
+     * FIX (rc=-100009 AUTH error): GenieX's ModelPullInput.model_name expects
+     * just the HuggingFace org/repo path WITHOUT a precision suffix. The
+     * precision is passed separately as `precision = "Q4_0"`. Verified format
+     * from Qualcomm's official geniex_chat_android sample app's
+     * assets/model_list.json which uses:
+     *   "modelName": "bartowski/microsoft_Phi-4-mini-instruct-GGUF"
+     *   "quant": "Q4_0"
      */
     fun pull(choice: ModelChoice): Flow<Int> {
         val input = ModelPullInput(
-            model_name = choice.geniexModelId(),
-            precision = choice.precision,
+            model_name = choice.hfRepo,         // e.g. "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"
+            precision = choice.precision,        // e.g. "Q4_0" — passed separately
             hub = HubSource.HUGGINGFACE,
             local_path = "",    // empty = use GenieX default cache dir
             hf_token = "",      // public repo, no token needed
@@ -143,7 +152,7 @@ object ModelManager {
                 }
                 is ModelManagerWrapper.PullEvent.Completed -> 100
                 is ModelManagerWrapper.PullEvent.Error -> {
-                    throw RuntimeException("Model pull failed: ${event.message}")
+                    throw RuntimeException("Model pull failed (code=${event.code}): ${event.message}")
                 }
                 else -> 0
             }
@@ -152,16 +161,18 @@ object ModelManager {
 
     /**
      * Get the local file paths for a pulled model. Returns null if not pulled yet.
+     * Uses hfRepo (no precision suffix) — same convention as pull().
      */
     suspend fun getPaths(choice: ModelChoice): com.geniex.sdk.bean.ModelPaths? {
-        return ModelManagerWrapper.getPaths(choice.geniexModelId())
+        return ModelManagerWrapper.getPaths(choice.hfRepo)
     }
 
     /**
      * Delete a pulled model from disk. Safe to call if not pulled.
+     * Uses hfRepo (no precision suffix) — same convention as pull().
      */
     suspend fun remove(choice: ModelChoice) {
-        ModelManagerWrapper.remove(choice.geniexModelId())
+        ModelManagerWrapper.remove(choice.hfRepo)
     }
 
     /**
