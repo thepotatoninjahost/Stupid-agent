@@ -56,9 +56,9 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.11"
-        // No pip installs — uses Python 3.11 stdlib only. Avoids build environment
-        // Python version mismatch (CI runs Python 3.14, which some packages don't support yet).
-        pip { install("numpy==1.26.4") }
+        // Python 3.11 stdlib only — no external packages.
+        // Chaquopy doesn't ship a C compiler, so anything with native deps fails.
+        // The agent's vorv_runner.py uses only stdlib (sys, io, signal).
     }
 }
 
