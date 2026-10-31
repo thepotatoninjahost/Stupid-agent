@@ -75,7 +75,7 @@ fun SettingsScreen(
         }
 
         // ------------------------------------------------ engine picker
-        Text("LLM Engine", color = OnBackground, fontSize = 14.sp, FontWeight = FontWeight.SemiBold)
+        Text("LLM Engine", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = state.llmMode == "local",

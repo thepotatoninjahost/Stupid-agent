@@ -171,6 +171,10 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) { keyStore.setLlmMode(mode) }
     }
 
+    fun setWorkspaceUri(uri: String) {
+        viewModelScope.launch(Dispatchers.IO) { keyStore.setWorkspaceUri(uri) }
+    }
+
     /** One-time download of the local model (~400MB), with real progress in state. */
     fun downloadLocalModel() {
         if (_state.value.downloadingModel || _state.value.localModelReady) return

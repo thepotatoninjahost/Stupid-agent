@@ -34,29 +34,32 @@ class LocalLlm(
     private val threads = maxOf(2, Runtime.getRuntime().availableProcessors() / 2)
 
     /**
-     * Model handle is loaded lazily ONCE — native init takes seconds.
-     * `by lazy` infers the concrete type so we never name it.
-     * `!!` compiles whether or not the loader returns nullable.
+     * Model handle — loaded ONCE on first use (native init takes seconds).
+     * loadModel is suspend, so we memoize manually instead of `by lazy`.
      */
-    private val model by lazy {
+    private var loadedModel: dev.ffmpegkit.llama.LlamaModel? = null
+
+    private suspend fun ensureModel(): dev.ffmpegkit.llama.LlamaModel {
+        loadedModel?.let { return it }
         require(modelFile.exists() && modelFile.length() > 1_000_000) {
             "Local model file missing or corrupt at ${modelFile.absolutePath}"
         }
-        val loaded = Llama.loadModel(
+        val m = Llama.loadModel(
             modelPath = modelFile.absolutePath,
             config = LlamaConfig(contextSize = 4096, threads = threads),
-        )!!
+        )
         // Once the model is up, enable vector embeddings for memory_recall.
-        // A closure keeps the model's concrete type inferred — no unsafe casts.
         EmbeddingCache.attach { text ->
-            val v = Llama.embed(loaded, text)
+            val v = Llama.embed(m, text)
             FloatArray(v.size) { v[it] }
         }
-        loaded
+        loadedModel = m
+        return m
     }
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.Default) {
+            val model = ensureModel()
             val system = messages.firstOrNull { it.role == "system" }?.content ?: ""
             val flattened = flattenConversation(messages)
             val prompt = buildPrompt(system, flattened, tools)
