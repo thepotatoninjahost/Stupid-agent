@@ -107,8 +107,7 @@ class ShellTool(private val appContext: Context) : Tool {
         }
 
         // Check RUN_COMMAND permission
-        val hasPermission = pm.checkPermission("com.termux.permission.RUN_COMMAND", appContext.packageName)
-            == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val hasPermission = pm.checkPermission("com.termux.permission.RUN_COMMAND", appContext.packageName) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
         if (!hasPermission) {
             return@withContext ToolResult(
