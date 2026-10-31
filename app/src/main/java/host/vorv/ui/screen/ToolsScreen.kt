@@ -15,33 +15,31 @@ import host.vorv.ui.theme.*
 
 @Composable
 fun ToolsScreen(state: AgentState) {
-    // All 13 tools are real and wired into the agent's tool registry.
     val ready = listOf(
-        "memory_write" to "Persist a fact for future sessions",
-        "memory_recall" to "FTS-search long-term memory",
+        "memory_write" to "Persist a fact for future sessions (embeds a vector when local model is up)",
+        "memory_recall" to "Vector cosine search + FTS4 keyword fallback",
         "js_exec" to "Run JavaScript in a Rhino sandbox (3s)",
-        "file_read" to "Read a file from granted workspace",
-        "file_write" to "Write/overwrite a file in workspace",
-        "file_list" to "Recursive list of workspace files",
+        "file_read" to "Read a file from granted workspace (SAF)",
+        "file_write" to "Write/overwrite a file in workspace (SAF)",
+        "file_list" to "Recursive list of workspace files (SAF)",
         "python_exec" to "Run real Python 3.11 via Chaquopy (10s)",
         "web_search" to "Z.ai web_search function",
         "web_fetch" to "OkHttp fetch + HTML-to-text extraction",
         "app_intent" to "Send Android intents (view/share/dial/open_app)",
-        "shell" to "Bash via Termux RUN_COMMAND intent",
-        "notify" to "Post system notification",
-        "schedule" to "WorkManager delayed task (survives reboot)",
+        "shell" to "Bash via Termux RUN_COMMAND intent (Termux + permission required)",
+        "notify" to "Post a system notification",
+        "schedule" to "WorkManager delayed task — fires even if app is killed",
+        "browser_automate" to "In-app WebView: load/click/type/extract/run JS",
     )
-    val pending = listOf(
-        "browser_automate" to "In-app WebView with JS injection — next push",
-        "local_llm" to "MLC LLM Android (Llama 3.2 1B) — separate milestone",
+    val engines = listOf(
+        "local_llm" to if (state.localModelReady) "Qwen2.5-0.5B via llama.cpp — downloaded, offline ready" else "Qwen2.5-0.5B via llama.cpp — download in Setup (~400MB, one time)",
+        "cloud_llm" to "GLM-4.6 with native function calling — needs Z.ai API key",
     )
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("Tools", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
-        item { Text("${ready.size} real tools wired into the agent. Every tool the LLM can call actually works.", color = OnSurfaceVariant, fontSize = 12.sp) }
+        item { Text("${ready.size} tools, all real and wired into the agent. No stubs.", color = OnSurfaceVariant, fontSize = 12.sp) }
 
-        item {
-            Text("Ready", color = Success, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-        }
+        item { Text("Ready", color = Success, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         items(ready) { (name, desc) ->
             Surface(shape = RoundedCornerShape(10.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(10.dp)) {
@@ -56,16 +54,16 @@ fun ToolsScreen(state: AgentState) {
             }
         }
 
-        item {
-            Text("Pending (honestly disclosed)", color = Warning, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-        }
-        items(pending) { (name, desc) ->
-            Surface(shape = RoundedCornerShape(10.dp), color = SurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.fillMaxWidth()) {
+        item { Text("Reasoning engines", color = Primary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp)) }
+        items(engines) { (name, desc) ->
+            val isLocal = name == "local_llm"
+            val ok = if (isLocal) state.localModelReady else state.hasApiKey
+            Surface(shape = RoundedCornerShape(10.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(10.dp)) {
                     Row {
-                        Text(name, color = OnSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(name, color = OnBackground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.weight(1f))
-                        Text("PENDING", color = Warning, fontSize = 9.sp)
+                        Text(if (ok) "READY" else "SETUP", color = if (ok) Success else Warning, fontSize = 9.sp)
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(desc, color = OnSurfaceVariant, fontSize = 11.sp)

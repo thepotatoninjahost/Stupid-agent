@@ -40,7 +40,7 @@ fun VorvApp(vm: AgentViewModel) {
                     "memory" -> MemoryScreen(state, vm::teach)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
-                    "settings" -> SettingsScreen(state, vm::setApiKey)
+                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::downloadLocalModel, vm::deleteLocalModel)
                 }
             }
             BottomNav(

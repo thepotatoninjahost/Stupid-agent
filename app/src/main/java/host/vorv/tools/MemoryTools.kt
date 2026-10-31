@@ -3,6 +3,7 @@ package host.vorv.tools
 import com.google.gson.JsonObject
 import host.vorv.data.VorvDatabase
 import host.vorv.data.entity.KnowledgeEntry
+import host.vorv.llm.EmbeddingCache
 
 /**
  * memory_write — persist a fact for future sessions.
@@ -44,6 +45,8 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
             ?: return ToolResult(true, "Stored: '$topic'", durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("memory", "", "memory"))
         db.knowledgeDao().update(saved.copy(citationRef = saved.id))
+        // Vector-embed at write time so memory_recall can cosine-rank (local model only).
+        EmbeddingCache.embed("$topic. $content", saved.id)
         return ToolResult(
             ok = true,
             output = "Stored memory: '$topic' (id=${saved.id})",
@@ -80,14 +83,25 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
         val query = input.get("query")?.asString ?: return ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
         val limit = input.get("limit")?.takeIf { !it.isJsonNull }?.asInt ?: 5
 
-        // Try FTS first; fall back to LIKE
-        val results = try {
+        // 1) Vector search first: embed the query, cosine-rank cached entry vectors (local model only).
+        val vectorHits: List<KnowledgeEntry> = if (EmbeddingCache.active) {
+            EmbeddingCache.embed(query, "__query__")?.let { qv ->
+                EmbeddingCache.rank(qv, limit * 2)
+                    .mapNotNull { (id, score) -> if (score < 0.35) null else db.knowledgeDao().get(id) }
+            }.orEmpty()
+        } else emptyList()
+
+        // 2) Keyword FTS4 search — always available, even without the local model.
+        val keywordHits = try {
             db.knowledgeDao().searchFts("$query*", limit).ifEmpty {
                 db.knowledgeDao().searchLike(query, limit)
             }
         } catch (e: Exception) {
             db.knowledgeDao().searchLike(query, limit)
         }
+
+        // Merge, dedupe by id, vector hits ranked first.
+        val results = (vectorHits + keywordHits).distinctBy { it.id }.take(limit)
 
         results.forEach { db.knowledgeDao().markRecalled(it.id) }
 

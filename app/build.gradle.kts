@@ -86,6 +86,7 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.rhino)
+    implementation(libs.llama.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.coil.compose)
     debugImplementation(libs.androidx.ui.tooling)

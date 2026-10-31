@@ -12,8 +12,13 @@ import host.vorv.data.entity.Skill
 import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.TraceStep
 import host.vorv.llm.CloudLlm
+import host.vorv.llm.EmbeddingCache
 import host.vorv.llm.Llm
+import host.vorv.llm.LlmRouter
+import host.vorv.llm.LocalLlm
+import host.vorv.llm.ModelManager
 import host.vorv.tools.AppIntentTool
+import host.vorv.tools.BrowserAutomateTool
 import host.vorv.tools.FileListTool
 import host.vorv.tools.FileReadTool
 import host.vorv.tools.FileWriteTool
@@ -52,7 +57,11 @@ data class AgentState(
     val recentTasks: List<AgentTask> = emptyList(),
     val skills: List<Skill> = emptyList(),
     val episodes: List<Episode> = emptyList(),
+    val llmMode: String = "cloud",       // "local" | "cloud"
     val hasApiKey: Boolean = false,
+    val localModelReady: Boolean = false,
+    val downloadingModel: Boolean = false,
+    val downloadProgress: Int = 0,
     val workspaceUri: String = "",
     val currentLlmLabel: String = "GLM-4.6 (cloud)",
 )
@@ -77,7 +86,11 @@ class AgentViewModel(
         ShellTool(appContext),
         NotifyTool(appContext),
         ScheduleTool(appContext),
+        BrowserAutomateTool(appContext),
     )
+
+    /** Real local engine — created only when the model file actually exists on disk. */
+    private var localLlm: LocalLlm? = null
 
     private val kernel = CognitiveKernel(db, tools).apply {
         onIteration = { taskId, iters ->
@@ -119,6 +132,16 @@ class AgentViewModel(
                 _state.update { it.copy(workspaceUri = uri) }
             }
         }
+        viewModelScope.launch {
+            keyStore.llmMode.collect { mode ->
+                _state.update { it.copy(llmMode = mode, currentLlmLabel = engineLabel(mode)) }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ready = ModelManager.isDownloaded(appContext)
+            if (ready) localLlm = LocalLlm(appContext, ModelManager.modelFile(appContext))
+            _state.update { it.copy(localModelReady = ready) }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             db.episodeDao().insert(Episode(kind = "boot", summary = "Vorv booted — ${tools.size} tools ready"))
             bootstrapSkills()
@@ -144,25 +167,61 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) { keyStore.setZaiApiKey(key) }
     }
 
-    fun setWorkspaceUri(uri: String) {
-        viewModelScope.launch(Dispatchers.IO) { keyStore.setWorkspaceUri(uri) }
+    fun setLlmMode(mode: String) {
+        viewModelScope.launch(Dispatchers.IO) { keyStore.setLlmMode(mode) }
+    }
+
+    /** One-time download of the local model (~400MB), with real progress in state. */
+    fun downloadLocalModel() {
+        if (_state.value.downloadingModel || _state.value.localModelReady) return
+        _state.update { it.copy(downloadingModel = true, downloadProgress = 0) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ModelManager.download(appContext).collect { pct ->
+                    _state.update { it.copy(downloadProgress = pct) }
+                }
+                localLlm = LocalLlm(appContext, ModelManager.modelFile(appContext))
+                _state.update { it.copy(localModelReady = true, downloadingModel = false) }
+                db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded — offline mode available"))
+            } catch (e: Exception) {
+                _state.update { it.copy(downloadingModel = false, downloadProgress = 0) }
+                val errMsg = ChatMessage(role = "assistant", content = "Model download failed: ${e.message}")
+                _state.update { it.copy(messages = it.messages + errMsg) }
+            }
+        }
+    }
+
+    fun deleteLocalModel() {
+        viewModelScope.launch(Dispatchers.IO) {
+            ModelManager.modelFile(appContext).delete()
+            localLlm = null
+            EmbeddingCache // embeddings die with the process anyway
+            _state.update { it.copy(localModelReady = false, llmMode = "cloud", currentLlmLabel = engineLabel("cloud")) }
+            keyStore.setLlmMode("cloud")
+        }
     }
 
     /**
      * Send a chat message — kicks off the ReAct kernel.
+     * Gating is honest: local mode needs the downloaded model; cloud mode needs an API key.
      */
     fun send(message: String) {
         val trimmed = message.trim()
         if (trimmed.isEmpty() || _state.value.busy) return
 
-        // Pre-check: API key must be set
-        if (!_state.value.hasApiKey) {
-            val errMsg = ChatMessage(
-                role = "assistant",
-                content = "I need a Z.ai API key to think.\n\nOpen Setup tab → paste your key from z.ai/manage-apikey → Save.\n\nThen ask again.",
-            )
+        val s = _state.value
+        val engineAvailable = when (s.llmMode) {
+            "local" -> s.localModelReady
+            else -> s.hasApiKey
+        }
+        if (!engineAvailable) {
+            val hint = if (s.llmMode == "local") {
+                "Local mode is selected but the model isn't downloaded yet.\n\nOpen Setup → Download local model (~400MB, one time). Or switch to Cloud and paste a Z.ai API key."
+            } else {
+                "Cloud mode needs a Z.ai API key.\n\nOpen Setup → paste your key from z.ai/manage-apikey → Save. Or download the local model for offline mode."
+            }
             _state.update {
-                it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed) + errMsg)
+                it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed) + ChatMessage(role = "assistant", content = hint))
             }
             return
         }
@@ -183,14 +242,9 @@ class AgentViewModel(
             host.vorv.service.AgentService.start(appContext, "Working: ${trimmed.take(40)}")
 
             try {
+                val mode = keyStore.llmMode.first()
                 val key = keyStore.zaiApiKey.first()
-                if (key.isBlank()) {
-                    val errMsg = ChatMessage(role = "assistant", content = "No API key set. Open Setup tab.")
-                    _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
-                    db.taskDao().fail(task.id, "no_api_key")
-                    return@launch
-                }
-                val llm: Llm = CloudLlm(key)
+                val llm: Llm = LlmRouter.pick(mode, key, localLlm)
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 val result = kernel.run(task.id, trimmed, llm, wsUri)
@@ -215,6 +269,14 @@ class AgentViewModel(
             } finally {
                 host.vorv.service.AgentService.stop(appContext)
             }
+        }
+    }
+
+    private fun engineLabel(mode: String): String {
+        val s = _state.value
+        return when (mode) {
+            "local" -> if (s.localModelReady) "Qwen2.5-0.5B (local, offline)" else "Local — model not downloaded"
+            else -> if (s.hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
         }
     }
 

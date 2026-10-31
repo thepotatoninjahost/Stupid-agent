@@ -160,3 +160,22 @@ class CloudLlm(
             throw RuntimeException("LLM call failed after retries: $lastErr")
         }
 }
+
+/**
+ * Picks the reasoning engine:
+ *  - "local"  → llama.cpp on-device (requires the model downloaded once)
+ *  - "cloud"  → GLM-4.6 (requires a Z.ai API key)
+ * If the requested engine isn't available, falls back with a REAL error — never a stub.
+ */
+object LlmRouter {
+    fun pick(mode: String, apiKey: String, local: LocalLlm?): Llm = when (mode) {
+        "cloud" -> {
+            require(apiKey.isNotBlank()) { "Cloud mode needs a Z.ai API key — add one in Setup." }
+            CloudLlm(apiKey)
+        }
+        else -> {
+            requireNotNull(local) { "Local model not downloaded yet — open Setup and download it (one time, ~400MB), or switch to Cloud." }
+            local
+        }
+    }
+}
