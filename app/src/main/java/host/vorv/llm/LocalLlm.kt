@@ -109,11 +109,10 @@ class LocalLlm(
         val toolsJson = if (tools.isEmpty()) "" else buildToolsJson(tools)
 
         val templateResult = wrapper.applyChatTemplate(
-            geniexMessages,
-            toolsJson,
-            /* enableThinking = */ false,
-            /* addGenReq = */ false,
-            /* addGenRes = */ false,
+            messages = geniexMessages,
+            tools = toolsJson,
+            enableThinking = false,
+            // addGenerationPrompt defaults to true; parallelToolCalls defaults to true
         )
         val template = templateResult.getOrElse {
             error("GenieX applyChatTemplate failed: ${it.message}")
@@ -133,7 +132,10 @@ class LocalLlm(
         var profile: com.geniex.sdk.bean.ProfilingData? = null
         var streamError: Throwable? = null
 
-        wrapper.generateStreamFlow(template.formattedText, generationConfig).collect { result ->
+        wrapper.generateStreamFlow(
+            prompt = template.formattedText,
+            config = generationConfig,
+        ).collect { result ->
             when (result) {
                 is LlmStreamResult.Token -> sb.append(result.text)
                 is LlmStreamResult.Completed -> profile = result.profile
@@ -175,15 +177,15 @@ class LocalLlm(
     // that as a fallback.
 
     private val openAiToolCallRegex = Regex(
-        pattern = "<tool>\s*(\{.*?\})\s*</tool>",
+        pattern = "<tool>\\s*(\\{.*?\\})\\s*</tool>",
         options = setOf(RegexOption.DOT_MATCHES_ALL),
     )
     private val plainToolCallRegex = Regex(
-        pattern = "TOOL_CALL:\s*([A-Za-z0-9_]+)\s*(?:\r?\n|:)ARGS:\s*(\{.*\})",
+        pattern = "TOOL_CALL:\\s*([A-Za-z0-9_]+)\\s*(?:\\r?\\n|:)ARGS:\\s*(\\{.*\\})",
         options = setOf(RegexOption.DOT_MATCHES_ALL),
     )
     private val answerRegex = Regex(
-        pattern = "ANSWER:\s*(.*)",
+        pattern = "ANSWER:\\s*(.*)",
         options = setOf(RegexOption.DOT_MATCHES_ALL),
     )
 
@@ -240,13 +242,13 @@ class LocalLlm(
 
     /**
      * Free native memory. MUST be called when swapping models or closing.
+     * Only calls non-suspend APIs (close → destroy). reset/stopStream are
+     * suspend and require a coroutine — caller should call those explicitly
+     * if mid-generation, before release().
      */
     fun release() {
         llmWrapper?.let { w ->
-            runCatching { w.stopStream() }
-            runCatching { w.reset() }
-            runCatching { w.close() }
-            w.destroy()
+            runCatching { w.close() }   // close() internally calls destroy()
         }
         llmWrapper = null
     }
