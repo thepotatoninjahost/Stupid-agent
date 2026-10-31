@@ -5,7 +5,6 @@ import com.geniex.sdk.ModelManagerWrapper
 import com.geniex.sdk.bean.HubSource
 import com.geniex.sdk.bean.ModelPullInput
 import com.geniex.sdk.bean.ModelType
-import com.geniex.sdk.bean.FileProgress
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -81,15 +80,14 @@ enum class ModelChoice(
         shortDesc = "Lighter + faster, weaker reasoning. Pick if 7B is too slow.",
     );
 
+    /**
+     * GenieX identifies models by an "<org>/<repo>:<precision>" identifier
+     * (e.g. "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_0").
+     */
+    fun geniexModelId(): String = "$hfRepo:$precision"
+
     companion object {
         fun fromId(id: String?): ModelChoice = entries.firstOrNull { it.id == id } ?: QWEN_7B
-
-        /**
-         * GenieX identifies models by an "<org>/<repo>:<precision>" identifier
-         * (e.g. "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_0"). Build it here
-         * so callers don't have to remember the format.
-         */
-        fun ModelChoice.geniexModelId(): String = "$hfRepo:$precision"
     }
 }
 
