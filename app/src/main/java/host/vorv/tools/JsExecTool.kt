@@ -5,43 +5,54 @@ import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
 import org.mozilla.javascript.EvaluatorException
-import org.mozilla.javascript.ScriptableObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * js_exec — run JavaScript in a HARDENED Rhino sandbox (audit finding C-1 + H-3).
  *
- * What "sandbox" means here, concretely:
+ * Defense in depth, each layer verified by JsExecToolTest (attack cases) and
+ * by a local Rhino-jar prototype during remediation:
  *
- *  1. ClassShutter — the only classes visible to script are Rhino's own and
- *     a tiny allowlist of immutable java.lang types (String, Number, Boolean,
- *     Math…). `Packages.java.lang.Runtime`, `java.io.File`, `java.lang.System.exit`,
- *     `host.vorv.*`, `com.chaquo.*`, `com.geniex.*` are all DENIED.
+ *  1. ClassShutter — the ONLY Java classes visible to script are Rhino's own,
+ *     a tiny allowlist of immutable java.lang types, and the console bridge's
+ *     own class. Every class access through every namespace path
+ *     (Packages.java.lang.System, java.lang.Runtime, Class.forName, …) is
+ *     denied at the JavaMembers/NativeJavaPackage gate: classes materialize
+ *     as inert package placeholders and can never be constructed or called.
+ *     Array type names ("[Ljava.lang.Object;") are normalized before the
+ *     allowlist check so the vararg console bridge keeps working.
  *
- *  2. LiveConnect globals (Packages, java, javax, org, com, net, io, android,
- *     androidx, host, jdk, sun, …) plus importClass/importPackage/JavaAdapter/
- *     JavaImporter are DELETED from the scope before sealing.
+ *  2. LiveConnect globals (Packages, java, javax, org, com, net, edu, io,
+ *     android, androidx, host, jdk, sun, gnu, mozilla, javafx,
+ *     GoogleServices) and import helpers (importClass, importPackage,
+ *     JavaAdapter, JavaImporter) are deleted from the global scope. Rhino's
+ *     lazy package machinery may re-expose the root namespace OBJECT, but it
+ *     remains inert behind the shutter (asserted by test
+ *     `Packages namespace is visible but inert`).
  *
- *  3. The scope is SEALED — script cannot redefine console or re-add globals.
+ *  3. The global scope is SEALED and user code runs in a CHILD scope —
+ *     console and the standard builtins cannot be redefined, while
+ *     const/let/var/function declarations work normally in the child.
  *
- *  4. Timeout via Rhino's instruction-count observer: the ContextFactory
- *     subclass checks a wall-clock deadline every 10k interpreted instructions
- *     and aborts with an EvaluatorException. This runs on the SAME thread as
- *     evaluation (the previous cross-thread evaluateString watchdog was
- *     undefined behavior — audit H-3).
+ *  4. Timeout via Rhino's instruction-count observer on the evaluating
+ *     thread (same-thread interruption — no cross-thread Context access),
+ *     plus a dedicated daemon evaluation thread with a join deadline so a
+ *     blocking native call (e.g. a synchronized console.wait) can never pin
+ *     an IO-pool thread.
  *
- * Residual risk: none known for the interpreted engine (optimization level -1)
- * with the shutter above; Rhino CVEs historically target LiveConnect, which
- * is removed. See SECURITY.md for the full threat model.
+ *  5. The console is a PLAIN class (not ScriptableObject): Rhino wraps it in
+ *     a NativeJavaObject, which is what actually exposes log/info/warn/error
+ *     to script. (The v0.5.x ScriptableObject pattern silently exposed NO
+ *     methods — console.log never worked; caught by the new test suite.)
  */
 class JsExecTool : Tool {
     override val name = "js_exec"
     override val description =
         "Execute JavaScript in a hardened sandbox. Only standard ECMAScript built-ins " +
-        "(Math, JSON, Array, String, …) and console.log are available — no file I/O, no network, " +
-        "no Java interop. Use for quick computation, string manipulation, or testing logic. " +
-        "5 second timeout."
+        "(Math, JSON, Array, String, …) and console.log are available — no Java class " +
+        "access, no file I/O, no network. Use for quick computation, string manipulation, " +
+        "or testing logic. 5 second budget."
 
     override val timeoutMs: Long get() = 6_000L
     override val maxCallsPerTask: Int get() = 30
@@ -59,8 +70,8 @@ class JsExecTool : Tool {
 
     /**
      * ContextFactory whose observeInstructionCount hook aborts evaluation once
-     * the deadline passes. The hook fires on the evaluating thread — this is
-     * Rhino's documented interruption mechanism.
+     * the deadline passes. The hook fires on the evaluating thread — Rhino's
+     * documented interruption mechanism.
      */
     private class WatchdogFactory : ContextFactory() {
         @Volatile var deadline: Long = 0L
@@ -78,10 +89,34 @@ class JsExecTool : Tool {
     private val factory = WatchdogFactory()
 
     /**
-     * The ONLY Java classes the sandbox exposes. Rhino needs java.lang
-     * immutables for JS↔Java value coercion; everything else — including
-     * Runtime, ProcessBuilder, System, Class, and every android/app package —
-     * is denied by returning false.
+     * The ONLY Java object placed in the sandbox scope. PLAIN class on
+     * purpose: Rhino's WrapFactory wraps it in a NativeJavaObject and exposes
+     * exactly these public methods (plus Object's, which are harmless —
+     * getClass() results are shutter-gated, wait/notify throw
+     * IllegalMonitorStateException off-monitor).
+     */
+    class SandboxConsole(
+        private val stdout: StringBuilder,
+        private val stderr: StringBuilder,
+    ) {
+        fun log(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
+        fun info(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
+        fun warn(vararg args: Any?) { stderr.appendLine("WARN: " + args.joinToString(" ") { fmt(it) }) }
+        fun error(vararg args: Any?) { stderr.appendLine("ERR: " + args.joinToString(" ") { fmt(it) }) }
+
+        private fun fmt(v: Any?): String = when (v) {
+            null -> "null"
+            is String -> v
+            is Number, is Boolean -> v.toString()
+            else -> v.toString()
+        }
+    }
+
+    /**
+     * The ONLY Java classes the sandbox exposes (beyond Rhino internals and
+     * the console bridge): immutable java.lang types needed for JS↔Java value
+     * coercion. Runtime, ProcessBuilder, System, Class, reflect, io, net and
+     * every app/Android class are DENIED.
      */
     private val allowedClasses: Set<String> = setOf(
         "java.lang.String", "java.lang.Object", "java.lang.Boolean", "java.lang.Character",
@@ -99,10 +134,11 @@ class JsExecTool : Tool {
     private val classShutter = ClassShutter { className -> isClassVisible(className) }
 
     /**
-     * The shutter gate. Rhino reports ARRAYS with JVM notation ("[Ljava.lang.Object;"),
-     * so array markers are stripped before matching — a vararg bridge method
-     * (log(Object[])) otherwise reads as an unknown class and every console
-     * call would be denied.
+     * The shutter gate. Rhino reports ARRAYS in JVM notation
+     * ("[Ljava.lang.Object;") — markers are stripped before matching so the
+     * vararg console bridge (log(Object[])) is not misread as an unknown
+     * class. Rhino internals, the console bridge's own classes, and the
+     * immutable java.lang allowlist are visible; everything else is denied.
      */
     private fun isClassVisible(className: String): Boolean {
         var name = className
@@ -112,20 +148,12 @@ class JsExecTool : Tool {
                 name = name.substring(1, name.length - 1)
             }
         }
-        // Rhino's own machinery must keep working.
         if (name.startsWith("org.mozilla.javascript.")) return true
-        // The console bridge is the ONLY Java object placed in the scope; its
-        // classes live under host.vorv.tools.JsExecTool*. Script can call
-        // console.log/info/warn/error — nothing else. The dangerous neighbors
-        // (java.lang.Class, java.lang.reflect.**, Runtime, ProcessBuilder,
-        // every other app/Android class) remain DENIED, and the LiveConnect
-        // namespace globals are deleted, so this allowance cannot be leveraged
-        // into object construction or reflection.
         if (name.startsWith("host.vorv.tools.JsExecTool")) return true
         return name in allowedClasses
     }
 
-    /** LiveConnect globals and import helpers — deleted before sealing. */
+    /** LiveConnect globals and import helpers — deleted from the global scope. */
     private val liveConnectGlobals = listOf(
         "Packages", "java", "javax", "org", "com", "net", "edu", "io",
         "android", "androidx", "host", "jdk", "sun", "gnu", "mozilla",
@@ -141,88 +169,84 @@ class JsExecTool : Tool {
 
         val stdout = StringBuilder()
         val stderr = StringBuilder()
-        var returnValue: String? = null
-        var error: String? = null
+        val resultRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var timedOut = false
 
-        val cx = factory.enterContext()
-        try {
-            cx.setOptimizationLevel(-1)          // interpreted: required for the observer
-            cx.languageVersion = Context.VERSION_ES6
-            // Rhino's setClassShutter has no public getter, so Kotlin's synthetic
-            // property syntax doesn't apply — call the setter explicitly.
-            cx.setClassShutter(classShutter)
-            cx.instructionObserverThreshold = 10_000
-
-            val scope = cx.initStandardObjects(null, false)
-
-            val console = object : ScriptableObject() {
-                override fun getClassName() = "VorvConsole"
-                fun log(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-                fun info(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-                fun warn(vararg args: Any?) { stderr.appendLine("WARN: " + args.joinToString(" ") { fmt(it) }) }
-                fun error(vararg args: Any?) { stderr.appendLine("ERR: " + args.joinToString(" ") { fmt(it) }) }
-            }
-            scope.put("console", scope, console)
-
-            // Remove every LiveConnect escape hatch, then seal the scope.
-            for (name in liveConnectGlobals) scope.delete(name)
-            (scope as? ScriptableObject)?.sealObject()
-
-            factory.aborted = false
-            factory.deadline = System.currentTimeMillis() + SANDBOX_TIMEOUT_MS
+        // Evaluation runs on a dedicated daemon thread: a blocking native
+        // call inside the sandbox can never pin an IO-pool thread — the join
+        // deadline bounds it.
+        val worker = Thread {
+            val cx = factory.enterContext()
             try {
-                val result = cx.evaluateString(scope, code, "vorv-sandbox.js", 1, null)
-                returnValue = result?.let { fmt(it) }
-            } catch (e: EvaluatorException) {
-                error = if (factory.aborted || timedOutFlag(factory)) {
-                    timedOut = true
-                    "Execution timed out after ${SANDBOX_TIMEOUT_MS}ms"
-                } else {
-                    e.message ?: e.toString()
+                cx.setOptimizationLevel(-1)          // interpreted: required for the observer
+                cx.languageVersion = Context.VERSION_ES6
+                // Rhino's setClassShutter has no public getter — synthetic
+                // property syntax doesn't apply; call the setter directly.
+                cx.setClassShutter(classShutter)
+                cx.instructionObserverThreshold = 10_000
+
+                val global = cx.initStandardObjects(null, false)
+                global.put("console", global, SandboxConsole(stdout, stderr))
+                for (name in liveConnectGlobals) global.delete(name)
+                global.sealObject()
+
+                // Child scope: user declarations land here; the sealed global
+                // (console + builtins) cannot be tampered with.
+                val child = cx.newObject(global)
+                child.prototype = global
+                child.parentScope = global
+
+                factory.aborted = false
+                factory.deadline = System.currentTimeMillis() + SANDBOX_TIMEOUT_MS
+                try {
+                    val result = cx.evaluateString(child, code, "vorv-sandbox.js", 1, null)
+                    resultRef.set(result?.toString())
+                } catch (e: EvaluatorException) {
+                    errorRef.set(if (factory.aborted) TIMEOUT_MSG else (e.message ?: e.toString()))
+                } catch (e: Exception) {
+                    errorRef.set(e.message ?: e.toString())
+                } finally {
+                    factory.deadline = 0L
                 }
-                stderr.appendLine(error)
-            } catch (e: Exception) {
-                error = e.message ?: e.toString()
-                stderr.appendLine(error)
             } finally {
-                factory.deadline = 0L
+                Context.exit()
             }
-        } finally {
-            Context.exit()
+        }.apply { isDaemon = true; start() }
+
+        worker.join(SANDBOX_TIMEOUT_MS + JOIN_MARGIN_MS)
+        if (worker.isAlive) {
+            timedOut = true
+            worker.interrupt()
         }
 
+        val error = errorRef.get()
+        val returnValue = resultRef.get()
+
         ToolResult(
-            ok = error == null,
+            ok = !timedOut && error == null,
             output = buildString {
                 if (stdout.isNotEmpty()) append(stdout.toString().trim())
-                if (returnValue != null) {
+                if (returnValue != null && returnValue != "undefined") {
                     if (isNotEmpty()) append("\n")
                     append("=> $returnValue")
                 }
                 if (isEmpty()) append("(no output)")
             },
             stderr = stderr.toString().trim(),
-            error = if (timedOut) "Execution timed out after ${SANDBOX_TIMEOUT_MS}ms" else error,
+            error = when {
+                timedOut -> TIMEOUT_MSG
+                error != null -> error
+                else -> null
+            },
             durationMs = System.currentTimeMillis() - t0,
             citation = Citation("exec", ctx.taskId, "exec iter ${ctx.iteration}"),
         )
     }
 
-    private fun timedOutFlag(factory: WatchdogFactory) = factory.aborted
-
-    private fun fmt(v: Any?): String = when (v) {
-        null -> "null"
-        is String -> v
-        is Number, is Boolean -> v.toString()
-        else -> {
-            val enteredHere = Context.getCurrentContext() == null
-            if (enteredHere) Context.enter()
-            try { Context.toString(v) } catch (e: Exception) { v.toString() } finally { if (enteredHere) Context.exit() }
-        }
-    }
-
     private companion object {
         const val SANDBOX_TIMEOUT_MS = 5_000L
+        const val JOIN_MARGIN_MS = 1_500L
+        const val TIMEOUT_MSG = "Execution timed out after $SANDBOX_TIMEOUT_MS ms"
     }
 }
