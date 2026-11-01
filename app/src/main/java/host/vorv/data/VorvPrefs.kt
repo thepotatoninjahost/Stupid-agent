@@ -1,6 +1,7 @@
 package host.vorv.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -30,7 +31,6 @@ class VorvPrefs(private val context: Context) {
 
     /** Whether the POST_NOTIFICATIONS runtime prompt has been shown (Android 13+). */
     val notifPermissionAsked: Flow<Boolean> = context.vorvPrefs.data.map { it[NOTIF_ASKED] ?: false }
-
     /** JSON array of pending scheduled reminders: [{"name":..,"title":..,"etaMs":..}] */
     val scheduledReminders: Flow<String> = context.vorvPrefs.data.map { it[SCHEDULED] ?: "[]" }
 
@@ -69,7 +69,7 @@ class VorvPrefs(private val context: Context) {
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
         private val LOCAL_MODEL_ID = stringPreferencesKey("local_model_id")
-        private val NOTIF_ASKED = stringPreferencesKey("notif_permission_asked")
+        private val NOTIF_ASKED = booleanPreferencesKey("notif_permission_asked")
         private val SCHEDULED = stringPreferencesKey("scheduled_reminders")
         private val LEGACY_ZAI_KEY = stringPreferencesKey("zai_api_key")
     }

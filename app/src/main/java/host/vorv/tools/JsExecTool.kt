@@ -125,7 +125,9 @@ class JsExecTool : Tool {
         try {
             cx.setOptimizationLevel(-1)          // interpreted: required for the observer
             cx.languageVersion = Context.VERSION_ES6
-            cx.classShutter = classShutter
+            // Rhino's setClassShutter has no public getter, so Kotlin's synthetic
+            // property syntax doesn't apply — call the setter explicitly.
+            cx.setClassShutter(classShutter)
             cx.instructionObserverThreshold = 10_000
 
             val scope = cx.initStandardObjects(null, false)

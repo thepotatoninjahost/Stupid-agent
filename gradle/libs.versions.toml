@@ -32,6 +32,10 @@ documentfile = "1.0.1"
 securityCrypto = "1.1.0"
 # Robust HTML parsing for web_fetch (replaces regex-based stripping).
 jsoup = "1.23.2"
+# JSON — used directly by the kernel, tools and LLM layer. Was previously a
+# transitive dependency via Retrofit's converter; now declared explicitly
+# because Retrofit was removed (audit L-5).
+gson = "2.11.0"
 # Test-only
 junit = "4.13.2"
 robolectric = "4.17"
@@ -66,6 +70,7 @@ geniex-android = { group = "com.qualcomm.qti", name = "geniex-android", version.
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 # Test-only dependencies (not shipped in the APK)
 junit = { group = "junit", name = "junit", version.ref = "junit" }

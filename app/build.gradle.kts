@@ -117,6 +117,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)
     implementation(libs.jsoup)
+    implementation(libs.gson)
     debugImplementation(libs.androidx.ui.tooling)
 
     // Test-only

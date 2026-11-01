@@ -37,6 +37,11 @@ Source: https://github.com/square/okhttp
 
 Source: https://github.com/jhy/jsoup
 
+## JSON
+- **com.google.code.gson:gson** — Apache 2.0 (a direct dependency since v0.6.0 — previously transitive via Retrofit, which was removed)
+
+Source: https://github.com/google/gson
+
 ## JavaScript engine
 - **org.mozilla:rhino** — Mozilla Public License 2.0
 
