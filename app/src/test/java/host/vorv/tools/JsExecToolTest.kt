@@ -61,7 +61,7 @@ class JsExecToolTest {
         assertFalse(r.ok)
     }
 
-    @Test fun `reflection via Class.forName is blocked`() {
+    @Test fun `reflection via Class forName is blocked`() {
         val r = runJs("""var c = java.lang.Class.forName("java.lang.Runtime"); console.log(c);""")
         assertFalse(r.ok)
     }
