@@ -81,6 +81,12 @@ class ToolCallParserTest {
         assertTrue(parseArgs(r)!!.contains("error"))
     }
 
+    @Test fun `plain format with truncated args (no closing brace) is still a tool call`() {
+        val r = ToolCallParser.parse("TOOL_CALL: file_write ARGS: {\"path\":\"out.txt\",\"content\":\"hel")
+        assertEquals("file_write", parseName(r))
+        assertTrue(parseArgs(r)!!.contains("error"))
+    }
+
     // ---------------------------------------------------- answers
 
     @Test fun `parses ANSWER prefix`() {

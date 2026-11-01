@@ -30,6 +30,10 @@ object ToolCallParser {
         // plain whitespace (all three observed from the local model).
         pattern = "TOOL_CALL:\\s*([A-Za-z0-9_]+)\\s*:?\\s*ARGS:\\s*(\\{[\\s\\S]*\\})",
     )
+    /** Lenient variant: captures everything after ARGS: even with no closing brace. */
+    private val plainLenientRegex = Regex(
+        pattern = "TOOL_CALL:\\s*([A-Za-z0-9_]+)\\s*:?\\s*ARGS:\\s*([\\s\\S]*)",
+    )
     private val answerRegex = Regex("ANSWER:\\s*([\\s\\S]*)")
 
     fun parse(text: String): Llm.LlmResponse {
@@ -69,6 +73,31 @@ object ToolCallParser {
                 )),
                 reasoning = null,
             )
+        }
+
+        // 3b. Plain-text protocol with TRUNCATED arguments (no closing brace):
+        //     "TOOL_CALL: name ARGS: {"not closed" — still a tool call; the
+        //     kernel will report the invalid-JSON args honestly to the model.
+        if (trimmed.contains("TOOL_CALL:")) {
+            plainLenientRegex.find(trimmed)?.let { mr ->
+                val name = mr.groupValues[1]
+                val rawArgs = mr.groupValues[2].trim()
+                val args = try {
+                    JsonParser.parseString(rawArgs).asJsonObject.toString()
+                } catch (e: Exception) {
+                    JsonObject().apply {
+                        addProperty("error", "model produced invalid JSON args: ${rawArgs.take(200)}")
+                    }.toString()
+                }
+                return Llm.LlmResponse.ToolUse(
+                    toolCalls = listOf(Llm.ToolCall(
+                        id = java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        arguments = args,
+                    )),
+                    reasoning = null,
+                )
+            }
         }
 
         // 4. ANSWER: prefix, or the raw text.

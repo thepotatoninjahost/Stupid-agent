@@ -19,9 +19,14 @@ import org.robolectric.annotation.Config
  * This tests the real migration object used by the Room builder — the same
  * one production wires via addMigrations(). The destructive-fallback
  * behavior is gone, so this migration is the ONLY path from v1 data.
+ *
+ * `application = Application::class` — Robolectric instantiates the manifest
+ * Application class by default, and VorvApplication eagerly initializes the
+ * Android Keystore-backed SecretsStore, which Robolectric does not implement
+ * (java.security.KeyStoreException). This test only exercises SQLite.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], application = android.app.Application::class)
 class MigrationTest {
 
     private val v1ToolCallsDdl = """

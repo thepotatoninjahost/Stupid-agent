@@ -78,9 +78,11 @@ class WebFetchToolTest {
     }
 
     @Test fun `huge declared content length is refused before download`() {
-        server.enqueue(MockResponse().setResponseCode(200)
-            .setHeader("Content-Length", "9999999999")
-            .setBody("x"))
+        // A REAL oversized body (not a spoofed header): the server sends a
+        // truthful 3 MB Content-Length, and the tool must refuse on the
+        // precheck before buffering anything.
+        val big = "a".repeat(3_000_000)
+        server.enqueue(MockResponse().setBody(big).setHeader("Content-Type", "text/html"))
         val r = fetch(server.url("/huge").toString())
         assertFalse(r.ok)
         assertTrue(r.error!!.contains("too large", ignoreCase = true))

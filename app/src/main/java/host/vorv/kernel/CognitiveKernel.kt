@@ -109,6 +109,7 @@ class CognitiveKernel(
         var inlineCitations: List<Citation> = emptyList()
         var iterations = 0
         var toolCallCount = 0
+        var lastError: String? = null
         val rateCounts = HashMap<String, Int>()
 
         try {
@@ -120,7 +121,11 @@ class CognitiveKernel(
                 val resp = try {
                     llm.step(messages, toolSpecs)
                 } catch (e: Exception) {
-                    _trace.emit(TraceStep.Error("LLM call failed: ${e.message}"))
+                    // Preserve the REAL cause — previously this fell through to
+                    // the "reached max iterations" summary, mis-reporting an LLM
+                    // failure as a stuck loop (caught by CognitiveKernelTest).
+                    lastError = e.message ?: e.javaClass.simpleName
+                    _trace.emit(TraceStep.Error("LLM call failed: $lastError"))
                     break
                 }
                 when (resp) {
@@ -252,7 +257,14 @@ class CognitiveKernel(
                 }
             }
 
-            // Hit cap — summarize
+            // Loop exited without a final answer: either an LLM error (report it
+            // honestly) or the iteration cap (report the stuck-loop summary).
+            if (lastError != null) {
+                val answer = "LLM error: $lastError"
+                _trace.emit(TraceStep.Done(answer, iterations))
+                eventSink.logEpisode("error", answer.take(200), "{\"iterations\":$iterations,\"taskId\":\"$taskId\"}")
+                return TaskResult(false, answer, iterations, toolCitations, toolCallCount, error = lastError)
+            }
             val summary = "Reached max iterations ($MAX_ITERATIONS) without a final answer. " +
                 "Last $toolCallCount tool calls executed; see Tasks tab for the full log."
             _trace.emit(TraceStep.Done(summary, iterations))

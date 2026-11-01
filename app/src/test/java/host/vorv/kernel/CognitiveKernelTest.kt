@@ -207,8 +207,11 @@ class CognitiveKernelTest {
     fun `per-tool rate limit is enforced with an honest message`() = runTest {
         val sink = FakeSink()
         val tool = FakeTool("ping", maxCallsPerTask = 2)
+        // Args must satisfy FakeTool's schema (required "x") — otherwise the
+        // validator (correctly) rejects the calls and nothing executes.
+        val args = """{"x":"v"}"""
         val llm = FakeLlm(listOf(
-            toolUse("ping"), toolUse("ping"), toolUse("ping"), toolUse("ping"),
+            toolUse("ping", args), toolUse("ping", args), toolUse("ping", args), toolUse("ping", args),
             Llm.LlmResponse.Text("done", done = true),
         ))
         kernel(sink, listOf(tool)).run("t1", "q", llm, null)
@@ -267,8 +270,8 @@ class CognitiveKernelTest {
     fun `max iterations produces a stuck result`() = runTest {
         val sink = FakeSink()
         val tool = FakeTool("loop")
-        // 25 tool calls, cap is 20.
-        val script = (0 until 25).map { toolUse("loop") }
+        // 25 valid tool calls, cap is 20 iterations.
+        val script = (0 until 25).map { toolUse("loop", """{"x":"v"}""") }
         val llm = FakeLlm(script)
         val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
 

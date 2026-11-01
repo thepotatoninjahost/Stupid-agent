@@ -98,7 +98,16 @@ class JsExecTool : Tool {
 
     private val classShutter = ClassShutter { className ->
         // Rhino's own machinery must keep working.
-        className.startsWith("org.mozilla.javascript.") || className in allowedClasses
+        className.startsWith("org.mozilla.javascript.") ||
+        // The console bridge is the ONLY Java object placed in the scope; its
+        // anonymous class lives under host.vorv.tools.JsExecTool*. Script can
+        // call console.log/info/warn/error — nothing else. The dangerous
+        // neighbors (java.lang.Class, java.lang.reflect.**, Runtime,
+        // ProcessBuilder, every other app/Android class) remain DENIED, and
+        // the LiveConnect namespace globals are deleted, so this allowance
+        // cannot be leveraged into object construction or reflection.
+        className.startsWith("host.vorv.tools.JsExecTool") ||
+        className in allowedClasses
     }
 
     /** LiveConnect globals and import helpers — deleted before sealing. */
