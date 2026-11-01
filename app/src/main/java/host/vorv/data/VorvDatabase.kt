@@ -18,7 +18,13 @@ import host.vorv.data.entity.*
         Artifact::class,
     ],
     version = 2,
-    exportSchema = true,
+    // Schema JSON export is deliberately OFF: it's tooling sugar, and the
+    // KSP arg-based export path is flaky across variants in clean CI
+    // environments (Room 2.6.1 "Empty schema file" in kspReleaseKotlin).
+    // The migration itself is real and directly tested — see MigrationTest,
+    // which builds a v1 database, runs MIGRATION_1_2 and asserts the column
+    // + data survival without needing schema snapshots.
+    exportSchema = false,
 )
 abstract class VorvDatabase : RoomDatabase() {
     abstract fun episodeDao(): EpisodeDao

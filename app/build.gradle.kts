@@ -83,11 +83,6 @@ android {
     }
 }
 
-ksp {
-    // Export Room schemas for migration testing (see app/schemas/ after build).
-    arg("room.schemaLocation", "$projectDir/schemas")
-}
-
 chaquopy {
     defaultConfig {
         version = "3.11"

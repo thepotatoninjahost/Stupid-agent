@@ -79,7 +79,7 @@ New `ModelRepository` owns the engine lifecycle: one `Mutex` serializes every tr
 **File:** `llm/ModelRepository.kt`, `AgentViewModel.kt`, `ui/screen/SettingsScreen.kt`
 
 ### H-5 — fallbackToDestructiveMigration would wipe user data
-Removed everywhere. Room bumped to **version 2** with a real `Migration(1,2)` (`ALTER TABLE tool_calls ADD COLUMN outputFilePath TEXT`), `exportSchema = true` + KSP `room.schemaLocation`. `MigrationTest` builds a v1 database and verifies the migration adds the column and preserves data.
+Removed everywhere. Room bumped to **version 2** with a real `Migration(1,2)` (`ALTER TABLE tool_calls ADD COLUMN outputFilePath TEXT`). `MigrationTest` builds a v1 database by DDL, runs the real migration object and verifies the column exists and data survives. (Schema JSON export stays off: it is tooling sugar, and the KSP arg-based export path hit a Room 2.6.1 "Empty schema file" failure on the release variant in clean CI — the migration does not depend on it.)
 **Files:** `data/VorvDatabase.kt`, `VorvApplication.kt`, `app/build.gradle.kts` — test: `MigrationTest`
 
 ### H-6 — zero automated tests
