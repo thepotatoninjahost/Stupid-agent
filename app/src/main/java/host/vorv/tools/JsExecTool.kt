@@ -96,18 +96,33 @@ class JsExecTool : Tool {
         "java.lang.NumberFormatException", "java.lang.StackTraceElement",
     )
 
-    private val classShutter = ClassShutter { className ->
+    private val classShutter = ClassShutter { className -> isClassVisible(className) }
+
+    /**
+     * The shutter gate. Rhino reports ARRAYS with JVM notation ("[Ljava.lang.Object;"),
+     * so array markers are stripped before matching — a vararg bridge method
+     * (log(Object[])) otherwise reads as an unknown class and every console
+     * call would be denied.
+     */
+    private fun isClassVisible(className: String): Boolean {
+        var name = className
+        while (name.startsWith("[")) {
+            name = name.removePrefix("[")
+            if (name.startsWith("L") && name.endsWith(";")) {
+                name = name.substring(1, name.length - 1)
+            }
+        }
         // Rhino's own machinery must keep working.
-        className.startsWith("org.mozilla.javascript.") ||
+        if (name.startsWith("org.mozilla.javascript.")) return true
         // The console bridge is the ONLY Java object placed in the scope; its
-        // anonymous class lives under host.vorv.tools.JsExecTool*. Script can
-        // call console.log/info/warn/error — nothing else. The dangerous
-        // neighbors (java.lang.Class, java.lang.reflect.**, Runtime,
-        // ProcessBuilder, every other app/Android class) remain DENIED, and
-        // the LiveConnect namespace globals are deleted, so this allowance
-        // cannot be leveraged into object construction or reflection.
-        className.startsWith("host.vorv.tools.JsExecTool") ||
-        className in allowedClasses
+        // classes live under host.vorv.tools.JsExecTool*. Script can call
+        // console.log/info/warn/error — nothing else. The dangerous neighbors
+        // (java.lang.Class, java.lang.reflect.**, Runtime, ProcessBuilder,
+        // every other app/Android class) remain DENIED, and the LiveConnect
+        // namespace globals are deleted, so this allowance cannot be leveraged
+        // into object construction or reflection.
+        if (name.startsWith("host.vorv.tools.JsExecTool")) return true
+        return name in allowedClasses
     }
 
     /** LiveConnect globals and import helpers — deleted before sealing. */
