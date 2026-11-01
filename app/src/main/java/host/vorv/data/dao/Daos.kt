@@ -11,6 +11,9 @@ interface EpisodeDao {
     fun observeRecent(limit: Int = 100): Flow<List<Episode>>
     @Query("SELECT * FROM episodes ORDER BY ts DESC LIMIT :limit")
     suspend fun recent(limit: Int = 100): List<Episode>
+    /** Retention cleanup (audit: data retention). Returns rows removed. */
+    @Query("DELETE FROM episodes WHERE ts < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long): Int
 }
 
 @Dao
@@ -56,6 +59,15 @@ interface SkillDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(skill: Skill)
 
+    /**
+     * INSERT OR IGNORE keyed on the unique index over skills.name.
+     * Kernel calls this before every recordSuccess/recordFailure so stats
+     * updates never silently no-op for a tool that wasn't bootstrapped yet
+     * (audit findings M-8 / M-9).
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun ensureExists(skill: Skill)
+
     @Query("SELECT * FROM skills WHERE name = :name LIMIT 1")
     suspend fun getByName(name: String): Skill?
 
@@ -89,17 +101,23 @@ interface TaskDao {
     suspend fun complete(id: String, summary: String, status: String = "completed", ts: Long = System.currentTimeMillis())
     @Query("UPDATE tasks SET error = :error, status = 'failed', completedAt = :ts WHERE id = :id")
     suspend fun fail(id: String, error: String, ts: Long = System.currentTimeMillis())
+    /** Retention cleanup (audit: data retention). Returns rows removed. */
+    @Query("DELETE FROM tasks WHERE completedAt IS NOT NULL AND completedAt < :cutoff")
+    suspend fun deleteCompletedBefore(cutoff: Long): Int
 }
 
 @Dao
 interface ToolCallDao {
     @Insert suspend fun insert(call: ToolCall)
-    @Query("SELECT * FROM tool_calls WHERE taskId = :taskId ORDER BY iteration ASC")
+    @Query("SELECT * FROM tool_calls WHERE taskId = :taskId ORDER BY iteration ASC, ts ASC")
     fun observeForTask(taskId: String): Flow<List<ToolCall>>
-    @Query("SELECT * FROM tool_calls WHERE taskId = :taskId ORDER BY iteration ASC")
+    @Query("SELECT * FROM tool_calls WHERE taskId = :taskId ORDER BY iteration ASC, ts ASC")
     suspend fun forTask(taskId: String): List<ToolCall>
     @Query("SELECT * FROM tool_calls ORDER BY ts DESC LIMIT :limit")
     fun observeRecent(limit: Int = 100): Flow<List<ToolCall>>
+    /** Retention cleanup (audit: data retention). Returns rows removed. */
+    @Query("DELETE FROM tool_calls WHERE ts < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long): Int
 }
 
 @Dao

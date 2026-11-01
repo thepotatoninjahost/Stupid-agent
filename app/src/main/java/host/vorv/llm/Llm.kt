@@ -2,7 +2,9 @@ package host.vorv.llm
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import host.vorv.tools.NetworkGuard
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -11,11 +13,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * LLM contract. Vorv uses GLM-4.6 via Z.ai with native function calling.
- *
- * A local-first LLM (MLC LLM Android, Llama 3.2 1B) is the next milestone —
- * when integrated, it will implement this same interface so the cognitive
- * kernel does not change. For now: cloud only. No stub.
+ * LLM contract. Vorv uses GLM-4.6 via Z.ai with native function calling in
+ * cloud mode, and Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU in
+ * local mode. Both implement this same interface so the cognitive kernel
+ * does not change.
  */
 interface Llm {
     /** Returns either a final answer or a tool call request. */
@@ -48,19 +49,23 @@ interface Llm {
 /**
  * Cloud LLM via Z.ai GLM-4.6. Native OpenAI-style function calling.
  * Throws if apiKey is blank — caller must check first.
+ *
+ * v0.6.0 hardening (audit findings M-2, M-3, M-4):
+ *  - retry backoff uses non-blocking delay(), not Thread.sleep
+ *  - total retry budget is bounded and reported honestly
+ *  - defensive handling of an empty "choices" array
+ *  - one shared OkHttpClient (connection pool reuse) with private-network
+ *    egress blocked via NetworkGuard.PublicDns
  */
 class CloudLlm(
     private val apiKey: String,
     private val baseUrl: String = "https://api.z.ai/api/paas/v4",
     private val model: String = "glm-4.6",
+    client: OkHttpClient? = null,
 ) : Llm {
     override val label = "GLM-4.6"
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val client: OkHttpClient = client ?: Companion.client
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
@@ -110,7 +115,7 @@ class CloudLlm(
             }.toString()
 
             var lastErr: String? = null
-            for (attempt in 0..3) {
+            for (attempt in 0 until MAX_ATTEMPTS) {
                 try {
                     val req = Request.Builder()
                         .url("$baseUrl/chat/completions")
@@ -124,16 +129,25 @@ class CloudLlm(
                         val responseBody = res.body?.string().orEmpty()
                         if (res.code == 429 || res.code >= 500) {
                             lastErr = "HTTP ${res.code}: ${responseBody.take(200)}"
-                            Thread.sleep(1500L * (1L shl attempt) + (Math.random() * 500).toLong())
+                            if (attempt < MAX_ATTEMPTS - 1) {
+                                // Non-blocking backoff (was Thread.sleep — audit M-2).
+                                delay(1500L * (1L shl attempt) + (Math.random() * 500).toLong())
+                            }
                             return@use
                         }
                         if (!res.isSuccessful) {
                             throw RuntimeException("LLM HTTP ${res.code}: ${responseBody.take(300)}")
                         }
                         val json = JsonParser.parseString(responseBody).asJsonObject
-                        val choice = json.getAsJsonArray("choices")[0].asJsonObject
+
+                        // Defensive: some error shapes return an empty choices array (audit M-4).
+                        val choices = json.getAsJsonArray("choices")
+                        if (choices == null || choices.size() == 0) {
+                            throw RuntimeException("LLM returned no choices: ${responseBody.take(300)}")
+                        }
+                        val choice = choices[0].asJsonObject
                         val msg = choice.getAsJsonObject("message")
-                        val finish = choice.get("finish_reason")?.asString ?: "stop"
+                        val finish = choice.get("finish_reason")?.takeIf { !it.isJsonNull }?.asString ?: "stop"
                         val content = msg.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
                         val toolCallsArr = msg.getAsJsonArray("tool_calls")
 
@@ -142,9 +156,10 @@ class CloudLlm(
                                 val tc = tcEl.asJsonObject
                                 val fn = tc.getAsJsonObject("function")
                                 Llm.ToolCall(
-                                    id = tc.get("id")?.asString ?: java.util.UUID.randomUUID().toString(),
+                                    id = tc.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                        ?: java.util.UUID.randomUUID().toString(),
                                     name = fn.get("name").asString,
-                                    arguments = fn.get("arguments")?.asString ?: "{}",
+                                    arguments = fn.get("arguments")?.takeIf { !it.isJsonNull }?.asString ?: "{}",
                                 )
                             }
                             Llm.LlmResponse.ToolUse(calls, reasoning = content.takeIf { it.isNotBlank() })
@@ -154,16 +169,30 @@ class CloudLlm(
                     }
                 } catch (e: Exception) {
                     lastErr = e.message
-                    Thread.sleep(1500L * (1L shl attempt))
+                    if (attempt < MAX_ATTEMPTS - 1) {
+                        delay(1500L * (1L shl attempt))
+                    }
                 }
             }
-            throw RuntimeException("LLM call failed after retries: $lastErr")
+            throw RuntimeException("LLM call failed after $MAX_ATTEMPTS attempts: $lastErr")
         }
+
+    companion object {
+        private const val MAX_ATTEMPTS = 4
+
+        /** Shared client — one connection pool for every CloudLlm instance. */
+        private val client: OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .dns(NetworkGuard.PublicDns)
+            .build()
+    }
 }
 
 /**
  * Picks the reasoning engine:
- *  - "local"  → llama.cpp on-device (requires the model downloaded once, ~2–4.7 GB)
+ *  - "local"  → llama.cpp on-device via GenieX (requires the model downloaded once, ~1.8–4.4 GB)
  *  - "cloud"  → GLM-4.6 (requires a Z.ai API key)
  * If the requested engine isn't available, throws with a REAL, actionable error — never a stub.
  */
@@ -174,7 +203,7 @@ object LlmRouter {
             CloudLlm(apiKey)
         }
         else -> {
-            requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~2–4.7 GB depending on choice)." }
+            requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~1.8–4.4 GB depending on choice)." }
             local
         }
     }

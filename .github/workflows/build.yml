@@ -5,64 +5,173 @@ on:
     branches: [main, 'feature/**', 'fix/**']
   workflow_dispatch:
 
+# Superseded runs on the same ref are cancelled (no wasted minutes, no
+# release-tag races between rapid pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Whether a release keystore is configured as a repo secret. Computed once;
+  # jobs compare env.HAS_KEYSTORE so steps can degrade gracefully on forks.
+  HAS_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+
 jobs:
-  build:
+  # ------------------------------------------------------------------ test
+  test:
+    name: Unit tests + sandbox self-test
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        # actions/setup-java v4.9.1
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: temurin
           java-version: 17
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        # actions/setup-python v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        # gradle/actions/setup-gradle v3.5.0
+        uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
         with:
           gradle-version: 8.9
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Python sandbox self-test
+        run: python3 app/src/main/python/test_vorv_sandbox.py
+
+      - name: Unit tests (JUnit + Robolectric)
+        run: gradle test --no-daemon --stacktrace
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+  # ------------------------------------------------------------------ build
+  build:
+    name: Build debug + release APKs
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
-          name: Vorv-APK
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+        with:
+          gradle-version: 8.9
+
+      - name: Decode release keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Build APKs (debug always; release signed when keystore present)
+        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+
+      - name: Upload debug APK artifact
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Vorv-debug-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 90
 
-      # Publish Release only on main — feature branches build-only (no release).
-      # This lets me verify CI is green on a feature branch BEFORE merging.
-      - name: Rename APK
-        if: github.ref == 'refs/heads/main'
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Vorv-release-APK
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload signed release APK artifact
+        if: env.HAS_KEYSTORE == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Vorv-release-signed-APK
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- publish
+  # Publish a Release only on main, and only when a release keystore is
+  # configured — a debuggable debug build must never be the installable
+  # artifact (audit finding H-7). Feature branches build + test only.
+  publish:
+    name: Publish signed release
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (for the short SHA)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Check release keystore is configured
+        if: env.HAS_KEYSTORE != 'true'
         run: |
-          mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/Vorv-debug.apk
-          sha=$(git rev-parse --short HEAD)
-          echo "APK_SHA=$sha" >> $GITHUB_ENV
+          echo "::warning::RELEASE_KEYSTORE_* secrets are not configured — skipping the GitHub Release. The CI-built debug APK remains available as a workflow artifact, but it is NOT an installable release build."
+
+      - name: Download signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        # actions/download-artifact v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: Vorv-release-signed-APK
+          path: release/
+
+      - name: Compute short SHA
+        if: env.HAS_KEYSTORE == 'true'
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Publish Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        if: env.HAS_KEYSTORE == 'true'
+        # softprops/action-gh-release v2.6.2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          tag_name: v1.0-${{ env.APK_SHA }}
-          name: Vorv build ${{ env.APK_SHA }}
+          tag_name: v0.6.0-${{ env.SHORT_SHA }}
+          name: Vorv build ${{ env.SHORT_SHA }}
           body: |
             Vorv — local-first autonomous agent.
 
             **Install:** Settings → Apps → Special access → Install unknown apps → Chrome → Allow. Then tap the APK below.
 
-            **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key).
-          files: release/Vorv-debug.apk
+            **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key; local needs a one-time model download).
+
+            **Shell tool setup (optional):** install Termux (F-Droid/GitHub), run `termux-setup-storage` once, and grant Vorv the "Run commands in Termux" permission.
+          files: release/app-release.apk
           prerelease: true

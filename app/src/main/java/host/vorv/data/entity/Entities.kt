@@ -76,6 +76,10 @@ data class AgentTask(
 
 /**
  * Verifiable execution log. Every tool call lands here with real I/O.
+ *
+ * outputJson stores a preview (first 2000 chars) so the Tasks list stays
+ * light; when the full output exceeded the preview, outputFilePath points
+ * at a file under cacheDir/tool_outputs/ holding the complete text.
  */
 @Entity(tableName = "tool_calls", indices = [Index("taskId"), Index("ts"), Index("toolName")])
 data class ToolCall(
@@ -89,6 +93,7 @@ data class ToolCall(
     val exitCode: Int,              // 0 = success, non-zero = error
     val durationMs: Long,
     val errorMessage: String? = null,
+    val outputFilePath: String? = null,   // schema v2 — full output file when preview was truncated
 )
 
 /**

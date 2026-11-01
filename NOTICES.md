@@ -15,6 +15,7 @@ Vorv uses the following open-source libraries. Each is included under its respec
 - **androidx.work:work-runtime-ktx** — Apache 2.0
 - **androidx.documentfile:documentfile** — Apache 2.0
 - **androidx.datastore:datastore-preferences** — Apache 2.0
+- **androidx.security:security-crypto** — Apache 2.0 (EncryptedSharedPreferences + Tink for at-rest key encryption)
 
 Source: https://android.googlesource.com/
 
@@ -25,15 +26,16 @@ Source: https://android.googlesource.com/
 Source: https://github.com/JetBrains/kotlin, https://github.com/Kotlin/kotlinx.coroutines
 
 ## Networking
-- **com.squareup.okhttp3:okhttp, logging-interceptor** — Apache 2.0
-- **com.squareup.retrofit2:retrofit, converter-gson** — Apache 2.0
+- **com.squareup.okhttp3:okhttp** — Apache 2.0
 
-Source: https://github.com/square/okhttp, https://github.com/square/retrofit
+Source: https://github.com/square/okhttp
 
-## JSON
-- **com.google.code.gson:gson** — Apache 2.0 (transitive via Retrofit)
+(The unused Retrofit and OkHttp logging-interceptor dependencies were removed in v0.6.0.)
 
-Source: https://github.com/google/gson
+## HTML parsing
+- **org.jsoup:jsoup** — MIT
+
+Source: https://github.com/jhy/jsoup
 
 ## JavaScript engine
 - **org.mozilla:rhino** — Mozilla Public License 2.0
@@ -54,11 +56,6 @@ Maven: https://repo1.maven.org/maven2/com/qualcomm/qti/geniex-android/0.10.0/
 
 Source: https://github.com/chaquo/chaquopy
 
-## Image loading
-- **io.coil-kt:coil-compose** — Apache 2.0
-
-Source: https://github.com/coil-kt/coil
-
 ## Android Gradle Plugin
 - **com.android.tools.build:gradle** — Apache 2.0
 
@@ -68,6 +65,14 @@ Source: https://android.googlesource.com/platform/tools/base/+/main/build-system
 - **com.google.devtools.ksp:symbol-processing-api** — Apache 2.0
 
 Source: https://github.com/google/ksp
+
+## Test-only dependencies (not shipped in the APK)
+- **junit:junit** — EPL 1.0
+- **org.robolectric:robolectric** — MIT
+- **androidx.test:core** — Apache 2.0
+- **org.jetbrains.kotlinx:kotlinx-coroutines-test** — Apache 2.0
+- **com.squareup.okhttp3:mockwebserver** — Apache 2.0
+- **androidx.room:room-testing** — Apache 2.0
 
 ---
 

@@ -25,6 +25,7 @@ fun SettingsScreen(
     onDownloadModel: () -> Unit,
     onDeleteModel: (ModelChoice) -> Unit,
     onClearSetupError: () -> Unit = {},
+    onClearAllData: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -70,6 +71,15 @@ fun SettingsScreen(
             color = OnSurfaceVariant, fontSize = 11.sp,
         )
 
+        if (state.busy) {
+            Surface(shape = RoundedCornerShape(10.dp), color = Warning.copy(alpha = 0.12f), modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "A task is running — model switching and deletion are disabled until it finishes.",
+                    color = Warning, fontSize = 11.sp, modifier = Modifier.padding(10.dp)
+                )
+            }
+        }
+
         ModelChoice.entries.forEach { choice ->
             val isDownloaded = choice.id in state.downloadedModelIds
             val isSelected = state.selectedModelId == choice.id
@@ -81,11 +91,13 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(
                             selected = isSelected,
                             onClick = { onSetLocalModel(choice.id) },
-                            enabled = isDownloaded || !state.downloadingModel,
+                            // Busy-gated (audit H-4): the repository refuses swaps
+                            // mid-task; the UI reflects the same rule.
+                            enabled = !state.busy && (isDownloaded || !state.downloadingModel),
                             colors = RadioButtonDefaults.colors(selectedColor = Primary),
                         )
                         Spacer(Modifier.width(8.dp))
@@ -110,6 +122,7 @@ fun SettingsScreen(
                             }
                             TextButton(
                                 onClick = { onDeleteModel(choice) },
+                                enabled = !state.busy,
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                             ) {
                                 Text("Delete (frees ~${choice.approxBytes / 1_000_000_000} GB)", color = Error, fontSize = 11.sp)
@@ -134,7 +147,7 @@ fun SettingsScreen(
                                     "Official, un-gated release from HuggingFace.",
                                 color = OnSurfaceVariant, fontSize = 11.sp,
                             )
-                            if (!state.downloadingModel) {
+                            if (!state.downloadingModel && !state.busy) {
                                 Button(
                                     onClick = {
                                         onSetLocalModel(choice.id)
@@ -156,7 +169,7 @@ fun SettingsScreen(
             FilterChip(
                 selected = state.llmMode == "local",
                 onClick = { if (state.localModelReady) onSetMode("local") },
-                enabled = state.localModelReady,
+                enabled = state.localModelReady && !state.busy,
                 label = { Text("Local (offline)", fontSize = 11.sp) },
             )
             FilterChip(
@@ -169,8 +182,8 @@ fun SettingsScreen(
         Text(
             when {
                 state.llmMode == "local" && state.localModelReady ->
-                    "Active: ${activeChoice.displayName.substringBefore("(").trim()} via llama.cpp. " +
-                        "No network, no key. Tool calls use a strict TOOL_CALL/ARGS/ANSWER format."
+                    "Active: ${activeChoice.displayName.substringBefore("(").trim()} on the Hexagon NPU via GenieX. " +
+                        "No network, no key. Tool calls are parsed from the model's chat template."
                 state.llmMode == "local" ->
                     "Local selected, but ${activeChoice.displayName.substringBefore("(").trim()} isn't downloaded yet."
                 state.hasApiKey -> "Active: GLM-4.6 with native function calling. Needs internet."
@@ -182,7 +195,10 @@ fun SettingsScreen(
 
         // ------------------------------------------------ api key
         Text("Z.ai API Key (cloud only)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Text("Stored locally with Android DataStore — never uploaded, never committed to git, never logged. Not needed in local mode.", color = OnSurfaceVariant, fontSize = 11.sp)
+        Text(
+            "Stored encrypted at rest (Android Keystore-backed). Never uploaded, never committed to git, never logged. Not needed in local mode.",
+            color = OnSurfaceVariant, fontSize = 11.sp
+        )
         OutlinedTextField(
             value = key,
             onValueChange = { key = it; saved = false },
@@ -209,18 +225,32 @@ fun SettingsScreen(
             }
         }
 
+        // ------------------------------------------------ data
+        Text("Data", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Episodes, completed tasks and tool-call logs older than 30 days are pruned automatically at boot. " +
+                "Taught memories are never auto-deleted.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+        OutlinedButton(
+            onClick = onClearAllData,
+            enabled = !state.busy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(50),
+        ) { Text("Clear ALL data", color = Error, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+
         Spacer(Modifier.height(8.dp))
         Text("About Vorv", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "Vorv is a local-first autonomous agent. Coined name — no existing product.\n\n" +
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
-                "14 real tools. Local engine: Qwen2.5-Coder-7B-Instruct via Qualcomm " +
-                "GenieX on the Hexagon NPU (offline after one ~4.44 GB download). " +
-                "Cloud engine: GLM-4.6 (optional).\n\n" +
-                "Honest limits: the local 7B Q4_0 model runs on the S25's Hexagon NPU. " +
-                "Real measured tok/s will appear in the trace after each generation — " +
-                "expected peak ~8-12 tok/s, ~4-6 tok/s sustained under thermal load. " +
-                "First model download needs internet once; after that airplane mode works.",
+                "15 real tools. Local engine: Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU " +
+                "(offline after one 1.8–4.4 GB download). Cloud engine: GLM-4.6 (optional).\n\n" +
+                "Honest limits: real measured tok/s appears in the trace after each generation — " +
+                "expected peak ~8-12 tok/s on the 7B model, ~4-6 sustained under thermal load. " +
+                "js_exec and python_exec run in hardened in-process sandboxes; shell and app_intent " +
+                "round-trip through your workspace and explicit confirmation dialogs. " +
+                "See SECURITY.md in the repository for the full threat model.",
             color = OnSurfaceVariant,
             fontSize = 11.sp,
         )

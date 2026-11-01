@@ -7,11 +7,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Required to be declarable so the user can grant it in Android Settings
+         (Settings → Apps → Vorv → Permissions → Run commands in Termux).
+         Termux's RUN_COMMAND mechanism only works when the caller holds this
+         custom permission — it is a user-granted toggle, not an install grant. -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!--
+      Removed vs v0.5.x (audit supply-chain hygiene):
+        RECEIVE_BOOT_COMPLETED — no BOOT_COMPLETED receiver exists in the app
+             (WorkManager merges its own for its rescheduling receiver).
+        WAKE_LOCK              — WorkManager merges its own; app code never holds one.
+    -->
+
     <application
+        android:name=".VorvApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

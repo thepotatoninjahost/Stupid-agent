@@ -16,34 +16,41 @@ import host.vorv.ui.theme.*
 @Composable
 fun ToolsScreen(state: AgentState) {
     val ready = listOf(
-        "memory_write" to "Persist a fact for future sessions (embeds a vector when local model is up)",
-        "memory_recall" to "Vector cosine search + FTS4 keyword fallback",
-        "js_exec" to "Run JavaScript in a Rhino sandbox (3s)",
-        "file_read" to "Read a file from granted workspace (SAF)",
-        "file_write" to "Write/overwrite a file in workspace (SAF)",
+        "memory_write" to "Persist a fact for future sessions (Room + FTS4)",
+        "memory_recall" to "FTS4 keyword search + LIKE fallback",
+        "js_exec" to "Rhino sandbox: ClassShutter, no Java interop, 5s budget",
+        "file_read" to "Read a file from granted workspace (SAF, 50KB cap)",
+        "file_write" to "Write/overwrite a file in workspace (SAF, 1MB cap)",
         "file_list" to "Recursive list of workspace files (SAF)",
-        "python_exec" to "Run real Python 3.11 via Chaquopy (10s)",
-        "web_search" to "Z.ai web_search function",
-        "web_fetch" to "OkHttp fetch + HTML-to-text extraction",
-        "app_intent" to "Send Android intents (view/share/dial/open_app)",
-        "shell" to "Bash via Termux RUN_COMMAND intent (Termux + permission required)",
-        "notify" to "Post a system notification",
-        "schedule" to "WorkManager delayed task — fires even if app is killed",
-        "browser_automate" to "In-app WebView: load/click/type/extract/run JS",
+        "python_exec" to "Hardened Python 3.11 sandbox: audit hooks, import whitelist, no file/network",
+        "web_search" to "Z.ai Web Search API (documented /web_search endpoint)",
+        "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",
+        "app_intent" to "Android intents (view/share/dial/open_app) — every action needs your confirmation",
+        "shell" to "Bash via Termux with REAL stdout/stderr/exit-code capture (needs workspace + Termux setup)",
+        "notify" to "Post a system notification (checks permission, honest error if missing)",
+        "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
+        "schedule_cancel" to "Cancel pending reminders by title or all",
+        "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
     )
     val engines = listOf(
         "local_llm" to if (state.localModelReady) {
             val m = host.vorv.llm.ModelChoice.fromId(state.selectedModelId)
-            "${m.displayName.substringBefore("(").trim()} via llama.cpp — downloaded, offline ready"
+            "${m.displayName.substringBefore("(").trim()} via GenieX/llama.cpp — downloaded, offline ready"
         } else {
             val m = host.vorv.llm.ModelChoice.fromId(state.selectedModelId)
-            "${m.displayName.substringBefore("(").trim()} via llama.cpp — download in Setup (~${"%,.1f".format(m.approxBytes / 1_000_000_000.0)} GB, one time)"
+            "${m.displayName.substringBefore("(").trim()} via GenieX/llama.cpp — download in Setup (~${"%,.1f".format(m.approxBytes / 1_000_000_000.0)} GB, one time)"
         },
         "cloud_llm" to "GLM-4.6 with native function calling — needs Z.ai API key",
     )
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("Tools", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
-        item { Text("${ready.size} tools, all real and wired into the agent. No stubs.", color = OnSurfaceVariant, fontSize = 12.sp) }
+        item {
+            Text(
+                "${ready.size} tools, all wired into the agent. Sandboxes are real, outputs are real, " +
+                    "and sensitive actions require your confirmation.",
+                color = OnSurfaceVariant, fontSize = 12.sp
+            )
+        }
 
         item { Text("Ready", color = Success, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         items(ready) { (name, desc) ->

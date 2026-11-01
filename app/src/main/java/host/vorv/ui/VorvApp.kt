@@ -2,10 +2,11 @@ package host.vorv.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -36,11 +37,11 @@ fun VorvApp(vm: AgentViewModel) {
             Box(modifier = Modifier.weight(1f)) {
                 when (state.screen) {
                     "chat" -> ChatScreen(state, vm::send)
-                    "tasks" -> TasksScreen(state)
+                    "tasks" -> TasksScreen(state, vm::toggleTaskDetails, vm::viewFullOutput)
                     "memory" -> MemoryScreen(state, vm::teach)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
-                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::setLocalModel, vm::downloadLocalModel, vm::deleteLocalModel, vm::clearSetupError)
+                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::setLocalModel, vm::downloadLocalModel, vm::deleteLocalModel, vm::clearSetupError, vm::clearAllData)
                 }
             }
             BottomNav(
@@ -48,6 +49,46 @@ fun VorvApp(vm: AgentViewModel) {
                 onChange = vm::setScreen,
             )
         }
+    }
+
+    // ---- Consent dialog (audit H-1/L-2/L-3): tools suspend until answered ----
+    state.pendingConfirmation?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { vm.respondConfirmation(pending.id, false) },
+            title = { Text("Allow this action?", fontWeight = FontWeight.Bold) },
+            text = { Text(pending.message) },
+            confirmButton = {
+                TextButton(onClick = { vm.respondConfirmation(pending.id, true) }) {
+                    Text("Allow", color = Primary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.respondConfirmation(pending.id, false) }) {
+                    Text("Deny", color = Error)
+                }
+            },
+        )
+    }
+
+    // ---- Full-output viewer (audit M-7) ----
+    state.fullOutputView?.let { view ->
+        AlertDialog(
+            onDismissRequest = { vm.dismissFullOutput() },
+            title = { Text(view.title, fontWeight = FontWeight.Bold, fontSize = 14.sp) },
+            text = {
+                Text(
+                    view.content,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.dismissFullOutput() }) { Text("Close") }
+            },
+        )
     }
 }
 

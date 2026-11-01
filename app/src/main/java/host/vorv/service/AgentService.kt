@@ -58,7 +58,7 @@ class AgentService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY }
+            ACTION_STOP -> { stopForeground(Service.STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY }
             else -> {
                 val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Vorv is thinking…"
                 startForeground(NOTIF_ID, buildNotification(title))
@@ -67,13 +67,22 @@ class AgentService : Service() {
         return START_STICKY
     }
 
-    private fun buildNotification(title: String): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("Vorv")
-        .setContentText(title)
-        .setSmallIcon(android.R.drawable.ic_menu_compass)
-        .setOngoing(true)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .build()
+    private fun buildNotification(title: String): Notification {
+        // Tapping the notification opens the app (audit finding M-12).
+        val contentIntent = android.app.PendingIntent.getActivity(
+            this, 0,
+            Intent(this, host.vorv.MainActivity::class.java),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Vorv")
+            .setContentText(title)
+            .setContentIntent(contentIntent)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 }

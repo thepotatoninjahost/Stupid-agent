@@ -36,7 +36,7 @@ fun ChatScreen(state: AgentState, onSend: (String) -> Unit) {
                     )
                 }
             }
-            items(state.messages) { msg -> MessageBubble(msg) }
+            items(state.messages, key = { it.id }) { msg -> MessageBubble(msg) }
             if (state.busy && state.liveTrace.isNotEmpty()) {
                 item { TraceCard(state.liveTrace.takeLast(4)) }
             }

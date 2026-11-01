@@ -36,24 +36,28 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
         val t0 = System.currentTimeMillis()
         val topic = input.get("topic")?.asString ?: return ToolResult(ok = false, output = "", error = "missing topic", durationMs = System.currentTimeMillis() - t0)
         val content = input.get("content")?.asString ?: return ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
+
+        // Generate the ID up-front and set citationRef before insert (audit H-9).
+        // The v0.5.x code inserted, then tried to FIND the row again via
+        // searchLike(topic, 1) — a substring query that could match a DIFFERENT
+        // row (e.g. topic "cat" matching "category") and update the wrong
+        // citationRef. The row's own id is known before insert; no lookup needed.
+        val id = java.util.UUID.randomUUID().toString()
         val entry = KnowledgeEntry(
+            id = id,
             topic = topic,
             content = content,
             source = "memory_write",
             citationType = "memory",
-            citationRef = "",
+            citationRef = id,
             confidence = 0.9f,
         )
         db.knowledgeDao().upsert(entry)
-        val saved = db.knowledgeDao().searchLike(topic, 1).firstOrNull()
-            ?: return ToolResult(true, "Stored: '$topic'", durationMs = System.currentTimeMillis() - t0,
-                citation = Citation("memory", "", "memory"))
-        db.knowledgeDao().update(saved.copy(citationRef = saved.id))
         return ToolResult(
             ok = true,
-            output = "Stored memory: '$topic' (id=${saved.id})",
+            output = "Stored memory: '$topic' (id=$id)",
             durationMs = System.currentTimeMillis() - t0,
-            citation = Citation("memory", saved.id, "memory #${saved.id.take(8)}"),
+            citation = Citation("memory", id, "memory #${id.take(8)}"),
         )
     }
 }

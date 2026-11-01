@@ -28,11 +28,17 @@ data class ToolResult(
 /**
  * Context handed to every tool invocation. Tools stay stateless;
  * the context carries everything they need.
+ *
+ * v0.6.0: [confirm] is the user-consent bridge (audit findings H-1, L-2, L-3).
+ * Tools that perform user-visible side effects (intents, dialer, share,
+ * launching apps) MUST call it and honor a `false` return. When null
+ * (e.g. in unit tests without a UI), sensitive tools must deny by default.
  */
 data class ToolContext(
     val taskId: String,
     val iteration: Int,
     val workspaceUri: String?,       // SAF URI — null if no folder granted
+    val confirm: (suspend (message: String) -> Boolean)? = null,
 )
 
 /**
@@ -40,6 +46,15 @@ data class ToolContext(
  *
  * The schema is an OpenAI-style function definition — the LLM
  * gets this list at planning time so it knows what's available.
+ *
+ * v0.6.0 kernel-enforced guarantees (audit findings: tool timeouts, rate
+ * limits, argument validation):
+ *  - [timeoutMs]  — wall-clock budget for a single run() call; the kernel
+ *                   wraps execution in withTimeoutOrNull and records an
+ *                   honest timeout error when exceeded.
+ *  - [maxCallsPerTask] — per-task invocation cap; the kernel refuses with an
+ *                   honest error rather than letting a confused model spam
+ *                   a tool 20 times.
  */
 interface Tool {
     val name: String
@@ -50,4 +65,10 @@ interface Tool {
 
     /** Execute the tool. MUST return real output, never invented. */
     suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult
+
+    /** Wall-clock budget for one call, enforced by the kernel. */
+    val timeoutMs: Long get() = 60_000L
+
+    /** Max invocations within a single task, enforced by the kernel. */
+    val maxCallsPerTask: Int get() = 20
 }

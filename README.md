@@ -6,48 +6,55 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ---
 
-## Name
+## Status (v0.6.0) — honest, as always
 
-**Vorv** — coined word, no existing meaning in English or any other language searched. Searched Google Play, GitHub, and Google web search — zero agent/AI/android products use this name. applicationId `host.vorv`.
-
-If you find another product using "Vorv", file an issue. The name was chosen to be unique.
+✅ **Local LLM**: Qwen2.5-Coder-3B/7B-Instruct (Q4_0 GGUF) on the Hexagon NPU via Qualcomm **GenieX** — fully offline after a one-time 1.8–4.4 GB download.
+✅ **Cloud LLM**: GLM-4.6 via Z.ai (optional; needs your API key, stored encrypted at rest).
+✅ **15 tools, all wired** (list below). js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
+✅ **Verifiable logging**: every tool call persists real input/output/duration/exit-code; long outputs are stored in full and viewable from the Tasks screen.
+⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.6.x series is a security/correctness remediation release — see [CHANGES.md](CHANGES.md).
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Vorv App (Kotlin)                    │
-├─────────────────────────────────────────────────────────┤
-│  UI (Jetpack Compose, 6 screens, dark theme)            │
-│   Chat · Tasks · Memory · Tools · Files · Setup          │
-├─────────────────────────────────────────────────────────┤
-│  AgentViewModel (StateFlow, single source of truth)     │
-├─────────────────────────────────────────────────────────┤
-│  CognitiveKernel — ReAct loop                            │
-│   perceive → plan → tool → observe → learn               │
-│   Max 20 iterations per task. Every iteration logged.   │
-├─────────────────────────────────────────────────────────┤
-│  LLM (LlmRouter picks)        │   Tool Registry         │
-│   ├─ Local: MLC LLM (pending) │   ├─ memory_write       │
-│   └─ Cloud: GLM-4.6 (optional)│   ├─ memory_recall (FTS)│
-│                                │   ├─ js_exec (Rhino)    │
-│                                │   ├─ file_read (SAF)   │
-│                                │   ├─ file_write (SAF)  │
-│                                │   ├─ file_list (SAF)   │
-│                                │   └─ [pending: python,  │
-│                                │       shell, web, etc] │
-├─────────────────────────────────────────────────────────┤
-│  Persistence                                              │
-│   Room (episodes, knowledge, skills, tasks, tool_calls, │
-│         artifacts)                                        │
-│   DataStore (API key, workspace URI, LLM mode)           │
-│   SAF DocumentFile (user-granted workspace)              │
-├─────────────────────────────────────────────────────────┤
-│  Foreground service (AgentService)                       │
-│   Keeps long tasks alive when app backgrounded           │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Vorv App (Kotlin)                        │
+├─────────────────────────────────────────────────────────────┤
+│  UI (Jetpack Compose, 6 screens, dark theme)                 │
+│   Chat · Tasks · Memory · Tools · Files · Setup               │
+├─────────────────────────────────────────────────────────────┤
+│  AgentViewModel (StateFlow, single source of truth)           │
+│   + ModelRepository (mutex-serialized engine lifecycle)       │
+│   + user-consent bridge for sensitive tools                   │
+├─────────────────────────────────────────────────────────────┤
+│  CognitiveKernel — ReAct loop                                 │
+│   perceive → plan → tool → observe → learn                    │
+│   • tool args validated against schemas before dispatch       │
+│   • per-tool wall-clock timeouts + per-task rate limits       │
+│   • max 20 iterations; every iteration logged                 │
+├─────────────────────────────────────────────────────────────┤
+│  LLM (kernel picks)              │  Tool Registry (15)        │
+│   ├─ Local: GenieX → Hexagon NPU  │  memory_write/recall      │
+│   └─ Cloud: GLM-4.6 (optional)    │  js_exec (Rhino sandbox)  │
+│                                   │  python_exec (sandboxed)  │
+│                                   │  file_read/write/list     │
+│                                   │  web_search / web_fetch   │
+│                                   │  app_intent (confirmed)   │
+│                                   │  shell (real output)      │
+│                                   │  notify / schedule(+cancel)│
+│                                   │  browser_automate         │
+├─────────────────────────────────────────────────────────────┤
+│  Persistence                                                  │
+│   Room v2 (episodes, knowledge+FTS, skills, tasks,            │
+│     tool_calls w/ full-output files, artifacts)               │
+│   EncryptedSharedPreferences (API key, Keystore-backed)       │
+│   DataStore (workspace URI, modes, reminder registry)         │
+│   SAF DocumentFile (user-granted workspace)                   │
+├─────────────────────────────────────────────────────────────┤
+│  Foreground service (AgentService) + WorkManager reminders    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -56,34 +63,56 @@ If you find another product using "Vorv", file an issue. The name was chosen to 
 
 ### Install
 
-1. Download the latest APK from the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases).
+1. Download the latest **signed release APK** from the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases) (CI publishes `vX.Y.Z-<sha>` tags on every merge to main). Pre-releases are marked as such — check the "Pre-releases" section.
 2. On your S25: tap the APK → Settings → allow install from Chrome.
 3. Open **Vorv**.
+4. Grant the notification permission when prompted (needed by `notify` and `schedule`).
 
-### Grant a workspace (optional, needed for file tools)
+### Grant a workspace (optional, needed for file tools and shell output capture)
 
 1. Open the **Files** tab.
 2. Tap **Grant workspace access**.
-3. Pick a folder. Vorv can read/write/list files in this folder — nowhere else.
+3. Pick a folder on **internal shared storage**. Vorv can read/write/list files in this folder — nowhere else.
 4. Permission persists across reboots.
 
 ### Enable cloud LLM (optional)
 
-Default mode is **local** (offline). Local LLM is currently a stub (MLC integration pending).
+Default mode is **cloud with no key** (idle until you add one). To use cloud mode with GLM-4.6:
 
-To use cloud mode with GLM-4.6:
 1. Get a free API key at `z.ai/manage-apikey`.
-2. Open the **Setup** tab.
-3. Tap the **Cloud (GLM-4.6)** chip.
-4. Paste your key → **Save Key**.
+2. Open the **Setup** tab → paste your key → **Save Key**.
 
-Key is stored locally with Android DataStore. Never uploaded, never committed to git, never logged.
+The key is stored with AndroidX Security (EncryptedSharedPreferences, AES-256-GCM, master key in the Android Keystore — hardware-backed on the S25). It is never uploaded, never logged, and excluded from cloud backups.
 
-### Install Termux for shell access (optional, used by `shell` tool when implemented)
+### Enable shell access (optional, used by the `shell` tool)
 
 1. Install [Termux](https://github.com/termux/termux-app/releases) from F-Droid or GitHub releases (Play Store version is deprecated).
-2. Open Termux once to initialize.
-3. Vorv's `shell` tool (pending) will detect it and use `RUN_COMMAND` intent.
+2. Open Termux once and run `termux-setup-storage` (allows Termux to write to shared storage — required for output capture).
+3. Android Settings → Apps → Vorv → Permissions → Additional permissions → **Run commands in Termux environment**.
+4. Ensure `~/.termux/termux.properties` contains `allow-external-apps=true`.
+5. Grant a Vorv workspace folder (see above) on internal shared storage — shell output round-trips through `.vorv-shell/` inside it.
+
+Without any of these, `shell` returns an honest error explaining exactly what's missing — it never fakes output.
+
+---
+
+## Tools and their safety properties
+
+| Tool | What it does | Safety posture |
+|---|---|---|
+| `memory_write` / `memory_recall` | Room + FTS4 long-term memory | DB only |
+| `js_exec` | JavaScript, 5s budget | **Rhino sandbox**: ClassShutter denies all Java except immutable `java.lang` types; LiveConnect globals (`Packages`, `java`, …) deleted; scope sealed; instruction-count watchdog |
+| `python_exec` | Python 3.11, 30s budget | **Layered sandbox**: CPython audit hook blocks file/process/socket ops; restricted builtins (no `open`/`eval`/`exec`/`compile`; dunder-guarded getattr); import whitelist (pure-computation stdlib only); trace watchdog. Self-tested in CI |
+| `file_read` / `file_write` / `file_list` | SAF workspace I/O | Scoped to the granted folder; 50KB read / 1MB write caps |
+| `web_search` | Z.ai Web Search API (documented `/web_search` endpoint) | Key-gated |
+| `web_fetch` | HTTP fetch → text | 2MB cap; content-type allowlist; **private/loopback/LAN/metadata egress blocked**; jsoup extraction |
+| `app_intent` | view URL / share / dial / open app | **Every action needs a confirmation dialog**; http/https URLs only; premium-rate numbers refused outright |
+| `shell` | Bash via Termux | **Real stdout/stderr/exit-code** captured via workspace round-trip; honest errors when setup is incomplete |
+| `notify` | System notification | Checks POST_NOTIFICATIONS; honest error when missing |
+| `schedule` / `schedule_cancel` | WorkManager reminders | Unique work names; 7-day cap; 20-pending cap; cancellable |
+| `browser_automate` | Headless WebView automation | http/https only; file/content access disabled; mixed content blocked; private hosts blocked; Gson-quoted JS interpolation |
+
+See [SECURITY.md](SECURITY.md) for the full threat model, including the honest residual limits of the in-process sandboxes.
 
 ---
 
@@ -91,66 +120,57 @@ Key is stored locally with Android DataStore. Never uploaded, never committed to
 
 Before declaring "done", all 8 must pass on a real S25:
 
-1. **Offline boot.** Airplane mode on → open Vorv → boots, loads memory, Chat accepts input, returns response. No network call.
+1. **Offline boot.** Airplane mode on → open Vorv (local model downloaded) → boots, loads memory, Chat accepts input, returns response. No network call.
 2. **Multi-step tool loop.** Ask: "Read every file in my workspace, count lines per language, save report.csv, notify me." Agent: lists files → reads each → runs js_exec counter → writes CSV → posts notification. Each step visible in trace.
 3. **Persistent memory.** Teach Vorv a fact in Memory tab. Kill app. Reopen. Ask "What was I taught?" — answer cites the stored memory ID.
 4. **Cite-or-refuse.** Ask "What's the latest version of React?" Online: web_search and cite URL. Offline: `[uncited]` prefix on any guess. No uncited factual statements.
 5. **Background task.** Start a 60-second task. Background the app. Wait 70 seconds. Notification fires. Reopen — task marked completed, log intact.
 6. **Failure recovery.** Ask the agent to read a file that doesn't exist. It sees the error, tries a different path or asks for clarification. Does NOT claim success.
 7. **Scheduled task.** "Remind me in 5 minutes to check the build." WorkManager job enqueued. 5 min later, notification fires (even if app killed).
-8. **Verifiable log.** Open any past task in Tasks screen. Every tool call shows real input, real output, real duration. Nothing paraphrased or invented.
+8. **Verifiable log.** Open any past task in Tasks screen and expand it. Every tool call shows real input, real output, real duration — with "View full output" for long results. Nothing paraphrased or invented.
 
-**Status as of latest push:**
-- ✅ Skeleton complete — app boots, navigates, builds.
-- ⏳ Real cognitive loop wired — but tools beyond memory/js/file are still pending.
-- ⏳ Local LLM is a stub — cloud mode (GLM-4.6) works if you add a key.
-- ❌ Acceptance tests #1-#8 NOT yet verified — user must run on real device.
-
----
-
-## What's NOT done yet (honest status)
-
-- Local LLM (MLC LLM Android integration) — currently returns a stub message. Cloud mode works.
-- `python_exec` — Chaquopy integration pending.
-- `shell` — Termux intent pending.
-- `web_search` / `web_fetch` — pending (Z.ai has the function, not wired up yet).
-- `browser_automate` — pending.
-- `notify` / `schedule` — pending (foreground service exists, but tools that fire notifications not yet wired).
-- Citation enforcement in UI is a chip rendering; doesn't yet block uncited facts.
-- WorkManager — declared as dependency but no scheduled task job yet.
-
-These come in subsequent pushes. Each push triggers a fresh APK build via GitHub Actions.
+**Status:** NOT yet verified on-device for v0.6.0 — the maintainer must run them.
 
 ---
 
 ## Anti-features (intentionally not present)
 
 - No telemetry, analytics, or tracking of any kind.
-- No internet requirement for default local mode.
+- No internet requirement for local mode (after the one-time model download).
 - No bundling of any model over 1GB without disclosing.
-- No proprietary dependencies. See `NOTICES.md` for the full list.
+- No proprietary dependencies. See [NOTICES.md](NOTICES.md) for the full list.
 - No reusing any existing agent framework's name or branding.
 
 ---
 
 ## Build
 
-GitHub Actions workflow on every push to `main`:
-- ubuntu-latest, JDK 17, Gradle 8.9
-- Preinstalled Android SDK (compileSdk 35, minSdk 31)
-- Produces debug APK
-- Publishes as a GitHub Release with tag `v<version>-<short_sha>`
+GitHub Actions on every push to `main`, `feature/**`, `fix/**`:
+1. **test** — unit tests (JUnit + Robolectric) + the Python sandbox self-test.
+2. **build** — debug APK (artifact) + release APK (R8-minified; signed when the `RELEASE_KEYSTORE_*` secrets exist).
+3. **publish** (main only, keystore required) — GitHub Release with the **signed release APK**. A debuggable debug build is never the installable artifact.
 
-Local build (if you have Android Studio or cmdline-tools):
+Local build (JDK 17, Android SDK 35, Python 3.11 for Chaquopy):
 ```
-cd stupid-agent
+cd Stupid-agent
 ./gradlew assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
+
+./gradlew test          # unit tests
+python3 app/src/main/python/test_vorv_sandbox.py   # sandbox self-test
 ```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the full environment setup, release-signing secret configuration, and how to add a tool.
+
+---
+
+## Security
+
+See [SECURITY.md](SECURITY.md) — threat model, per-tool sandbox guarantees and residual limits, and how to report a vulnerability.
 
 ---
 
 ## License
 
-Source code: MIT (see `LICENSE`).
-Bundled dependencies: see `NOTICES.md` for their respective licenses.
+Source code: MIT (see [LICENSE](LICENSE)).
+Bundled dependencies: see [NOTICES.md](NOTICES.md) for their respective licenses.

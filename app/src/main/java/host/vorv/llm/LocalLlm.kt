@@ -1,6 +1,7 @@
 package host.vorv.llm
 
 import android.content.Context
+import android.util.Log
 import com.geniex.sdk.LlmWrapper
 import com.geniex.sdk.bean.ChatMessage
 import com.geniex.sdk.bean.ComputeUnitValue
@@ -9,13 +10,9 @@ import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
 import com.geniex.sdk.bean.SamplerConfig
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 
 /**
  * Local LLM - real on-device inference via Qualcomm GenieX on the S25's Hexagon NPU.
- *
- * Verified facts (every claim checked 2026-10-31):
  *
  * BACKEND: AAR at repo1.maven.org/maven2/com/qualcomm/qti/geniex-android/0.10.0
  * - Bundles libggml-hexagon.so + libQnnHtpV81.so + libggml-htp-v81.so
@@ -24,18 +21,11 @@ import com.google.gson.JsonParser
  *   as automatic fallbacks.
  * - Loads standard GGUF files at runtime via the llama_cpp plugin.
  *
- * MODELS (verified via curl -sIL on each URL):
+ * MODELS:
  * - Default: Qwen2.5-Coder-7B-Instruct Q4_0, 4,444,121,888 bytes (4.44 GB)
  *   from bartowski/Qwen2.5-Coder-7B-Instruct-GGUF.
  * - Fallback: Qwen2.5-Coder-3B-Instruct Q4_0, 1,828,486,400 bytes (1.83 GB)
  *   from bartowski/Qwen2.5-Coder-3B-Instruct-GGUF.
- *
- * Why Q4_0 not Q4_K_M: Qualcomm's own GenieX notes/run.md states
- * "Q4_K_M is a suboptimal quant for HTP; some tensors fall back to CPU.
- * Use Q4_0 / Q8_0 for a clean NPU run."
- *
- * Why Coder not Instruct: Vorv is an autonomous CODING agent. Coder is the
- * same qwen2 arch + chat template, trained on code.
  *
  * COMPUTE: compute_unit=NPU via ComputeUnitValue.NPU.value.
  *
@@ -50,6 +40,9 @@ class LocalLlm(
 ) : Llm {
 
     override val label = displayLabel
+
+    /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
+    val modelId: String get() = modelChoice.id
 
     @Volatile private var llmWrapper: LlmWrapper? = null
 
@@ -119,7 +112,9 @@ class LocalLlm(
         }
 
         val generationConfig = GenerationConfig().apply {
-            maxTokens = 768
+            // 2048, not 768: long file_write payloads were getting truncated
+            // mid-JSON (audit finding M-1), producing unparseable tool calls.
+            maxTokens = 2048
             samplerConfig = SamplerConfig().apply {
                 temperature = 0.2f
                 topP = 0.9f
@@ -149,15 +144,15 @@ class LocalLlm(
             onTelemetry?.invoke(p.decodingSpeed, p.decodeTimeMs)
         }
 
-        return parseToolCallOrAnswer(sb.toString().trim())
+        return ToolCallParser.parse(sb.toString().trim())
     }
 
     private fun buildToolsJson(tools: List<Llm.ToolSpec>): String {
         val arr = com.google.gson.JsonArray()
         tools.forEach { spec ->
-            arr.add(JsonObject().apply {
+            arr.add(com.google.gson.JsonObject().apply {
                 addProperty("type", "function")
-                add("function", JsonObject().apply {
+                add("function", com.google.gson.JsonObject().apply {
                     addProperty("name", spec.name)
                     addProperty("description", spec.description)
                     add("parameters", spec.parameters)
@@ -167,88 +162,18 @@ class LocalLlm(
         return arr.toString()
     }
 
-    // --------------------------------------------------------------- parser
-    //
-    // Qwen2.5-Coder's chat template emits OpenAI-style tool calls in this form:
-    //   <tool>{...json...}</tool>
-    //
-    // We try the OpenAI-style format first. If the model instead emits our
-    // plain TOOL_CALL / ARGS text format (system-prompt-driven), we parse
-    // that as a fallback.
-
-    private val openAiToolCallRegex = Regex(
-        pattern = "<tool>\\s*(\\{.*?\\})\\s*</tool>",
-        options = setOf(RegexOption.DOT_MATCHES_ALL),
-    )
-    private val plainToolCallRegex = Regex(
-        pattern = "TOOL_CALL:\\s*([A-Za-z0-9_]+)\\s*(?:\\r?\\n|:)ARGS:\\s*(\\{.*\\})",
-        options = setOf(RegexOption.DOT_MATCHES_ALL),
-    )
-    private val answerRegex = Regex(
-        pattern = "ANSWER:\\s*(.*)",
-        options = setOf(RegexOption.DOT_MATCHES_ALL),
-    )
-
-    private fun parseToolCallOrAnswer(text: String): Llm.LlmResponse {
-        // OpenAI-style first
-        val openAi = openAiToolCallRegex.find(text)
-        if (openAi != null) {
-            val raw = openAi.groupValues[1].trim()
-            val json = try {
-                JsonParser.parseString(raw).asJsonObject
-            } catch (e: Exception) { null }
-            if (json != null) {
-                val name = json.get("name")?.asString ?: return answerOrRaw(text)
-                val args = json.get("arguments")?.let {
-                    if (it.isJsonObject) it.asJsonObject.toString() else it.asString
-                } ?: "{}"
-                return Llm.LlmResponse.ToolUse(
-                    toolCalls = listOf(Llm.ToolCall(
-                        id = java.util.UUID.randomUUID().toString(),
-                        name = name,
-                        arguments = args,
-                    )),
-                    reasoning = null,
-                )
-            }
-        }
-        // Plain format fallback
-        val plain = plainToolCallRegex.find(text)
-        if (plain != null) {
-            val name = plain.groupValues[1]
-            val rawArgs = plain.groupValues[2].trim()
-            val args = try {
-                JsonParser.parseString(rawArgs).asJsonObject.toString()
-            } catch (e: Exception) {
-                JsonObject().apply { addProperty("error", "model produced invalid JSON args: $rawArgs") }.toString()
-            }
-            return Llm.LlmResponse.ToolUse(
-                toolCalls = listOf(Llm.ToolCall(
-                    id = java.util.UUID.randomUUID().toString(),
-                    name = name,
-                    arguments = args,
-                )),
-                reasoning = null,
-            )
-        }
-        return answerOrRaw(text)
-    }
-
-    private fun answerOrRaw(text: String): Llm.LlmResponse {
-        val ans = answerRegex.find(text)
-        val body = ans?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() } ?: text
-        return Llm.LlmResponse.Text(body, done = true)
-    }
-
     /**
      * Free native memory. MUST be called when swapping models or closing.
-     * Only calls non-suspend APIs (close → destroy). reset/stopStream are
-     * suspend and require a coroutine — caller should call those explicitly
-     * if mid-generation, before release().
+     * Failures are logged, not swallowed (audit finding M-11) — a failed
+     * native destroy is the kind of thing you want in logcat when the next
+     * LlmWrapper build mysteriously fails.
      */
     fun release() {
         llmWrapper?.let { w ->
             runCatching { w.close() }   // close() internally calls destroy()
+                .onFailure {
+                    Log.w("Vorv/LocalLlm", "native release() failed: ${it.message}", it)
+                }
         }
         llmWrapper = null
     }

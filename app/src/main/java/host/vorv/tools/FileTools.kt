@@ -155,6 +155,12 @@ class FileWriteTool(private val appContext: Context) : Tool {
         }
         val path = input.get("path")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing path", durationMs = System.currentTimeMillis() - t0)
         val content = input.get("content")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
+        if (content.length > MAX_WRITE_CHARS) {
+            return@withContext ToolResult(ok = false, output = "",
+                error = "Content too large (${content.length} chars, cap $MAX_WRITE_CHARS). " +
+                    "Write in smaller chunks or use shell/python with the workspace.",
+                durationMs = System.currentTimeMillis() - t0)
+        }
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
             ?: return@withContext ToolResult(ok = false, output = "", error = "Invalid workspace URI", durationMs = System.currentTimeMillis() - t0)
 
@@ -189,5 +195,10 @@ class FileWriteTool(private val appContext: Context) : Tool {
             }
         }
         ToolResult(ok = false, output = "", error = "Empty path", durationMs = System.currentTimeMillis() - t0)
+    }
+
+    private companion object {
+        /** 1 MB cap on a single file_write payload. */
+        const val MAX_WRITE_CHARS = 1_000_000
     }
 }

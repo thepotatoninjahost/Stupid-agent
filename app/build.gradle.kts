@@ -14,8 +14,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.5.1-vorv"
+        versionCode = 10
+        versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -26,21 +26,37 @@ android {
     }
 
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("../vorv-debug.keystore")
-            storePassword = "android"
-            keyAlias = "vorvdebug"
-            keyPassword = "android"
+        // Release signing is driven by environment variables so that no key
+        // material ever lives in the repository. CI decodes a base64 keystore
+        // from GitHub Actions secrets. Local builds without the env vars simply
+        // produce an unsigned release APK (assembleRelease still works).
+        create("release") {
+            val ksPath = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
         }
+        // NOTE: the debug build intentionally uses the standard Android debug
+        // keystore (~/.android/debug.keystore, auto-generated). The previously
+        // committed vorv-debug.keystore was removed from the repository — see
+        // CHANGES.md (audit finding H-7 / supply-chain hygiene).
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            // Nothing custom — standard debug keystore, debuggable as expected.
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Only sign when the keystore env vars are present (CI release job).
+            if (System.getenv("RELEASE_KEYSTORE_PATH") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
@@ -48,7 +64,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+    testOptions {
+        unitTests {
+            // Robolectric needs resources; strict mode keeps tests honest.
+            isIncludeAndroidResources = true
+        }
+    }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
         // Required by GenieX — extracts .so files to local filesystem at install
@@ -58,12 +83,17 @@ android {
     }
 }
 
+ksp {
+    // Export Room schemas for migration testing (see app/schemas/ after build).
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 chaquopy {
     defaultConfig {
         version = "3.11"
         // Python 3.11 stdlib only — no external packages.
         // Chaquopy doesn't ship a C compiler, so anything with native deps fails.
-        // The agent's vorv_runner.py uses only stdlib (sys, io, signal).
+        // The agent's vorv_runner.py uses only stdlib (sys, io, time, threading).
     }
 }
 
@@ -84,15 +114,21 @@ dependencies {
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.documentfile)
-    implementation(libs.retrofit)
-    implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
-    implementation(libs.okhttp.logging)
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.rhino)
     implementation(libs.geniex.android)
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.coil.compose)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.jsoup)
     debugImplementation(libs.androidx.ui.tooling)
+
+    // Test-only
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.room.testing)
 }

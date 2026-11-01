@@ -1,19 +1,50 @@
 package host.vorv.tools
 
 import com.google.gson.JsonObject
+import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
+import org.mozilla.javascript.ContextFactory
+import org.mozilla.javascript.EvaluatorException
 import org.mozilla.javascript.ScriptableObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * js_exec — run JavaScript in a Rhino sandbox. 3s hard timeout.
- * No file/network access. Captures console.log output.
+ * js_exec — run JavaScript in a HARDENED Rhino sandbox (audit finding C-1 + H-3).
+ *
+ * What "sandbox" means here, concretely:
+ *
+ *  1. ClassShutter — the only classes visible to script are Rhino's own and
+ *     a tiny allowlist of immutable java.lang types (String, Number, Boolean,
+ *     Math…). `Packages.java.lang.Runtime`, `java.io.File`, `java.lang.System.exit`,
+ *     `host.vorv.*`, `com.chaquo.*`, `com.geniex.*` are all DENIED.
+ *
+ *  2. LiveConnect globals (Packages, java, javax, org, com, net, io, android,
+ *     androidx, host, jdk, sun, …) plus importClass/importPackage/JavaAdapter/
+ *     JavaImporter are DELETED from the scope before sealing.
+ *
+ *  3. The scope is SEALED — script cannot redefine console or re-add globals.
+ *
+ *  4. Timeout via Rhino's instruction-count observer: the ContextFactory
+ *     subclass checks a wall-clock deadline every 10k interpreted instructions
+ *     and aborts with an EvaluatorException. This runs on the SAME thread as
+ *     evaluation (the previous cross-thread evaluateString watchdog was
+ *     undefined behavior — audit H-3).
+ *
+ * Residual risk: none known for the interpreted engine (optimization level -1)
+ * with the shutter above; Rhino CVEs historically target LiveConnect, which
+ * is removed. See SECURITY.md for the full threat model.
  */
 class JsExecTool : Tool {
     override val name = "js_exec"
-    override val description = "Execute JavaScript code in a sandbox. Use for quick computation, string manipulation, or testing logic. 3 second timeout. Cannot access files or network."
+    override val description =
+        "Execute JavaScript in a hardened sandbox. Only standard ECMAScript built-ins " +
+        "(Math, JSON, Array, String, …) and console.log are available — no file I/O, no network, " +
+        "no Java interop. Use for quick computation, string manipulation, or testing logic. " +
+        "5 second timeout."
+
+    override val timeoutMs: Long get() = 6_000L
+    override val maxCallsPerTask: Int get() = 30
 
     override fun schema() = JsonObject().apply {
         addProperty("type", "object")
@@ -26,21 +57,78 @@ class JsExecTool : Tool {
         add("required", com.google.gson.JsonArray().apply { add("code") })
     }
 
+    /**
+     * ContextFactory whose observeInstructionCount hook aborts evaluation once
+     * the deadline passes. The hook fires on the evaluating thread — this is
+     * Rhino's documented interruption mechanism.
+     */
+    private class WatchdogFactory : ContextFactory() {
+        @Volatile var deadline: Long = 0L
+        @Volatile var aborted: Boolean = false
+
+        override fun observeInstructionCount(cx: Context, instructionCount: Int) {
+            val d = deadline
+            if (d > 0 && System.currentTimeMillis() > d) {
+                aborted = true
+                throw EvaluatorException("Script exceeded its execution deadline")
+            }
+        }
+    }
+
+    private val factory = WatchdogFactory()
+
+    /**
+     * The ONLY Java classes the sandbox exposes. Rhino needs java.lang
+     * immutables for JS↔Java value coercion; everything else — including
+     * Runtime, ProcessBuilder, System, Class, and every android/app package —
+     * is denied by returning false.
+     */
+    private val allowedClasses: Set<String> = setOf(
+        "java.lang.String", "java.lang.Object", "java.lang.Boolean", "java.lang.Character",
+        "java.lang.Number", "java.lang.Integer", "java.lang.Long", "java.lang.Double",
+        "java.lang.Float", "java.lang.Short", "java.lang.Byte", "java.lang.Math",
+        "java.lang.StringBuilder", "java.lang.CharSequence", "java.lang.Comparable",
+        "java.lang.Iterable", "java.lang.Void", "java.lang.ArithmeticException",
+        "java.lang.Exception", "java.lang.RuntimeException", "java.lang.Error",
+        "java.lang.Throwable", "java.lang.IllegalArgumentException",
+        "java.lang.IllegalStateException", "java.lang.IndexOutOfBoundsException",
+        "java.lang.NullPointerException", "java.lang.UnsupportedOperationException",
+        "java.lang.NumberFormatException", "java.lang.StackTraceElement",
+    )
+
+    private val classShutter = ClassShutter { className ->
+        // Rhino's own machinery must keep working.
+        className.startsWith("org.mozilla.javascript.") || className in allowedClasses
+    }
+
+    /** LiveConnect globals and import helpers — deleted before sealing. */
+    private val liveConnectGlobals = listOf(
+        "Packages", "java", "javax", "org", "com", "net", "edu", "io",
+        "android", "androidx", "host", "jdk", "sun", "gnu", "mozilla",
+        "javafx", "GoogleServices",
+        "importClass", "importPackage", "JavaAdapter", "JavaImporter",
+    )
+
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
-        val code = input.get("code")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing code", durationMs = System.currentTimeMillis() - t0)
+        val code = input.get("code")?.asString
+            ?: return@withContext ToolResult(ok = false, output = "", error = "missing code",
+                durationMs = System.currentTimeMillis() - t0)
 
         val stdout = StringBuilder()
         val stderr = StringBuilder()
         var returnValue: String? = null
         var error: String? = null
-        val timedOut = AtomicBoolean(false)
+        var timedOut = false
 
-        val cx = Context.enter()
+        val cx = factory.enterContext()
         try {
-            cx.setOptimizationLevel(-1)
+            cx.setOptimizationLevel(-1)          // interpreted: required for the observer
             cx.languageVersion = Context.VERSION_ES6
-            val scope = cx.initStandardObjects()
+            cx.classShutter = classShutter
+            cx.instructionObserverThreshold = 10_000
+
+            val scope = cx.initStandardObjects(null, false)
 
             val console = object : ScriptableObject() {
                 override fun getClassName() = "VorvConsole"
@@ -51,23 +139,28 @@ class JsExecTool : Tool {
             }
             scope.put("console", scope, console)
 
-            val watchdog = Thread {
-                try {
-                    Thread.sleep(3000)
-                    timedOut.set(true)
-                    cx.evaluateString(scope, "throw new Error('TIMEOUT')", "watchdog", 1, null)
-                } catch (_: InterruptedException) {}
-            }.apply { isDaemon = true; start() }
+            // Remove every LiveConnect escape hatch, then seal the scope.
+            for (name in liveConnectGlobals) scope.delete(name)
+            (scope as? ScriptableObject)?.sealObject()
 
+            factory.aborted = false
+            factory.deadline = System.currentTimeMillis() + SANDBOX_TIMEOUT_MS
             try {
                 val result = cx.evaluateString(scope, code, "vorv-sandbox.js", 1, null)
-                watchdog.interrupt()
                 returnValue = result?.let { fmt(it) }
+            } catch (e: EvaluatorException) {
+                error = if (factory.aborted || timedOutFlag(factory)) {
+                    timedOut = true
+                    "Execution timed out after ${SANDBOX_TIMEOUT_MS}ms"
+                } else {
+                    e.message ?: e.toString()
+                }
+                stderr.appendLine(error)
             } catch (e: Exception) {
-                watchdog.interrupt()
-                val msg = e.message ?: e.toString()
-                error = if (timedOut.get() || msg.contains("TIMEOUT")) "Execution timed out after 3000ms" else msg
-                stderr.appendLine(msg)
+                error = e.message ?: e.toString()
+                stderr.appendLine(error)
+            } finally {
+                factory.deadline = 0L
             }
         } finally {
             Context.exit()
@@ -84,11 +177,13 @@ class JsExecTool : Tool {
                 if (isEmpty()) append("(no output)")
             },
             stderr = stderr.toString().trim(),
-            error = error,
+            error = if (timedOut) "Execution timed out after ${SANDBOX_TIMEOUT_MS}ms" else error,
             durationMs = System.currentTimeMillis() - t0,
             citation = Citation("exec", ctx.taskId, "exec iter ${ctx.iteration}"),
         )
     }
+
+    private fun timedOutFlag(factory: WatchdogFactory) = factory.aborted
 
     private fun fmt(v: Any?): String = when (v) {
         null -> "null"
@@ -99,5 +194,9 @@ class JsExecTool : Tool {
             if (enteredHere) Context.enter()
             try { Context.toString(v) } catch (e: Exception) { v.toString() } finally { if (enteredHere) Context.exit() }
         }
+    }
+
+    private companion object {
+        const val SANDBOX_TIMEOUT_MS = 5_000L
     }
 }
