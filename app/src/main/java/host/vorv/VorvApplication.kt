@@ -61,6 +61,17 @@ class VorvApplication : Application() {
         installCrashHandler()
         super.onCreate()
 
+        // Load any pending hot-patches BEFORE app code runs. A patch .dex
+        // loaded here overrides buggy classes for the entire process lifetime.
+        // (Honest limitation: already-loaded classes can't be unloaded, so a
+        // newly-downloaded patch only takes effect after a restart. The
+        // watchdog orchestrates that restart.)
+        BootTracer.step(this, "hotpatch_load_begin")
+        val appliedPatches = runCatching { host.vorv.watchdog.HotPatcher.loadPendingPatches(this) }
+            .onFailure { BootTracer.step(this, "hotpatch_load_failed", it.message) }
+            .getOrDefault(emptyList())
+        BootTracer.step(this, "hotpatch_load_end", "applied=${appliedPatches.size}")
+
         // Start breadcrumbs — every subsequent step gets traced.
         BootTracer.start(this)
 
@@ -78,6 +89,18 @@ class VorvApplication : Application() {
             BootTracer.step(this, "previous_boot_ok")
         }
 
+        // Start the watchdog service in a separate process. It survives this
+        // process's crashes and orchestrates clean restarts.
+        BootTracer.step(this, "start_watchdog")
+        runCatching {
+            val intent = android.content.Intent(this, host.vorv.watchdog.WatchdogService::class.java)
+            startService(intent)
+        }.onFailure { BootTracer.step(this, "start_watchdog_failed", it.message) }
+
+        // Write initial heartbeat — the watchdog uses this to detect when
+        // this process dies (stale heartbeat = crash).
+        host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "app_oncreate")
+
         BootTracer.step(this, "init_prefs")
         prefs = VorvPrefs(this)
         BootTracer.step(this, "init_secrets")
@@ -94,11 +117,37 @@ class VorvApplication : Application() {
         BootTracer.step(this, "init_model_repo")
         modelRepository = ModelRepository(this)
 
+        // Start a background heartbeat writer — keeps the watchdog informed
+        // that this process is alive and which step it's on.
+        startHeartbeatWriter()
+
         // One-shot migration: plaintext DataStore API key → encrypted storage (C-5).
         appScope.launch {
             runCatching { secrets.migrateFromLegacy(prefs) }
                 .onFailure { android.util.Log.e(TAG, "legacy key migration failed: ${it.message}", it) }
         }
+    }
+
+    /**
+     * Background thread that writes a heartbeat every 5s. The watchdog reads
+     * this to detect when this process has died (stale heartbeat = crash).
+     */
+    private var heartbeatThread: Thread? = null
+    @Volatile private var heartbeatRunning = false
+
+    private fun startHeartbeatWriter() {
+        heartbeatRunning = true
+        heartbeatThread = Thread {
+            while (heartbeatRunning) {
+                try {
+                    host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "alive")
+                    Thread.sleep(5000)
+                } catch (_: InterruptedException) {
+                    break
+                } catch (_: Exception) { /* keep going */ }
+            }
+        }.apply { isDaemon = true; name = "vorv-heartbeat" }
+        heartbeatThread?.start()
     }
 
     /**

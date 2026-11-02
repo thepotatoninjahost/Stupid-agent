@@ -47,5 +47,17 @@
             android:name=".service.AgentService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          WatchdogService — runs in a SEPARATE PROCESS (":watchdog").
+          Survives main app crashes (even native SIGSEGV). Detects main
+          process death, captures diagnostics from outside, orchestrates
+          clean restart so the user sees the app come back instead of
+          "Vorv has stopped".
+        -->
+        <service
+            android:name=".watchdog.WatchdogService"
+            android:process=":watchdog"
+            android:exported="false" />
     </application>
 </manifest>
