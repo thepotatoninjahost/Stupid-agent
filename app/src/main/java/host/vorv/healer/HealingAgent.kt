@@ -15,7 +15,7 @@ import java.io.File
  *   1. The watchdog detects a crash and triggers this agent.
  *   2. The agent reads the crash diagnostics (stack trace + breadcrumbs).
  *   3. The agent reads the buggy source file from the app's bundled source
- *      (assets/source/host/vorv/.../*.kt — the app ships its own source).
+ *      (under assets/source/host/vorv/... — the app ships its own .kt source files).
  *   4. The agent prompts the on-device LLM (Qwen2.5-Coder) with:
  *        "Here is the crash. Here is the buggy source. Generate a fix."
  *   5. The LLM generates the fixed Kotlin source.
