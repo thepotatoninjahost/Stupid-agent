@@ -395,20 +395,31 @@ class HealingAgent(
         return compiled
     }
 
-    /** Extract the healer classpath asset once (audit H-4: implemented). */
+    /**
+     * Extract the healer classpath asset once (audit H-4: implemented).
+     *
+     * Audit N-M1 (VRA-2026-1103): filesDir survives an app update, so the
+     * extracted jar is stamped with BuildConfig.VERSION_CODE. When the app
+     * was updated, the stale jar is replaced with the one shipped in the
+     * current APK — otherwise the first heal after an update would compile
+     * against the PREVIOUS app's classes while PatchVerifier compares
+     * against the new original class.
+     */
     @Volatile private var appClassesJarFile: File? = null
 
     private fun extractAppClassesJar(): File? {
         appClassesJarFile?.let { if (it.exists()) return it }
         return runCatching {
             val out = File(context.filesDir, "healer/app_classes.jar")
-            if (out.exists()) {
-                appClassesJarFile = out
-                return out
-            }
-            out.parentFile?.mkdirs()
-            context.assets.open(ASSET_CLASSES_JAR).use { input ->
-                out.outputStream().use { input.copyTo(it) }
+            val stamp = File(context.filesDir, "healer/app_classes.version")
+            val currentVersion = host.vorv.BuildConfig.VERSION_CODE.toString()
+            val stale = !out.exists() || stamp.readText().trim() != currentVersion
+            if (stale) {
+                out.parentFile?.mkdirs()
+                context.assets.open(ASSET_CLASSES_JAR).use { input ->
+                    out.outputStream().use { input.copyTo(it) }
+                }
+                stamp.writeText(currentVersion)
             }
             appClassesJarFile = out
             out
@@ -453,12 +464,22 @@ class HealingAgent(
         writeDoc(srcDoc, fixedSource.toByteArray())
 
         // Stage the app classpath jar into the workspace so Termux can read it.
+        // Audit N-M1 (VRA-2026-1103): the staged copy is version-stamped too —
+        // after an app update the new jar is re-staged, so kotlinc never
+        // compiles against the previous version's classes.
         val appClasses = extractAppClassesJar() ?: return@withContext null
+        val versionDoc = healDir.findFile("app_classes.version")
+        val stagedVersion = runCatching { readDoc(versionDoc)?.trim() }.getOrNull()
+        val currentVersion = host.vorv.BuildConfig.VERSION_CODE.toString()
         val cpDoc = healDir.findFile("app_classes.jar")
             ?: healDir.createFile("application/java-archive", "app_classes.jar")
             ?: return@withContext null
-        if (cpDoc.length() == 0L) {
+        if (stagedVersion != currentVersion) {
             writeDoc(cpDoc, appClasses.readBytes())
+            val stampDoc = versionDoc
+                ?: healDir.createFile("text/plain", "app_classes.version")
+                ?: return@withContext null
+            writeDoc(stampDoc, currentVersion.toByteArray())
         }
 
         val scriptName = "compile_$runId.sh"

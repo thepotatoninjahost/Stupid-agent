@@ -14,8 +14,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.6.9"
+        versionCode = 19
+        versionName = "0.6.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -110,13 +110,6 @@ tasks.register<Sync>("syncSourceMirror") {
 
 tasks.named("preBuild") { dependsOn("syncSourceMirror") }
 
-/**
- * H-4: package the app's compiled classes as the healer's compile
- * classpath (assets/healer/app_classes.jar). The audited code referenced a
- * path that was never populated — every Termux compile was doomed. The
- * healer extracts this jar once and stages it into the workspace so
- * kotlinc can resolve the app's own types (Tool, ToolContext, ...).
- */
 val healerAssetsDir = layout.buildDirectory.dir("generated/healer/assets")
 
 /**

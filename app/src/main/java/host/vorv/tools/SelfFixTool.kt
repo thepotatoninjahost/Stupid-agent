@@ -45,8 +45,10 @@ import kotlinx.coroutines.flow.first
  * deem it fit.
  *
  * Runs in the MAIN process (audit M-8), on its own timeout budget (the
- * kernel-enforced budget is 21 minutes: model load + up to 3 compile
- * attempts + verification).
+ * kernel-enforced budget is 15 minutes: model load + up to 3 compile
+ * attempts + verification — aligned with the healer's own 15-minute total
+ * budget and the 15-minute local-mode task timeout, audit N-L7,
+ * VRA-2026-1103: the previous 21-minute figure was unreachable).
  *
  * MODEL (v0.6.9): patch generation uses the STRONGEST coder model on the
  * device — the 7B whenever it is downloaded. The 3B is only a fallback
@@ -72,8 +74,9 @@ class SelfFixTool(
             "the repairs; the 3B only if the 7B was never pulled), a granted workspace " +
             "folder, and Termux with kotlinc+d8 for the on-device compile."
 
-    /** Model load + 3 attempts (LLM + Termux compile) + verification. */
-    override val timeoutMs: Long get() = 21 * 60_000L
+    /** Model load + 3 attempts (LLM + Termux compile) + verification — 15 min,
+     * matching the healer's TOTAL_HEAL_BUDGET_MS and the local task timeout. */
+    override val timeoutMs: Long get() = 15 * 60_000L
 
     /** A confused model must not spam heal attempts. */
     override val maxCallsPerTask: Int get() = 2

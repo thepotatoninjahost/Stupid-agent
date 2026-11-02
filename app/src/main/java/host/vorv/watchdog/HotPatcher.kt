@@ -123,7 +123,14 @@ object HotPatcher {
                     }
 
                     // Gate 5: dispatchable class present in the patch.
+                    // N-L6 (VRA-2026-1103): a manifest entry without a classes
+                    // list is quarantined like any other bad entry — the old
+                    // code NPE'd on classes.length() and aborted the whole loop.
                     val classes = entry.optJSONArray("classes")
+                    if (classes == null) {
+                        quarantine(context, dexFile, "manifest entry has no classes list")
+                        return@forEach
+                    }
                     val classNames = (0 until classes.length()).map { classes.getString(it) }
                     if (classNames.none { PatchRegistry.isPatchableClass(it) }) {
                         quarantine(context, dexFile, "no dispatchable class in the patch")

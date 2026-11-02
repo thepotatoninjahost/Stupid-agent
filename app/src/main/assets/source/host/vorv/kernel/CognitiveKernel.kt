@@ -220,7 +220,13 @@ class CognitiveKernel(
                             toolCallCount++
 
                             // ---- full-output persistence (M-7) ----
-                            val (preview, outputFilePath) = persistFullOutput(taskId, iterations, tc.name, result.output)
+                            // N-M2 (VRA-2026-1103): the per-task call index is part of the
+                            // filename — two calls to the same tool within one iteration
+                            // (parallel tool calls) can no longer overwrite each other's
+                            // persisted output while both DB rows point at one file.
+                            val (preview, outputFilePath) = persistFullOutput(
+                                taskId, iterations, tc.name, result.output, toolCallCount + 1,
+                            )
 
                             // Persist verifiable log
                             eventSink.insertToolCall(host.vorv.data.entity.ToolCall(
@@ -343,15 +349,23 @@ class CognitiveKernel(
 
     /**
      * When a tool's output exceeds the preview budget, writes the full text to
-     * outputDir/<taskId>/<iteration>_<tool>.txt and returns (preview, path).
+     * outputDir/<taskId>/<iteration>_<callIndex>_<tool>.txt and returns
+     * (preview, path). The call index keeps parallel calls to the same tool
+     * in one iteration from colliding (audit N-M2, VRA-2026-1103).
      */
-    private fun persistFullOutput(taskId: String, iteration: Int, toolName: String, output: String): Pair<String, String?> {
+    private fun persistFullOutput(
+        taskId: String,
+        iteration: Int,
+        toolName: String,
+        output: String,
+        callIndex: Int,
+    ): Pair<String, String?> {
         if (output.length <= OUTPUT_PREVIEW_CHARS) return output to null
         return try {
             val safeTool = toolName.replace(Regex("[^A-Za-z0-9_-]"), "_")
             val taskDir = File(outputDir, taskId)
             taskDir.mkdirs()
-            val f = File(taskDir, "${iteration}_$safeTool.txt")
+            val f = File(taskDir, "${iteration}_${callIndex}_$safeTool.txt")
             f.writeText(output)
             output.take(OUTPUT_PREVIEW_CHARS) to f.absolutePath
         } catch (e: Exception) {

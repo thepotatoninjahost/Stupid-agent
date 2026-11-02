@@ -32,7 +32,9 @@ import java.util.Locale
  *   BootTracer.complete(ctx)       // writes "BOOT_COMPLETE"
  *
  * THREAD SAFETY:
- *   Single-threaded by design (only called from the main thread during onCreate).
+ *   GenieX callbacks write breadcrumbs from binder threads (audit N-L4,
+ *   VRA-2026-1103), so every write is @Synchronized — lines can interleave
+ *   in order but never corrupt (SimpleDateFormat is not thread-safe).
  *   Uses append mode with fsync after each write so the data is on disk before
  *   the next step runs.
  */
@@ -50,14 +52,21 @@ object BootTracer {
         File(ctx.getExternalFilesDir(null), CRASH_COUNT_FILE)
 
     /**
-     * Start a fresh boot trace. Clears any previous trace file.
+     * Start a fresh boot trace. Writes a separator + the BOOT_STARTED marker.
+     *
+     * N-L2 (VRA-2026-1103): this runs BEFORE the crash handler is installed,
+     * so every write is guarded — a disk-full or I/O failure here must not
+     * take the app down unlogged.
      */
+    @Synchronized
     fun start(ctx: Context) {
-        val file = traceFile(ctx)
-        file.parentFile?.mkdirs()
-        // Don't delete — we need to read the OLD trace to detect a crash loop.
-        // Instead, write a separator + new start marker.
-        file.appendText("\n" + "=".repeat(60) + "\n")
+        runCatching {
+            val file = traceFile(ctx)
+            file.parentFile?.mkdirs()
+            // Don't delete — we need to read the OLD trace to detect a crash loop.
+            // Instead, write a separator + new start marker.
+            file.appendText("\n" + "=".repeat(60) + "\n")
+        }
         writeStep(ctx, "BOOT_STARTED", "pid=${android.os.Process.myPid()}")
     }
 
@@ -145,6 +154,7 @@ object BootTracer {
         return lastLine.contains("BOOT_COMPLETE")
     }
 
+    @Synchronized
     private fun writeStep(ctx: Context, name: String, detail: String?) {
         runCatching {
             val ts = timestampFormat.format(Date())

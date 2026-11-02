@@ -52,6 +52,27 @@ class WatchdogService : Service() {
         private const val TRANSACT_REGISTER = 1
 
         /**
+         * N-L5 (VRA-2026-1103): relaunch circuit breaker. A persistent crash
+         * before the main process's safe-mode logic could otherwise spin
+         * crash -> relaunch -> crash indefinitely. At most MAX_RELAUNCHES
+         * relaunches per RELAUNCH_WINDOW_MS; past the cap the watchdog stops
+         * relaunching and logs that the user must open the app manually.
+         */
+        private const val MAX_RELAUNCHES = 5
+        private const val RELAUNCH_WINDOW_MS = 10 * 60_000L
+        private val relaunchTimestamps = java.util.ArrayDeque<Long>()
+
+        private fun relaunchAllowed(): Boolean = synchronized(relaunchTimestamps) {
+            val now = System.currentTimeMillis()
+            while (relaunchTimestamps.isNotEmpty() && now - relaunchTimestamps.first() > RELAUNCH_WINDOW_MS) {
+                relaunchTimestamps.removeFirst()
+            }
+            if (relaunchTimestamps.size >= MAX_RELAUNCHES) return false
+            relaunchTimestamps.addLast(now)
+            true
+        }
+
+        /**
          * Called by the MAIN process to register a heartbeat. The watchdog
          * treats a recent heartbeat FROM A LIVE PROCESS as "main is alive".
          */
@@ -195,9 +216,17 @@ class WatchdogService : Service() {
 
         Log.e(TAG, "Crash log written to ${crashFile.absolutePath}")
 
-        // Wait briefly, then relaunch. NO LLM here — the heal runs in the
-        // restarted MAIN process when the user taps "Attempt self-repair".
+        // Wait briefly, then relaunch — unless the circuit breaker tripped.
+        // NO LLM here — the heal runs in the restarted MAIN process when the
+        // user taps "Attempt self-repair".
         try { Thread.sleep(RESTART_DELAY_MS) } catch (_: InterruptedException) {}
+
+        if (!relaunchAllowed()) {
+            Log.e(TAG, "Relaunch circuit breaker tripped ($MAX_RELAUNCHES crashes in " +
+                "${RELAUNCH_WINDOW_MS / 60_000} min) — NOT relaunching; the user must open " +
+                "the app manually. Diagnostics are on disk.")
+            return
+        }
 
         Log.i(TAG, "Relaunching main activity (clean restart)")
         try {

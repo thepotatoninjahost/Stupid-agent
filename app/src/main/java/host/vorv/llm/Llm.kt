@@ -178,6 +178,12 @@ class CloudLlm(
                             Llm.LlmResponse.Text(content, done = finish == "stop")
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // N-L1 (VRA-2026-1103): cancellation is not a retryable
+                    // failure — the task was timed out or cancelled. Retrying
+                    // it would keep a dead task's worker busy for up to
+                    // MAX_ATTEMPTS more calls in the background.
+                    throw e
                 } catch (e: Exception) {
                     lastErr = e.message
                     if (attempt < MAX_ATTEMPTS - 1) {

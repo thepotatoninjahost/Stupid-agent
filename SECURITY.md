@@ -27,10 +27,13 @@ Therefore every tool treats its input as hostile data. The defense is layered:
 
 2. **Sandboxing (code-execution tools):** see below.
 
-3. **User consent (side-effecting tools):** `app_intent` (all four actions)
-   requires an Allow/Deny dialog that shows exactly what will happen. A denied
-   confirmation is reported back to the model as a failure — the model cannot
-   retry its way around the user.
+3. **User consent (side-effecting tools):** every tool with device-visible
+   effects routes through the Allow/Deny consent bridge. That is `app_intent`
+   (all four actions), `shell` (the command text is shown in the dialog),
+   `python_exec` (first execution per task), and every `self_fix` patch
+   (patch id, target class, SHA-256 and verification status are shown before
+   anything is registered). A denied confirmation is reported back to the
+   model as a failure — the model cannot retry its way around the user.
 
 4. **Egress control (network tools):** `web_fetch` resolves through an OkHttp
    `Dns` implementation that refuses loopback, link-local, site-local,

@@ -6,7 +6,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ---
 
-## Status (v0.6.0) — honest, as always
+## Status — honest, as always
 
 ✅ **Local LLM**: Qwen2.5-Coder-3B/7B-Instruct (Q4_0 GGUF) on the Hexagon NPU via Qualcomm **GenieX** — fully offline after a one-time 1.8–4.4 GB download.
 ✅ **Cloud LLM**: GLM-4.6 via Z.ai (optional; needs your API key, stored encrypted at rest).
@@ -35,7 +35,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 │   • per-tool wall-clock timeouts + per-task rate limits       │
 │   • max 20 iterations; every iteration logged                 │
 ├─────────────────────────────────────────────────────────────┤
-│  LLM (kernel picks)              │  Tool Registry (15)        │
+│  LLM (kernel picks)              │  Tool Registry (16)        │
 │   ├─ Local: GenieX → Hexagon NPU  │  memory_write/recall      │
 │   └─ Cloud: GLM-4.6 (optional)    │  js_exec (Rhino sandbox)  │
 │                                   │  python_exec (sandboxed)  │
@@ -130,7 +130,7 @@ Before declaring "done", all 8 must pass on a real S25:
 7. **Scheduled task.** "Remind me in 5 minutes to check the build." WorkManager job enqueued. 5 min later, notification fires (even if app killed).
 8. **Verifiable log.** Open any past task in Tasks screen and expand it. Every tool call shows real input, real output, real duration — with "View full output" for long results. Nothing paraphrased or invented.
 
-**Status:** NOT yet verified on-device for v0.6.0 — the maintainer must run them.
+**Status:** NOT yet verified on-device — the maintainer must run them.
 
 ---
 

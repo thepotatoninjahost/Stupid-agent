@@ -1,3 +1,73 @@
+# Changelog — v0.6.10 "Audit Follow-ups"
+
+Every finding from the VRA-2026-1103 full-project line-by-line audit (158
+files, 24,063 lines) fixed. The audit re-verified all 27 findings from
+VRA-2026-1102 as still remediated and found 16 new items (3 medium, 9 low,
+4 informational) — all addressed below. Nothing is disabled; every fix
+preserves behavior.
+
+## Medium
+
+- **N-M1 — healer classpath went stale after an app update.** The extracted
+  `app_classes.jar` (filesDir) and the workspace-staged copy were reused
+  without a version check, so the first self-repair after an update compiled
+  against the PREVIOUS app's classes while PatchVerifier compared against the
+  new original. Both copies are now stamped with `BuildConfig.VERSION_CODE`
+  and re-extracted/re-staged whenever it changes. (`HealingAgent.kt`)
+- **N-M2 — persisted tool outputs could overwrite each other.** Full outputs
+  were named `<iteration>_<tool>.txt`; two calls to the same tool in one
+  assistant turn (parallel tool calls) collided, and both DB rows pointed at
+  a file holding only the second output. Filenames now carry the per-task
+  call index. Pinned by a new CognitiveKernelTest case.
+  (`CognitiveKernel.kt`)
+- **N-M3 — tool inventory undercounted (15 vs 16).** `self_fix` was missing
+  from the Tools screen entirely, and the Tools header, the Setup About text
+  and the README diagram all said "15". The inventory now lists all 16 with
+  an honest description of self_fix. (`ToolsScreen.kt`, `SettingsScreen.kt`,
+  `README.md`)
+
+## Low
+
+- **N-L1** — `CloudLlm` no longer swallows `CancellationException`: a timed-out
+  cloud task's worker stops retrying immediately instead of running up to 4
+  background attempts. (`Llm.kt`)
+- **N-L2** — `BootTracer.start()` writes are guarded: an I/O failure before
+  the crash handler installs can no longer crash the app unlogged.
+  (`BootTracer.kt`)
+- **N-L3** — dead `patchConsent` field removed from `MainActivity`.
+- **N-L4** — `BootTracer` writes are `@Synchronized`: GenieX callbacks write
+  breadcrumbs from binder threads; lines can interleave in order but never
+  corrupt. (`BootTracer.kt`)
+- **N-L5** — watchdog relaunch circuit breaker: at most 5 relaunches per
+  10 minutes. A persistent pre-safe-mode native crash can no longer spin
+  crash→relaunch forever. (`WatchdogService.kt`)
+- **N-L6** — a HotPatcher manifest entry without a `classes` list is
+  quarantined like any other bad entry instead of NPE-ing and aborting the
+  whole patch loop. (`HotPatcher.kt`)
+- **N-L7** — `self_fix` budget aligned to the real 15-minute ceiling (was a
+  documented 21 minutes that the task timeout and healer budget made
+  unreachable). (`SelfFixTool.kt`)
+- **N-L8** — the crash-dialog analysis and self-repair paths refuse to start
+  while a chat task is running, so two native GenieX engines can never hold
+  the NPU at once. (`MainActivity.kt`)
+- **N-L9** — duplicated H-4 doc block removed from `app/build.gradle.kts`
+  (introduced with the CI dependency fix).
+
+## Informational
+
+- **N-I2** — SECURITY.md consent section now names every gated tool
+  (app_intent, shell, python_exec first-use, self_fix); the hashlib sandbox
+  self-test asserts the real digest prefix instead of a vacuous empty string.
+- **N-I3** — README status header no longer pins a stale version; the
+  acceptance-test status line likewise.
+- Also fixed in 2040a41 (same series): CI run #57's
+  `mergeReleaseAssets` WorkValidationException — the healer asset producer is
+  now a registered generated-asset directory with explicit consumer edges, so
+  the build order is deterministic instead of a coin flip. Verified by
+  run #58's green test job.
+
+---
+
 # Changelog — v0.6.9 "27/27 Remediated"
 
 This release fixes every finding from the VRA-2026-1102 forensic audit

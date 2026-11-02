@@ -288,12 +288,13 @@ class MainActivity : ComponentActivity() {
     // On-device repair (audits H-4, M-8, C-2; strongest-model per v0.6.9)
     // ================================================================
 
-    /** The consent dialog answer for a patch proposal. */
-    private var patchConsent: CompletableDeferred<Boolean>? = null
-
+    /**
+     * The consent dialog for a patch proposal (audit C-2). The deferred is
+     * local — the dialog answers it; nothing needs a field (audit N-L3,
+     * VRA-2026-1103: the old patchConsent field was assigned but never read).
+     */
     private suspend fun requestPatchConsent(proposal: PatchProposal): Boolean {
         val deferred = CompletableDeferred<Boolean>()
-        patchConsent = deferred
         runOnUiThread {
             android.app.AlertDialog.Builder(this)
                 .setTitle("Apply self-repair patch?")
@@ -327,6 +328,13 @@ class MainActivity : ComponentActivity() {
         val app = application as VorvApplication
         if (app.safeMode) {
             Toast.makeText(this, "Safe mode — GenieX is not initialized, analysis unavailable.", Toast.LENGTH_LONG).show()
+            return
+        }
+        // N-L8 (VRA-2026-1103): refuse when a chat task is running — the
+        // repair builds its own native engine; running it next to the
+        // task's engine doubles NPU memory for no benefit.
+        if (app.modelRepository.busy) {
+            Toast.makeText(this, "A task is running — wait for it to finish before on-device analysis.", Toast.LENGTH_LONG).show()
             return
         }
         Toast.makeText(this, "Analyzing crash on-device…", Toast.LENGTH_SHORT).show()
@@ -391,6 +399,14 @@ class MainActivity : ComponentActivity() {
                 if (app.safeMode) {
                     onDone(false, "Safe mode is active — GenieX is not initialized, " +
                         "self-repair unavailable. Use 'Retry normal boot' first.", false)
+                    return@launch
+                }
+                // N-L8 (VRA-2026-1103): refuse while a chat task is running —
+                // the repair engine plus the task engine would be two native
+                // GenieX instances on the NPU at once.
+                if (app.modelRepository.busy) {
+                    onDone(false, "A task is running — wait for it to finish before " +
+                        "self-repair. Nothing was changed.", false)
                     return@launch
                 }
                 // Strongest-first repair model (v0.6.9): patches are written

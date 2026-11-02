@@ -15,6 +15,9 @@ import host.vorv.ui.theme.*
 
 @Composable
 fun ToolsScreen(state: AgentState) {
+    // Audit N-M3 (VRA-2026-1103): the inventory lists ALL 16 registered tools —
+    // self_fix was missing from this screen entirely, and three other places
+    // counted "15" while AgentViewModel registers 16.
     val ready = listOf(
         "memory_write" to "Persist a fact for future sessions (Room + FTS4)",
         "memory_recall" to "FTS4 keyword search + LIKE fallback",
@@ -26,11 +29,12 @@ fun ToolsScreen(state: AgentState) {
         "web_search" to "Z.ai Web Search API (documented /web_search endpoint)",
         "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",
         "app_intent" to "Android intents (view/share/dial/open_app) — every action needs your confirmation",
-        "shell" to "Bash via Termux with REAL stdout/stderr/exit-code capture (needs workspace + Termux setup)",
+        "shell" to "Bash via Termux with REAL stdout/stderr/exit-code capture (needs workspace + Termux setup + your confirmation)",
         "notify" to "Post a system notification (checks permission, honest error if missing)",
         "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
         "schedule_cancel" to "Cancel pending reminders by title or all",
         "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
+        "self_fix" to "Fix or modify Vorv's own code: strongest on-device model writes the complete patched class, compiled in Termux, verified complete, signed, APPROVED by you, rolled back automatically if it crashes",
     )
     val engines = listOf(
         "local_llm" to if (state.localModelReady) {
