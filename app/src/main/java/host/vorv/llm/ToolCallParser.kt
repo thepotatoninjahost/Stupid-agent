@@ -187,9 +187,10 @@ object ToolCallParser {
      */
     private fun parseMarkdownOrBareJson(text: String): Llm.LlmResponse? {
         val trimmedText = text.trimStart()
-        // Only try this path if the text looks like it contains a JSON tool
-        // call: either wrapped in markdown code fences, or starting with {/[.
-        if (!text.contains("```") && !trimmedText.startsWith("{") && !trimmedText.startsWith("[")) {
+        // Cheap guard: skip if there's no JSON-shaped content at all. The
+        // real gate is the "name" key check in parseToolCallJson — that's
+        // what prevents misparsing ordinary JSON data or prose as a tool call.
+        if (!text.contains("```") && !text.contains("{") && !text.contains("[")) {
             return null
         }
 
