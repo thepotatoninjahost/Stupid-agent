@@ -54,6 +54,17 @@ object ToolCallParser {
             }
         }
 
+        // 2.5. Markdown-fenced or bare-JSON tool call.
+        //      Qwen2.5-Coder via GenieX sometimes emits tool calls as:
+        //        ```json
+        //        {"name": "js_exec", "arguments": {"code": "..."}}
+        //        ```
+        //      or as a bare JSON object/array, instead of the expected
+        //      <tool>...</tool> tags. This path strips fences and parses.
+        //      Gated on having a "name" key so prose containing JSON is
+        //      never misparsed as a tool call.
+        parseMarkdownOrBareJson(trimmed)?.let { return it }
+
         // 3. Plain-text protocol.
         plainToolCallRegex.find(trimmed)?.let { mr ->
             val name = mr.groupValues[1]
@@ -160,5 +171,107 @@ object ToolCallParser {
         while (sb.isNotEmpty() && sb.last() in ",:") sb.deleteCharAt(sb.length - 1)
         while (stack.isNotEmpty()) sb.append(stack.removeLast())
         return sb.toString()
+    }
+
+    /**
+     * Parses tool calls emitted as markdown-fenced JSON or bare JSON.
+     *
+     * Observed from Qwen2.5-Coder via GenieX (on-device, S25):
+     *   - Single fenced object:  ```json\n{"name":...,"arguments":{...}}\n```
+     *   - Fenced array:           ```json\n[{...},{...}]\n```
+     *   - Double-fenced (rare):   ```json\n```json\n{...}\n```\n```
+     *   - Bare JSON:              {"name":...,"arguments":{...}}
+     *
+     * Gated on the presence of a "name" key so ordinary prose or JSON data
+     * is never misparsed as a tool call.
+     */
+    private fun parseMarkdownOrBareJson(text: String): Llm.LlmResponse? {
+        val trimmedText = text.trimStart()
+        // Only try this path if the text looks like it contains a JSON tool
+        // call: either wrapped in markdown code fences, or starting with {/[.
+        if (!text.contains("```") && !trimmedText.startsWith("{") && !trimmedText.startsWith("[")) {
+            return null
+        }
+
+        // 1. Try each markdown-fenced code block as a tool call. Handles the
+        //    case where prose or non-tool JSON appears before the tool call.
+        if (text.contains("```")) {
+            val fenceRegex = Regex("```+(?:json)?\\s*([\\s\\S]*?)\\s*```+")
+            for (match in fenceRegex.findAll(text)) {
+                val content = match.groupValues[1].trim()
+                if (content.startsWith("{") || content.startsWith("[")) {
+                    parseToolCallJson(content)?.let { return it }
+                }
+            }
+            // Double-fence fallback: strip ALL fence markers from the entire
+            // text and try the result. Handles the nested-fence pattern
+            // observed in the on-device screen recording.
+            val fullyStripped = text.replace(Regex("```+\\s*(?:json)?\\s*"), "").trim()
+            if (fullyStripped.startsWith("{") || fullyStripped.startsWith("[")) {
+                parseToolCallJson(fullyStripped)?.let { return it }
+            }
+        }
+
+        // 2. Try the whole text as bare JSON (only if it starts with { or [).
+        if (trimmedText.startsWith("{") || trimmedText.startsWith("[")) {
+            parseToolCallJson(trimmedText)?.let { return it }
+        }
+
+        // 3. Prose before bare JSON (e.g. "Sure! {\"name\":...}"): try from
+        //    the first { or [.
+        val jsonStart = trimmedText.indexOfAny(charArrayOf('{', '['))
+        if (jsonStart > 0) {
+            parseToolCallJson(trimmedText.substring(jsonStart).trim())?.let { return it }
+        }
+
+        return null
+    }
+
+    /**
+     * Parses a JSON string (object or array) into a ToolUse response.
+     * Returns null if the JSON doesn't have the tool-call shape
+     * (i.e. no "name" key on any element).
+     */
+    private fun parseToolCallJson(jsonStr: String): Llm.LlmResponse? {
+        val parsed = try {
+            JsonParser.parseString(jsonStr)
+        } catch (e: Exception) {
+            // Truncated JSON — try brace-balancing repair.
+            repairJson(jsonStr)?.let {
+                runCatching { JsonParser.parseString(it) }.getOrNull()
+            } ?: return null
+        } ?: return null
+
+        return when {
+            parsed.isJsonObject -> {
+                parseToolCallObject(parsed.asJsonObject)?.let { tc ->
+                    Llm.LlmResponse.ToolUse(toolCalls = listOf(tc), reasoning = null)
+                }
+            }
+            parsed.isJsonArray -> {
+                val calls = parsed.asJsonArray.mapNotNull { elem ->
+                    if (elem.isJsonObject) parseToolCallObject(elem.asJsonObject) else null
+                }
+                if (calls.isEmpty()) null
+                else Llm.LlmResponse.ToolUse(toolCalls = calls, reasoning = null)
+            }
+            else -> null
+        }
+    }
+
+    private fun parseToolCallObject(obj: JsonObject): Llm.ToolCall? {
+        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: return null
+        val args = obj.get("arguments")?.let {
+            when {
+                it.isJsonObject -> it.asJsonObject.toString()
+                it.isJsonPrimitive -> it.asString
+                else -> "{}"
+            }
+        } ?: "{}"
+        return Llm.ToolCall(
+            id = java.util.UUID.randomUUID().toString(),
+            name = name,
+            arguments = args,
+        )
     }
 }

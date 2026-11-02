@@ -134,4 +134,100 @@ class ToolCallParserTest {
     @Test fun `repairJson handles brackets`() {
         assertEquals("""{"a":[1,2]}""", ToolCallParser.repairJson("""{"a":[1,2"""))
     }
+
+    // ---------------------------------------------------- markdown-fenced / bare JSON
+    // These formats are what Qwen2.5-Coder via GenieX actually emits on-device
+    // when the <tool> tag template isn't applied. Caught by on-device testing
+    // (screen recording 20261101_164250); the unit tests below codify the fix.
+
+    @Test fun `parses markdown-fenced json object tool call`() {
+        val r = ToolCallParser.parse("```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"console.log(2+2)\"}}\n```")
+        assertEquals("js_exec", parseName(r))
+        assertTrue(parseArgs(r)!!.contains("console.log(2+2)"))
+    }
+
+    @Test fun `parses markdown-fenced json array tool call`() {
+        val r = ToolCallParser.parse("```json\n[{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}]\n```")
+        assertEquals("js_exec", parseName(r))
+    }
+
+    @Test fun `parses double-fenced json tool call from screen recording`() {
+        // Exact pattern observed on-device: double ```json fence, single object.
+        val r = ToolCallParser.parse(
+            "```json\n```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"console.log(2+2)\"}}\n```\n```"
+        )
+        assertEquals("js_exec", parseName(r))
+        assertTrue(parseArgs(r)!!.contains("console.log(2+2)"))
+    }
+
+    @Test fun `parses bare json object tool call`() {
+        val r = ToolCallParser.parse("""{"name":"file_read","arguments":{"path":"a.txt"}}""")
+        assertEquals("file_read", parseName(r))
+        assertTrue(parseArgs(r)!!.contains("a.txt"))
+    }
+
+    @Test fun `parses bare json array tool call`() {
+        val r = ToolCallParser.parse("""[{"name":"file_read","arguments":{"path":"a.txt"}}]""")
+        assertEquals("file_read", parseName(r))
+    }
+
+    @Test fun `parses multiple tool calls in json array`() {
+        val r = ToolCallParser.parse(
+            """[{"name":"file_read","arguments":{"path":"a"}},{"name":"file_read","arguments":{"path":"b"}}]"""
+        )
+        assertTrue(r is Llm.LlmResponse.ToolUse)
+        val calls = (r as Llm.LlmResponse.ToolUse).toolCalls
+        assertEquals(2, calls.size)
+        assertEquals("file_read", calls[0].name)
+        assertEquals("file_read", calls[1].name)
+    }
+
+    @Test fun `parses fenced tool call with prose before it`() {
+        val r = ToolCallParser.parse(
+            "Let me run that for you.\n```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}\n```"
+        )
+        assertEquals("js_exec", parseName(r))
+    }
+
+    @Test fun `parses bare json with prose before it`() {
+        val r = ToolCallParser.parse("""Sure! {"name":"js_exec","arguments":{"code":"1+1"}}""")
+        assertEquals("js_exec", parseName(r))
+    }
+
+    @Test fun `fenced json without name key falls through to text`() {
+        // Must NOT misparse ordinary JSON data as a tool call.
+        val r = ToolCallParser.parse("```json\n{\"foo\": 1, \"bar\": [1,2,3]}\n```")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `bare json without name key falls through to text`() {
+        val r = ToolCallParser.parse("""{"foo": 1, "bar": "hello"}""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `prose without fences or braces is text`() {
+        val r = ToolCallParser.parse("The capital of France is Paris.")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `truncated fenced json tool call is repaired`() {
+        val r = ToolCallParser.parse(
+            "```json\n{\"name\":\"file_write\",\"arguments\":{\"path\":\"out.txt\",\"content\":\"hello"
+        )
+        assertEquals("file_write", parseName(r))
+        assertTrue(parseArgs(r)!!.contains("out.txt"))
+        assertTrue(parseArgs(r)!!.contains("hello"))
+    }
+
+    @Test fun `fenced tool call with extra whitespace and newlines`() {
+        val r = ToolCallParser.parse(
+            "```json\n\n  {\n    \"name\": \"memory_write\",\n    \"arguments\": {\n      \"topic\": \"t\",\n      \"content\": \"c\"\n    }\n  }\n\n```"
+        )
+        assertEquals("memory_write", parseName(r))
+    }
+
+    @Test fun `plain code fence without json label parses`() {
+        val r = ToolCallParser.parse("```\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}\n```")
+        assertEquals("js_exec", parseName(r))
+    }
 }
