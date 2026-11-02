@@ -110,7 +110,7 @@ class WatchdogService : Service() {
 
     private fun onMainProcessDied() {
         val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
-        Log.e(TAG, "MAIN PROCESS DIED at $ts — capturing diagnostics and restarting")
+        Log.e(TAG, "MAIN PROCESS DIED at $ts — capturing diagnostics and attempting self-heal")
 
         val bootTrace = runCatching {
             File(getExternalFilesDir(null), "boot_trace.txt")
@@ -121,6 +121,16 @@ class WatchdogService : Service() {
             File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
                 .takeIf { it.exists() }?.readText()
         }.getOrDefault("(no heartbeat)")
+
+        // Read the Java crash log (written by CrashReportWorker) if it exists.
+        val crashLog = runCatching {
+            val crashDir = File(getExternalFilesDir(null), "crash_logs")
+            crashDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".txt") }
+                ?.maxByOrNull { it.lastModified() }
+                ?.takeIf { System.currentTimeMillis() - it.lastModified() < 60000 }
+                ?.readText()
+        }.getOrDefault("")
 
         val crashDir = File(getExternalFilesDir(null), "watchdog").apply { mkdirs() }
         val crashFile = File(crashDir, "crash_detected_${ts}.txt")
@@ -141,10 +151,28 @@ class WatchdogService : Service() {
             appendLine("Main process boot trace (breadcrumbs):")
             appendLine("========================================")
             appendLine(bootTrace)
+            if (crashLog.isNotBlank()) {
+                appendLine()
+                appendLine("========================================")
+                appendLine("Java crash log (from CrashReportWorker):")
+                appendLine("========================================")
+                appendLine(crashLog)
+            }
         })
 
         Log.e(TAG, "Crash log written to ${crashFile.absolutePath}")
 
+        // --- SELF-HEALING ATTEMPT ---
+        // The watchdog runs in its own process. We attempt to load the local
+        // LLM here and run the HealingAgent to generate + compile a patch.
+        // If this succeeds, the patch is applied on the next restart (which
+        // we trigger below). If it fails, we fall back to a plain restart.
+        val healResult = attemptSelfHeal(crashLog, bootTrace)
+        if (healResult != null) {
+            Log.i(TAG, "Self-heal result: ${if (healResult.first) "SUCCESS patch=${healResult.second}" else "FAILED: ${healResult.second}"}")
+        }
+
+        // Wait briefly, then relaunch.
         try { Thread.sleep(RESTART_DELAY_MS) } catch (_: InterruptedException) {}
 
         Log.i(TAG, "Relaunching main activity (clean restart)")
@@ -164,6 +192,67 @@ class WatchdogService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to relaunch main activity: ${e.message}", e)
         }
+    }
+
+    /**
+     * Attempt to self-heal by loading the local LLM and running the
+     * HealingAgent in this (watchdog) process.
+     *
+     * Returns (success, patchIdOrError) or null if the LLM can't be loaded
+     * (e.g. model not downloaded, or running in safe mode).
+     *
+     * HONEST CAVEAT: This is the most experimental part of the system.
+     * Loading the GenieX LLM in the watchdog process may itself fail (the
+     * .so that crashed the main process might crash here too). If it does,
+     * the catch block logs the failure and we fall back to a plain restart.
+     * The user is never worse off than before.
+     */
+    private fun attemptSelfHeal(crashLog: String, bootTrace: String): Pair<Boolean, String>? {
+        if (crashLog.isBlank() && bootTrace.isBlank()) return null
+
+        return runCatching {
+            // Identify the crashed class.
+            val crashedClass = host.vorv.healer.CrashParser.extractCrashedClass(crashLog)
+                ?: host.vorv.healer.CrashParser.inferCrashedClassFromBootTrace(bootTrace)
+
+            if (crashedClass == null) {
+                Log.w(TAG, "Self-heal: could not identify crashed class")
+                return null
+            }
+
+            Log.i(TAG, "Self-heal: targeting class $crashedClass")
+
+            // Load the local LLM. This is the risky step — if the crash was
+            // a GenieX native failure, this might fail here too.
+            val llm = host.vorv.llm.LocalLlm(
+                applicationContext,
+                host.vorv.llm.ModelChoice.QWEN_3B,  // use 3B for healing — faster
+                "Qwen2.5-Coder-3B (healer)",
+            )
+
+            val healer = host.vorv.healer.HealingAgent(applicationContext, llm)
+            val crash = host.vorv.healer.HealingAgent.CrashInfo(
+                stackTrace = crashLog,
+                bootTrace = bootTrace,
+                crashedClass = crashedClass,
+            )
+
+            // Use kotlinx.coroutines to run the suspend heal() function.
+            val result = kotlinx.coroutines.runBlocking {
+                healer.heal(crash)
+            }
+
+            // Release the LLM's native memory.
+            llm.release()
+
+            if (result.success) {
+                true to (result.patchId ?: "unknown")
+            } else {
+                false to (result.error ?: "unknown error")
+            }
+        }.onFailure {
+            Log.e(TAG, "Self-heal failed: ${it.message}", it)
+        }.getOrNull()
     }
 
     private fun checkMainProcessHealth() {

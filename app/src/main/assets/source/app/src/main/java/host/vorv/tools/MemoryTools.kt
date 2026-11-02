@@ -1,0 +1,120 @@
+package host.vorv.tools
+
+import com.google.gson.JsonObject
+import host.vorv.data.VorvDatabase
+import host.vorv.data.entity.KnowledgeEntry
+
+/**
+ * memory_write - persist a fact for future sessions.
+ *
+ * v0.5.0: removed the EmbeddingCache path. GenieX's LlmWrapper API does not
+ * expose an embed() call (unlike the llama-android library we used in
+ * v0.2.0-v0.4.0). memory_recall falls back to Room FTS4 + LIKE keyword
+ * search, which is what we actually use today anyway — the vector path
+ * was an optimization that never shipped end-to-end.
+ */
+class MemoryWriteTool(private val db: VorvDatabase) : Tool {
+    override val name = "memory_write"
+    override val description = "Persist a fact or lesson to long-term memory. Use when you learn something the user said, or you discovered something worth keeping."
+
+    override fun schema() = JsonObject().apply {
+        addProperty("type", "object")
+        add("properties", JsonObject().apply {
+            add("topic", JsonObject().apply {
+                addProperty("type", "string")
+                addProperty("description", "Short topic label, e.g. 'user-preferences-testing'")
+            })
+            add("content", JsonObject().apply {
+                addProperty("type", "string")
+                addProperty("description", "The fact to remember, as a full sentence.")
+            })
+        })
+        add("required", com.google.gson.JsonArray().apply { add("topic"); add("content") })
+    }
+
+    override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult {
+        val t0 = System.currentTimeMillis()
+        val topic = input.get("topic")?.asString ?: return ToolResult(ok = false, output = "", error = "missing topic", durationMs = System.currentTimeMillis() - t0)
+        val content = input.get("content")?.asString ?: return ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
+
+        // Generate the ID up-front and set citationRef before insert (audit H-9).
+        // The v0.5.x code inserted, then tried to FIND the row again via
+        // searchLike(topic, 1) — a substring query that could match a DIFFERENT
+        // row (e.g. topic "cat" matching "category") and update the wrong
+        // citationRef. The row's own id is known before insert; no lookup needed.
+        val id = java.util.UUID.randomUUID().toString()
+        val entry = KnowledgeEntry(
+            id = id,
+            topic = topic,
+            content = content,
+            source = "memory_write",
+            citationType = "memory",
+            citationRef = id,
+            confidence = 0.9f,
+        )
+        db.knowledgeDao().upsert(entry)
+        return ToolResult(
+            ok = true,
+            output = "Stored memory: '$topic' (id=$id)",
+            durationMs = System.currentTimeMillis() - t0,
+            citation = Citation("memory", id, "memory #${id.take(8)}"),
+        )
+    }
+}
+
+/**
+ * memory_recall - search long-term memory by keyword (FTS4 + LIKE fallback).
+ *
+ * v0.5.0: vector path removed (GenieX doesn't expose embed() through
+ * LlmWrapper). Keyword search is what's used — and it's plenty good for
+ * a coding agent's small knowledge base.
+ */
+class MemoryRecallTool(private val db: VorvDatabase) : Tool {
+    override val name = "memory_recall"
+    override val description = "Search long-term memory by keyword. Returns top matches with their memory IDs. Use when the user asks about something you may have learned before."
+
+    override fun schema() = JsonObject().apply {
+        addProperty("type", "object")
+        add("properties", JsonObject().apply {
+            add("query", JsonObject().apply {
+                addProperty("type", "string")
+                addProperty("description", "Search keywords.")
+            })
+            add("limit", JsonObject().apply {
+                addProperty("type", "integer")
+                addProperty("description", "Max results. Default 5.")
+            })
+        })
+        add("required", com.google.gson.JsonArray().apply { add("query") })
+    }
+
+    override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult {
+        val t0 = System.currentTimeMillis()
+        val query = input.get("query")?.asString ?: return ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
+        val limit = input.get("limit")?.takeIf { !it.isJsonNull }?.asInt ?: 5
+
+        val results = try {
+            db.knowledgeDao().searchFts("$query*", limit).ifEmpty {
+                db.knowledgeDao().searchLike(query, limit)
+            }
+        } catch (e: Exception) {
+            db.knowledgeDao().searchLike(query, limit)
+        }
+
+        results.forEach { db.knowledgeDao().markRecalled(it.id) }
+
+        val output = if (results.isEmpty()) {
+            "No memories matched '$query'."
+        } else {
+            results.joinToString("\n") { m ->
+                "[id=${m.id.take(8)}] ${m.topic}: ${m.content.take(200)}"
+            }
+        }
+        return ToolResult(
+            ok = true,
+            output = output,
+            durationMs = System.currentTimeMillis() - t0,
+            citation = if (results.isNotEmpty()) Citation("memory", results.first().id, "memory #${results.first().id.take(8)}") else null,
+        )
+    }
+}
