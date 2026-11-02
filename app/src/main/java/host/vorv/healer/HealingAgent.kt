@@ -66,6 +66,8 @@ class HealingAgent(
         private const val TAG = "Vorv/Healer"
         private const val MAX_COMPILE_RETRIES = 3
         private const val MAX_HEAL_ATTEMPTS = 2
+        // Path to the app's own classes, extracted from the APK at first healer run.
+        private const val APP_CLASSES_JAR = "/data/data/host.vorv/files/healer/app_classes.jar"
     }
 
     data class CrashInfo(
@@ -88,15 +90,12 @@ class HealingAgent(
     suspend fun heal(crash: CrashInfo): HealResult = withContext(Dispatchers.IO) {
         Log.i(TAG, "Healing agent started. Crashed class: ${crash.crashedClass}")
 
-        // If we can't identify the crashed class from the stack trace, we
-        // can't target a fix. Fall back to normal crash reporting.
         val targetClass = crash.crashedClass
         if (targetClass.isNullOrBlank()) {
             Log.w(TAG, "No crashed class identified — cannot heal")
             return@withContext HealResult(false, error = "no crashed class in stack trace")
         }
 
-        // Read the buggy source from the app's bundled source assets.
         val sourcePath = "source/${targetClass.replace('.', '/')}.kt"
         val buggySource = readAsset(sourcePath)
         if (buggySource == null) {
@@ -104,6 +103,18 @@ class HealingAgent(
             return@withContext HealResult(false, error = "source not bundled: $sourcePath")
         }
 
+        runHealLoop(crash, targetClass, buggySource)
+    }
+
+    /**
+     * The retry loop, extracted so 'continue' isn't inside the withContext
+     * inline lambda (Kotlin forbids break/continue in inline lambdas).
+     */
+    private suspend fun runHealLoop(
+        crash: CrashInfo,
+        targetClass: String,
+        buggySource: String,
+    ): HealResult {
         var lastCompilerError: String? = null
         var attempts = 0
 
@@ -111,35 +122,31 @@ class HealingAgent(
             attempts = attempt
             Log.i(TAG, "Heal attempt $attempt/$MAX_COMPILE_RETRIES")
 
-            // Step 1: Ask the LLM to generate a fix.
             val fixPrompt = buildFixPrompt(crash, targetClass, buggySource, lastCompilerError)
-            val llmResponse = callLlm(fixPrompt) ?: run {
+            val llmResponse = callLlm(fixPrompt)
+            if (llmResponse == null) {
                 Log.e(TAG, "LLM call failed on attempt $attempt")
                 continue
             }
 
-            // Step 2: Extract the fixed Kotlin source from the LLM response.
-            val fixedSource = extractKotlinCode(llmResponse) ?: run {
+            val fixedSource = extractKotlinCode(llmResponse)
+            if (fixedSource == null) {
                 Log.w(TAG, "No Kotlin code block in LLM response")
                 continue
             }
 
-            // Step 3: Write the fixed source to a temp file.
             val fixDir = File(context.cacheDir, "healer").apply { mkdirs() }
             val sourceFile = File(fixDir, "${targetClass.substringAfterLast('.')}.kt")
             sourceFile.writeText(fixedSource)
 
-            // Step 4: Compile the fix via Termux (kotlinc + d8 → .dex).
             val patchId = "heal_${System.currentTimeMillis()}"
             val compileResult = compileToDex(sourceFile, targetClass, patchId)
 
             if (compileResult.success) {
                 Log.i(TAG, "Patch compiled successfully: $patchId")
-                // Step 5: Mark the patch for application on next restart.
                 host.vorv.watchdog.HotPatcher.markPendingApply(context, patchId)
-                // Also write the manifest entry so HotPatcher can verify it.
                 writePatchManifestEntry(patchId, compileResult.sha256!!, targetClass)
-                return@withContext HealResult(true, patchId = patchId, attempts = attempts)
+                return HealResult(true, patchId = patchId, attempts = attempts)
             } else {
                 lastCompilerError = compileResult.error
                 Log.w(TAG, "Compile failed on attempt $attempt: ${compileResult.error}")
@@ -147,7 +154,7 @@ class HealingAgent(
         }
 
         Log.e(TAG, "Healing failed after $attempts attempts")
-        HealResult(false, error = lastCompilerError ?: "all attempts failed", attempts = attempts)
+        return HealResult(false, error = lastCompilerError ?: "all attempts failed", attempts = attempts)
     }
 
     /**
@@ -360,9 +367,4 @@ class HealingAgent(
         val error: String? = null,
     )
 
-    companion object {
-        // Path to the app's own classes, extracted from the APK at first healer run.
-        // Populated by extractAppClasses() on first use.
-        private const val APP_CLASSES_JAR = "/data/data/host.vorv/files/healer/app_classes.jar"
-    }
 }

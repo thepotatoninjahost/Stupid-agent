@@ -112,24 +112,24 @@ class WatchdogService : Service() {
         val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
         Log.e(TAG, "MAIN PROCESS DIED at $ts — capturing diagnostics and attempting self-heal")
 
-        val bootTrace = runCatching {
+        val bootTrace: String = runCatching {
             File(getExternalFilesDir(null), "boot_trace.txt")
-                .takeIf { it.exists() }?.readText()
-        }.getOrDefault("(could not read boot trace)")
+                .takeIf { it.exists() }?.readText() ?: ""
+        }.getOrDefault("")
 
-        val heartbeat = runCatching {
+        val heartbeat: String = runCatching {
             File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
-                .takeIf { it.exists() }?.readText()
-        }.getOrDefault("(no heartbeat)")
+                .takeIf { it.exists() }?.readText() ?: ""
+        }.getOrDefault("")
 
         // Read the Java crash log (written by CrashReportWorker) if it exists.
-        val crashLog = runCatching {
-            val crashDir = File(getExternalFilesDir(null), "crash_logs")
-            crashDir.listFiles()
+        val crashLog: String = runCatching {
+            val cdir = File(getExternalFilesDir(null), "crash_logs")
+            cdir.listFiles()
                 ?.filter { it.isFile && it.name.endsWith(".txt") }
                 ?.maxByOrNull { it.lastModified() }
                 ?.takeIf { System.currentTimeMillis() - it.lastModified() < 60000 }
-                ?.readText()
+                ?.readText() ?: ""
         }.getOrDefault("")
 
         val crashDir = File(getExternalFilesDir(null), "watchdog").apply { mkdirs() }
