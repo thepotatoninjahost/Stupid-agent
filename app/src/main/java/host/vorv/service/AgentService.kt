@@ -61,7 +61,14 @@ class AgentService : Service() {
             ACTION_STOP -> { stopForeground(Service.STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY }
             else -> {
                 val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Vorv is thinking…"
-                startForeground(NOTIF_ID, buildNotification(title))
+                // Audit L-9: the service type is specialUse (compute), so the
+                // startForeground call must say so on API 34+.
+                if (Build.VERSION.SDK_INT >= 34) {
+                    startForeground(NOTIF_ID, buildNotification(title),
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } else {
+                    startForeground(NOTIF_ID, buildNotification(title))
+                }
             }
         }
         return START_STICKY

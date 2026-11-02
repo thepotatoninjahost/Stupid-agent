@@ -1,125 +1,136 @@
 package host.vorv.watchdog
 
 import android.content.Context
+import android.util.Log
 import dalvik.system.DexClassLoader
+import host.vorv.tools.NetworkGuard
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * HotPatcher — runtime code patching via DexClassLoader.
+ * HotPatcher — runtime code patching via DexClassLoader, HARDENED
+ * (audit C-2).
  *
- * WHAT THIS DOES:
- *   Loads a .dex file at runtime that contains FIXED versions of buggy classes.
- *   The patched class is loaded AHEAD of the buggy one in the classloader
- *   chain, so when the app references that class, it gets the fixed version.
- *   No APK reinstall required.
+ * WHAT CHANGED vs the audited version:
  *
- *   This is the same mechanism Tencent's Tinker and Alibaba's Sophix use in
- *   production on billions of devices. It's real Android API, not a hack.
+ *  1. SIGNATURE REQUIRED. Every patch dex must carry an Ed25519/ECDSA
+ *     signature from the device patch keypair ([PatchKeys]) over its exact
+ *     bytes, recorded in the manifest. The old code accepted a dex when a
+ *     manifest entry was present and SKIPPED verification when it was
+ *     missing — a self-attested file loading into the app process. Now a
+ *     dex without a valid signature is REFUSED and quarantined, never
+ *     skipped.
+ *  2. USER CONSENT REQUIRED. A patch id must appear in the consent
+ *     registry (written only after the user taps APPROVE in the consent
+ *     dialog). Auto-generated patches go through the same consent bridge
+ *     as app_intent and shell.
+ *  3. VERSION GATES ENFORCED. minAppVersion/maxAppVersion from the
+ *     manifest are checked against BuildConfig.VERSION_CODE.
+ *  4. PATCHES ACTUALLY RUN. Verified loaders are registered in
+ *     [PatchRegistry], and construction sites dispatch through the shared
+ *     interfaces — the old code loaded classes no caller could ever use.
+ *  5. PROBATION + AUTO-ROLLBACK (correctness gate). Every applied patch
+ *     records its first-apply time. If the app crashes in a class a patch
+ *     overrides within the probation window, [quarantineIfCrashed] deletes
+ *     the patch at next launch — a fix that makes things worse undoes
+ *     itself.
+ *  6. MANIFEST FETCHING PINNED. [fetchManifest] only accepts HTTPS URLs on
+ *     an allow-listed host set and refuses everything else.
  *
- * PATCH FORMAT:
- *   A patch is a .dex file containing one or more classes that override the
- *   buggy versions. The patch manifest (JSON) specifies:
- *     {
- *       "version": 1,
- *       "patches": [
- *         {
- *           "id": "fix-toolcall-parser-v2",
- *           "url": "https://example.com/patches/fix1.dex",
- *           "sha256": "abcd1234...",
- *           "classes": ["host.vorv.llm.ToolCallParser"],
- *           "minAppVersion": 12,
- *           "maxAppVersion": 20,
- *           "description": "Fix parser for markdown-fenced JSON"
- *         }
- *       ]
- *     }
- *
- *   Patches are signed (SHA-256 verified) and version-gated.
- *
- * PATCH LIFECYCLE:
- *   1. On app start, HotPatcher loads any already-downloaded patches from
- *      getFilesDir()/hotpatch/ — these are applied IMMEDIATELY, before any
- *      app code runs that might hit the bug.
- *   2. In the background, HotPatcher fetches the manifest from the patch URL
- *      (configurable in Settings, defaults to a GitHub Releases URL).
- *   3. New patches are downloaded, SHA-256 verified, and stored.
- *   4. A flag is set: "patch X pending — apply on next restart".
- *   5. The watchdog (or the app itself) triggers a clean restart via
- *      ProcessPhoenix pattern. On restart, step 1 applies the patch.
- *
- *   The restart is the "hot-swap" — the user sees a brief flicker, then the
- *   patched code runs. No reinstall, no manual action.
- *
- * LIMITATIONS (honest):
- *   - Already-loaded classes can't be unloaded. A patch only takes effect
- *     after a process restart. This is a JVM limitation, not ours.
- *   - The patch .dex must be compiled against the same app version it patches
- *     (same package, same class signatures). The manifest's minAppVersion /
- *     maxAppVersion gates enforce this.
- *   - Native (.so) patches are NOT supported. Only Java/Kotlin (.dex) patches.
- *     A native crash can be DETECTED by the watchdog (breadcrumbs), but the
- *     fix has to be a new APK build. We can't hot-patch a .so at runtime.
- *
- *   For native crashes, the watchdog's clean-restart still helps: if a .so
- *   fails to load, the safe-mode path (skips GenieX init) lets the app boot
- *   so the user can export diagnostics, instead of being bricked.
+ * WHAT STAYS: the feature itself. Patches load, run, and repair the app —
+ * now with proof of origin, user approval, and rollback.
  */
 object HotPatcher {
 
+    private const val TAG = "Vorv/HotPatcher"
     private const val PATCH_DIR = "hotpatch"
     private const val MANIFEST_FILE = "manifest.json"
-    private const val APPLIED_FILE = "applied.json"
+    private const val APPROVED_FILE = "approved.json"
+    private const val QUARANTINE_DIR = "hotpatch_quarantine"
 
-    private val pendingLoaders = CopyOnWriteArrayList<DexClassLoader>()
+    /** Probation window: a crash in the patched class within this window rolls the patch back. */
+    private const val PROBATION_MS = 72 * 60 * 60 * 1000L
+
+    /** Hosts patch manifests may be fetched from (HTTPS only). */
+    private val MANIFEST_HOST_ALLOWLIST = setOf(
+        "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
+    )
+
+    // ================================================================
+    // Boot path
+    // ================================================================
 
     /**
-     * Initialize on app start. Loads any already-downloaded patches from disk
-     * into the classloader chain. Must be called BEFORE any app code that
-     * might reference a patched class — i.e., at the very start of
-     * VorvApplication.onCreate.
+     * Load every patch that passes ALL gates. Must be called at the very
+     * start of VorvApplication.onCreate (main process only — the watchdog
+     * process never loads patches).
      *
-     * Returns the list of patch IDs that were applied.
+     * Returns the ids of patches that were applied (registered in
+     * PatchRegistry). Anything failing a gate is quarantined and reported
+     * in the log — never silently skipped.
      */
     fun loadPendingPatches(context: Context): List<String> {
         val applied = mutableListOf<String>()
         runCatching {
             val patchDir = File(context.filesDir, PATCH_DIR)
-            if (!patchDir.exists()) return@runCatching
+            if (!patchDir.exists()) return emptyList()
 
-            val appliedFile = File(patchDir, APPLIED_FILE)
-            val appliedIds = if (appliedFile.exists()) {
-                runCatching {
-                    JSONObject(appliedFile.readText()).getJSONArray("applied").map { it.toString() }.toSet()
-                }.getOrDefault(emptySet())
-            } else emptySet()
+            val manifest = readManifest(context)
+            val approvedIds = readApprovedIds(context)
 
             patchDir.listFiles { f -> f.isFile && f.name.endsWith(".dex") }
                 ?.forEach { dexFile ->
                     val patchId = dexFile.nameWithoutExtension
-                    if (patchId !in appliedIds) return@forEach
+                    val entry = manifest?.patchEntry(patchId)
 
-                    // Verify SHA-256 against the manifest.
-                    val manifest = readManifest(context)
-                    val expectedSha = manifest?.optJSONArray("patches")
-                        ?.let { arr ->
-                            (0 until arr.length()).map { i ->
-                                arr.getJSONObject(i)
-                            }.firstOrNull { it.getString("id") == patchId }
-                        }?.optString("sha256")
-
-                    if (expectedSha != null) {
-                        val actualSha = sha256(dexFile)
-                        if (actualSha != expectedSha) {
-                            android.util.Log.e("Vorv/HotPatcher",
-                                "SHA-256 mismatch for $patchId — skipping (expected=$expectedSha, actual=$actualSha)")
-                            return@forEach
-                        }
+                    if (entry == null) {
+                        quarantine(context, dexFile, "no manifest entry — refusing unsigned/unlisted dex")
+                        return@forEach
                     }
 
-                    // Load the .dex into a DexClassLoader.
+                    // Gate 1: user consent.
+                    if (patchId !in approvedIds) {
+                        quarantine(context, dexFile, "not in the consent registry — the user never approved this patch")
+                        return@forEach
+                    }
+
+                    // Gate 2: version window.
+                    val minV = entry.optInt("minAppVersion", 0)
+                    val maxV = entry.optInt("maxAppVersion", Int.MAX_VALUE)
+                    val versionCode = host.vorv.BuildConfig.VERSION_CODE
+                    if (versionCode < minV || versionCode > maxV) {
+                        quarantine(context, dexFile, "version gate: app $versionCode not in [$minV, $maxV]")
+                        return@forEach
+                    }
+
+                    // Gate 3: hash.
+                    val expectedSha = entry.optString("sha256", "")
+                    val actualSha = sha256Hex(dexFile.readBytes())
+                    if (expectedSha.isBlank() || actualSha != expectedSha) {
+                        quarantine(context, dexFile, "SHA-256 mismatch (expected=$expectedSha actual=$actualSha)")
+                        return@forEach
+                    }
+
+                    // Gate 4: cryptographic signature (C-2 core).
+                    val signature = entry.optString("signature", "")
+                    if (signature.isBlank() ||
+                        !PatchKeys.verify(context, dexFile.readBytes(), signature)
+                    ) {
+                        quarantine(context, dexFile, "signature verification FAILED — refusing to load")
+                        return@forEach
+                    }
+
+                    // Gate 5: dispatchable class present in the patch.
+                    val classes = entry.optJSONArray("classes")
+                    val classNames = (0 until classes.length()).map { classes.getString(it) }
+                    if (classNames.none { PatchRegistry.isPatchableClass(it) }) {
+                        quarantine(context, dexFile, "no dispatchable class in the patch")
+                        return@forEach
+                    }
+
+                    // All gates passed — load and register.
                     val odexDir = File(context.codeCacheDir, "hotpatch_odex").apply { mkdirs() }
                     val loader = DexClassLoader(
                         dexFile.absolutePath,
@@ -127,61 +138,215 @@ object HotPatcher {
                         null,
                         context.classLoader,
                     )
-                    pendingLoaders.add(loader)
+                    // Gate 6: the patch class must really implement its dispatch
+                    // interface before the loader is trusted.
+                    val dispatchable = classNames.any { fqcn ->
+                        val base = PatchRegistry.dispatchBaseFor(fqcn) ?: return@any false
+                        runCatching {
+                            base.isAssignableFrom(loader.loadClass(fqcn))
+                        }.getOrDefault(false)
+                    }
+                    if (!dispatchable) {
+                        quarantine(context, dexFile, "patch class does not implement its dispatch interface")
+                        return@forEach
+                    }
+
+                    PatchRegistry.registerLoader(loader)
+                    recordFirstApply(context, patchId)
                     applied.add(patchId)
-                    android.util.Log.i("Vorv/HotPatcher", "Applied patch: $patchId")
+                    Log.i(TAG, "Applied patch: $patchId (classes=$classNames)")
                 }
         }.onFailure {
-            android.util.Log.e("Vorv/HotPatcher", "Failed to load pending patches: ${it.message}", it)
+            Log.e(TAG, "Failed to load pending patches: ${it.message}", it)
         }
         return applied
     }
 
+    // ================================================================
+    // Registration (called by HealingAgent AFTER user approval)
+    // ================================================================
+
     /**
-     * Read the local copy of the patch manifest.
+     * Persist an approved patch: dex bytes into filesDir/hotpatch, a signed
+     * manifest entry, and the consent record. Applies at next boot.
      */
-    private fun readManifest(context: Context): JSONObject? {
+    fun registerApprovedPatch(
+        context: Context,
+        patchId: String,
+        targetClass: String,
+        dexBytes: ByteArray,
+        sha256: String,
+        signature: String,
+        description: String,
+    ): Boolean {
+        if (!PatchRegistry.isPatchableClass(targetClass)) {
+            Log.e(TAG, "refusing to register patch for non-dispatchable class $targetClass")
+            return false
+        }
+        if (!PatchKeys.verify(context, dexBytes, signature)) {
+            Log.e(TAG, "refusing to register patch whose signature does not verify")
+            return false
+        }
         return runCatching {
-            val f = File(context.filesDir, "$PATCH_DIR/$MANIFEST_FILE")
-            if (!f.exists()) null else JSONObject(f.readText())
-        }.getOrNull()
+            val patchDir = File(context.filesDir, PATCH_DIR).apply { mkdirs() }
+            File(patchDir, "$patchId.dex").writeBytes(dexBytes)
+
+            // Manifest entry (v2 format — signed).
+            val manifestFile = File(patchDir, MANIFEST_FILE)
+            val manifest = if (manifestFile.exists()) {
+                JSONObject(manifestFile.readText())
+            } else {
+                JSONObject().put("version", 2).put("patches", JSONArray())
+            }
+            val patches = manifest.getJSONArray("patches")
+            // Replace any stale entry with the same id.
+            for (i in 0 until patches.length()) {
+                if (patches.getJSONObject(i).optString("id") == patchId) {
+                    patches.remove(i)
+                    break
+                }
+            }
+            patches.put(JSONObject().apply {
+                put("id", patchId)
+                put("sha256", sha256)
+                put("signature", signature)
+                put("classes", JSONArray().put(targetClass))
+                put("minAppVersion", host.vorv.BuildConfig.VERSION_CODE)
+                put("maxAppVersion", host.vorv.BuildConfig.VERSION_CODE + 10)
+                put("description", description)
+                put("createdAt", System.currentTimeMillis())
+            })
+            manifestFile.writeText(manifest.toString())
+
+            // Consent record — a GENUINE JSONArray (the org.json round-trip
+            // bug that silently deleted every approved patch is pinned by a
+            // unit test).
+            markPendingApply(context, patchId)
+            Log.i(TAG, "Patch $patchId registered (signed + approved; applies at next boot)")
+            true
+        }.onFailure {
+            Log.e(TAG, "registerApprovedPatch failed: ${it.message}", it)
+            false
+        }.getOrDefault(false)
     }
 
     /**
-     * Mark a patch as downloaded and pending application on next restart.
-     * Called by the patch downloader after a .dex file is fetched + verified.
+     * Record the user's approval of [patchId] in the consent registry.
+     * Writes a real JSONArray — verified by round-trip in tests.
      */
     fun markPendingApply(context: Context, patchId: String) {
         runCatching {
             val patchDir = File(context.filesDir, PATCH_DIR).apply { mkdirs() }
-            val appliedFile = File(patchDir, APPLIED_FILE)
-            val current = if (appliedFile.exists()) {
-                JSONObject(appliedFile.readText())
-            } else {
-                JSONObject().put("applied", org.json.JSONArray())
-            }
-            val arr = current.getJSONArray("applied")
-            if ((0 until arr.length()).none { arr.getString(it) == patchId }) {
-                arr.put(patchId)
-            }
-            appliedFile.writeText(current.toString())
-            android.util.Log.i("Vorv/HotPatcher", "Patch $patchId marked for application on next restart")
+            val approvedFile = File(patchDir, APPROVED_FILE)
+            val ids = readApprovedIds(context).toMutableSet()
+            ids.add(patchId)
+            val out = JSONObject().put("applied", JSONArray(ids))
+            approvedFile.writeText(out.toString())
+        }.onFailure {
+            Log.e(TAG, "markPendingApply failed: ${it.message}", it)
         }
     }
 
+    /** The ids the user has approved (consent registry). */
+    fun readApprovedIds(context: Context): Set<String> {
+        return runCatching {
+            val f = File(context.filesDir, "$PATCH_DIR/$APPROVED_FILE")
+            if (!f.exists()) return emptySet()
+            JSONObject(f.readText()).getJSONArray("applied")
+                .let { arr -> (0 until arr.length()).map { arr.getString(it) }.toSet() }
+        }.onFailure {
+            Log.e(TAG, "consent registry unreadable: ${it.message}", it)
+        }.getOrDefault(emptySet())
+    }
+
+    // ================================================================
+    // Probation (correctness gate — auto-rollback)
+    // ================================================================
+
     /**
-     * Fetch a patch manifest from a URL. Returns null on failure.
-     * The caller (a WorkManager job) handles downloading the .dex files
-     * listed in the manifest.
-     *
-     * In production, this URL would point to a GitHub Releases asset or a
-     * simple static file server. For now it's configurable in Settings.
+     * If the app crashed in a class a patch overrides, and that patch is
+     * still within its probation window, roll it back (quarantine + remove
+     * from the consent registry) and return what was rolled back.
+     * Called by VorvApplication at boot when a previous-boot crash is
+     * detected.
+     */
+    fun quarantineIfCrashed(context: Context, crashedClass: String?): List<String> {
+        if (crashedClass.isNullOrBlank()) return emptyList()
+        val manifest = readManifest(context) ?: return emptyList()
+        val rolledBack = mutableListOf<String>()
+        val patchDir = File(context.filesDir, PATCH_DIR)
+        val now = System.currentTimeMillis()
+
+        for (i in 0 until manifest.patches().length()) {
+            val entry = manifest.patches().getJSONObject(i)
+            val classes = entry.optJSONArray("classes") ?: continue
+            val overrides = (0 until classes.length()).any { classes.getString(it) == crashedClass }
+            if (!overrides) continue
+
+            val firstAppliedAt = entry.optLong("firstAppliedAt", 0L)
+            val inProbation = firstAppliedAt > 0 && (now - firstAppliedAt) < PROBATION_MS
+            if (!inProbation) continue
+
+            val patchId = entry.optString("id")
+            val dexFile = File(patchDir, "$patchId.dex")
+            quarantine(context, dexFile,
+                "probation rollback: app crashed in $crashedClass within 72h of applying")
+            removeFromConsent(context, patchId)
+            rolledBack.add(patchId)
+        }
+        if (rolledBack.isNotEmpty()) {
+            Log.w(TAG, "Rolled back patches after crash in $crashedClass: $rolledBack")
+        }
+        return rolledBack
+    }
+
+    /** Record when a patch first took effect (probation start). */
+    private fun recordFirstApply(context: Context, patchId: String) {
+        runCatching {
+            val manifest = readManifest(context) ?: return
+            val entry = manifest.patchEntry(patchId) ?: return
+            if (entry.optLong("firstAppliedAt", 0L) == 0L) {
+                entry.put("firstAppliedAt", System.currentTimeMillis())
+                File(context.filesDir, "$PATCH_DIR/$MANIFEST_FILE").writeText(manifest.toString())
+            }
+        }
+    }
+
+    private fun removeFromConsent(context: Context, patchId: String) {
+        runCatching {
+            val ids = readApprovedIds(context).toMutableSet()
+            ids.remove(patchId)
+            val patchDir = File(context.filesDir, PATCH_DIR)
+            val out = JSONObject().put("applied", JSONArray(ids))
+            File(patchDir, APPROVED_FILE).writeText(out.toString())
+        }
+    }
+
+    // ================================================================
+    // Manifest fetching — pinned to HTTPS allow-listed hosts (C-2)
+    // ================================================================
+
+    /**
+     * Fetch a patch manifest. REFUSES non-HTTPS URLs and hosts outside the
+     * allow-list; every response body must parse as a v2 manifest.
      */
     suspend fun fetchManifest(url: String): JSONObject? {
+        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase() ?: ""
+        val host = uri.host?.lowercase() ?: ""
+        if (scheme != "https") {
+            Log.e(TAG, "manifest URL refused: scheme must be https, got '$scheme'")
+            return null
+        }
+        if (host !in MANIFEST_HOST_ALLOWLIST) {
+            Log.e(TAG, "manifest URL refused: host '$host' is not in the allow-list $MANIFEST_HOST_ALLOWLIST")
+            return null
+        }
         return runCatching {
             val client = okhttp3.OkHttpClient.Builder()
                 .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .dns(NetworkGuard.PublicDns)
                 .build()
             val req = okhttp3.Request.Builder().url(url).build()
             client.newCall(req).execute().use { resp ->
@@ -191,20 +356,44 @@ object HotPatcher {
         }.getOrNull()
     }
 
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buf = ByteArray(8192)
-            while (true) {
-                val n = input.read(buf)
-                if (n <= 0) break
-                digest.update(buf, 0, n)
+    // ================================================================
+    // Internals
+    // ================================================================
+
+    private data class Manifest(val json: JSONObject) {
+        fun patches(): JSONArray = json.optJSONArray("patches") ?: JSONArray()
+        fun patchEntry(id: String): JSONObject? {
+            val arr = patches()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                if (o.optString("id") == id) return o
             }
+            return null
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun readManifest(context: Context): Manifest? {
+        return runCatching {
+            val f = File(context.filesDir, "$PATCH_DIR/$MANIFEST_FILE")
+            if (!f.exists()) null else Manifest(JSONObject(f.readText()))
+        }.getOrNull()
+    }
+
+    /**
+     * Move a refused/rolled-back dex out of the patch dir so it can never
+     * be reconsidered, with the reason logged. Refuse ≠ skip.
+     */
+    private fun quarantine(context: Context, dexFile: File, reason: String) {
+        Log.e(TAG, "PATCH REFUSED — ${dexFile.name}: $reason")
+        runCatching {
+            val qDir = File(context.filesDir, QUARANTINE_DIR).apply { mkdirs() }
+            dexFile.renameTo(File(qDir, "${System.currentTimeMillis()}_${dexFile.name}"))
+        }
+    }
+
+    /** SHA-256 as lowercase hex (shared with HealingAgent). */
+    fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }
-
-// Extension to map JSONArray
-private fun <T> org.json.JSONArray.map(transform: (Any) -> T): List<T> =
-    (0 until length()).map { transform(get(it)) }

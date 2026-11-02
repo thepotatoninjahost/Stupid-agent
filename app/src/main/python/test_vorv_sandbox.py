@@ -93,12 +93,68 @@ expect_blocked("sys.exit", "import sys\nsys.exit(0)", ("sandbox", "import"))
 expect_blocked("raise SystemExit", "raise SystemExit(0)", ("systemexit",))
 expect_blocked("breakpoint()", "breakpoint()", ())
 
+# ------------------------------------------------- direct attribute-syntax
+# attacks (audit C-1: the dunder guard used to wrap only the getattr()
+# BUILTIN — attribute SYNTAX never routed through it. These tests pin the
+# Layer-0 scrub: walking f.__globals__ from any whitelisted module must
+# find NO real os/sys, only inert proxies that refuse everything else.)
+expect_blocked(
+    "PoC: uuid.uuid4.__globals__['os']",
+    "import uuid\nos_mod = uuid.uuid4.__globals__['os']\nprint(os_mod.getcwd())",
+    ("sandbox", "not available"))
+expect_blocked(
+    "PoC: uuid.uuid4.__globals__['sys'].modules",
+    "import uuid\nsys_mod = uuid.uuid4.__globals__['sys']\nprint(sys_mod.modules)",
+    ("sandbox", "not available"))
+expect_blocked(
+    "PoC: random namespace reaches os",
+    "import random\nimport inspect\nprint('blocked before inspect is even needed')",
+    ("sandbox", "import"))
+expect_ok(
+    "attribute-syntax walk on random reaches CLEAN globals",
+    "import random\nprint(random.Random.__init__.__globals__.get('os', 'CLEAN'))",
+    "CLEAN")
+expect_ok(
+    "attribute-syntax walk on json reaches CLEAN globals",
+    "import json\nprint(json.JSONEncoder.encode.__globals__.get('sys', 'CLEAN'))",
+    "CLEAN")
+expect_ok(
+    "scrubbed: uuid function globals carry inert os",
+    "import uuid\nproxy = uuid.uuid4.__globals__.get('os')\nprint(proxy.urandom(2) is not None)",
+    "True")
+expect_blocked(
+    "inert os proxy refuses system calls",
+    "import uuid\nproxy = uuid.uuid4.__globals__.get('os')\nprint(proxy.listdir('/'))",
+    ("sandbox", "not available"))
+expect_ok(
+    "whitelisted module globals are os/sys-free",
+    "import json, random, statistics\nfor m in (json, random, statistics):\n    g = m.__dict__\n    assert 'os' not in g or 'sandbox' in str(type(g.get('os'))), m.__name__\nprint('CLEAN')",
+    "CLEAN")
+expect_ok(
+    "guarded getattr fn leaks nothing via __globals__",
+    "g = __builtins__['getattr']\nprint(g.__globals__.get('sys', 'CLEAN'))",
+    "CLEAN")
+expect_ok(
+    "safe __import__ fn leaks nothing via __globals__",
+    "f = __builtins__['__import__']\nprint(f.__globals__.get('sys', 'CLEAN'))",
+    "CLEAN")
+
 # ---------------------------------------------------------------- allowed
 expect_ok("arithmetic + print", "print(2 + 2)", "4")
 expect_ok("math", "import math\nprint(math.sqrt(16))", "4.0")
 expect_ok("json roundtrip", "import json\nprint(json.dumps({'a': 1}))", '"a": 1')
 expect_ok("re", "import re\nprint(re.sub(r'l', 'L', 'hello'))", "heLLo")
-expect_ok("datetime", "import datetime\nprint(datetime.datetime(2025, 1, 2).year)", "2025")
+if "datetime" in vorv_runner._WHITELIST:
+    expect_ok("datetime",
+              "import datetime\nprint(datetime.datetime(2025, 1, 2).year)",
+              "2025")
+else:
+    # Honest degradation: a pure-Python datetime fallback that lazily
+    # imports 'time' is refused rather than offered with a hole. Standard
+    # CPython (and Chaquopy 3.11) ship the C _datetime module, so this
+    # branch is not taken in CI.
+    print("  NOTE  datetime pruned on this interpreter (pure-Python fallback)")
+    expect_blocked("datetime import after prune", "import datetime", ("sandbox", "import"))
 expect_ok("list comprehension", "print([x * x for x in range(5)])", "[0, 1, 4, 9, 16]")
 expect_ok("class definition", textwrap.dedent("""
     class Point:

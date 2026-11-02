@@ -104,10 +104,25 @@ class FileReadTool(private val appContext: Context) : Tool {
 
         try {
             appContext.contentResolver.openInputStream(file.uri)?.use { stream ->
-                val content = stream.bufferedReader().readText()
+                // Audit M-5: stream-read at most MAX_READ_BYTES (cap × 4 for
+                // UTF-8 safety) instead of buffering the whole file, then
+                // truncate to the character cap. A 500 MB log can no longer
+                // OOM the process before the cap applies.
+                val sb = StringBuilder()
+                val reader = stream.bufferedReader(Charsets.UTF_8)
+                var total = 0L
+                while (total < MAX_READ_BYTES) {
+                    val cbuf = CharArray(8192)
+                    val n = reader.read(cbuf)
+                    if (n <= 0) break
+                    total += n
+                    sb.append(cbuf, 0, n)
+                }
+                if (total >= MAX_READ_BYTES) sb.append("\n…(truncated at $MAX_READ_BYTES chars)")
+                val content = sb.toString()
                 ToolResult(
                     ok = true,
-                    output = content.take(50000),  // hard cap to keep prompt small
+                    output = content.take(MAX_OUTPUT_CHARS),  // hard cap to keep prompt small
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("file", file.uri.toString(), "file: $path"),
                 )
@@ -115,6 +130,11 @@ class FileReadTool(private val appContext: Context) : Tool {
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "Read failed: ${e.message}", durationMs = System.currentTimeMillis() - t0)
         }
+    }
+
+    private companion object {
+        const val MAX_OUTPUT_CHARS = 50_000
+        const val MAX_READ_BYTES = 200_000L
     }
 
     private fun navigate(root: DocumentFile, path: String): DocumentFile? {
@@ -171,6 +191,13 @@ class FileWriteTool(private val appContext: Context) : Tool {
             if (i == segments.lastIndex) {
                 // File
                 val existing = current.findFile(segment)
+                if (existing != null && existing.isDirectory) {
+                    // Audit L-6: a name collision with a DIRECTORY is an honest
+                    // error, not a provider-suffixed duplicate file.
+                    return@withContext ToolResult(ok = false, output = "",
+                        error = "'$path' exists as a DIRECTORY — pick a different file name.",
+                        durationMs = System.currentTimeMillis() - t0)
+                }
                 val target = existing?.takeIf { it.isFile }
                     ?: current.createFile("text/plain", segment)
                     ?: return@withContext ToolResult(ok = false, output = "", error = "Could not create file: $segment", durationMs = System.currentTimeMillis() - t0)

@@ -2,7 +2,8 @@ package host.vorv
 
 import android.app.Application
 import android.content.ComponentCallbacks2
-import android.os.Build
+import android.os.Process
+import android.util.Log
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -10,6 +11,7 @@ import host.vorv.data.SecretsStore
 import host.vorv.data.VorvDatabase
 import host.vorv.data.VorvPrefs
 import host.vorv.llm.ModelRepository
+import host.vorv.watchdog.HotPatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,21 +20,28 @@ import java.io.PrintWriter
 import java.io.StringWriter
 
 /**
- * Application-scoped wiring (audit findings H-4, L-7):
- *  - owns the DB, prefs, secrets and the ModelRepository as singletons
- *  - migrates the legacy plaintext API key into encrypted storage, once
- *  - releases the local LLM's native memory under system memory pressure
+ * Application-scoped wiring.
  *
- * v0.6.3 crash diagnostics:
- *  - [BootTracer] writes breadcrumbs at each startup step — catches native
- *    SIGSEGV crashes that no Java handler can catch
- *  - Global UncaughtExceptionHandler enqueues [CrashReportWorker] via
- *    WorkManager — the worker writes the full Java stack trace to a file in
- *    a FRESH process, so the write isn't racing the process kill
- *  - Crash-loop detection: if the previous boot didn't reach BOOT_COMPLETE,
- *    the crash counter is incremented; MainActivity enters safe mode after
- *    2 crashes (skips GenieX init so the app can at least boot and show
- *    diagnostics)
+ * AUDIT H-1 FIX — PROCESS GUARD: this Application class runs in EVERY
+ * process of the app, including ":watchdog". The audited code ran the full
+ * onCreate in the watchdog process too — DB init, model repo, and worst of
+ * all the HEARTBEAT WRITER, which poisoned the very heartbeat the watchdog
+ * uses to detect main-process death. Now:
+ *   - the MAIN process runs the full initialization;
+ *   - ":watchdog" (and any other non-main process) runs only the crash
+ *     handler and returns — the service lives on its own.
+ *   - heartbeats are written exclusively from the main process.
+ *
+ * AUDIT L-7 FIX — BOOT MARKER FIRST: BootTracer.start() (the separator +
+ * BOOT_STARTED breadcrumb) is now the FIRST thing onCreate does, BEFORE the
+ * hot-patch step. Previously the hotpatch breadcrumbs were appended to the
+ * PREVIOUS boot's section, so a crash during hot-patching was
+ * misclassified as a crash of the previous boot.
+ *
+ * PROBATION (correctness gate): when a previous-boot crash is detected at
+ * startup, HotPatcher.quarantineIfCrashed rolls back any patch that
+ * overrides the crashed class within its 72h probation window — a fix that
+ * makes things worse undoes itself.
  */
 class VorvApplication : Application() {
 
@@ -49,31 +58,45 @@ class VorvApplication : Application() {
 
     /**
      * Set to true by MainActivity if the previous boot crashed (no BOOT_COMPLETE
-     * marker) AND the crash count >= 2. When true, GenieX init is skipped so
-     * the app can boot without the native lib that's crashing.
+     * marker) AND the crash count >= 2. When true, GenieX init is skipped so the
+     * app can boot without the native lib that's crashing.
      */
     @Volatile
     var safeMode = false
         private set
 
+    /** Patches rolled back this boot by the probation gate (for the UI). */
+    @Volatile
+    var rolledBackPatches: List<String> = emptyList()
+        private set
+
     override fun onCreate() {
+        // L-7: the boot marker must exist BEFORE any step that can crash —
+        // including the crash handler install and the hot-patch load.
+        BootTracer.start(this)
+
         // Install the crash handler FIRST, before anything else can throw.
         installCrashHandler()
         super.onCreate()
 
-        // Load any pending hot-patches BEFORE app code runs. A patch .dex
-        // loaded here overrides buggy classes for the entire process lifetime.
-        // (Honest limitation: already-loaded classes can't be unloaded, so a
-        // newly-downloaded patch only takes effect after a restart. The
+        if (isWatchdogProcess()) {
+            // H-1: the watchdog process gets NO app initialization. It must
+            // not init Room/GenieX, and above all it must not write
+            // heartbeats — that poisoned the crash detection for good.
+            BootTracer.step(this, "watchdog_process_skip", "pid=${Process.myPid()}")
+            Log.i(TAG, "Watchdog process detected — application init skipped")
+            return
+        }
+
+        // Load verified, user-approved hot-patches BEFORE app code runs.
+        // (Honest limitation: already-loaded classes can't be unloaded, so
+        // a newly-registered patch only takes effect after a restart. The
         // watchdog orchestrates that restart.)
         BootTracer.step(this, "hotpatch_load_begin")
-        val appliedPatches = runCatching { host.vorv.watchdog.HotPatcher.loadPendingPatches(this) }
+        val appliedPatches = runCatching { HotPatcher.loadPendingPatches(this) }
             .onFailure { BootTracer.step(this, "hotpatch_load_failed", it.message) }
             .getOrDefault(emptyList())
         BootTracer.step(this, "hotpatch_load_end", "applied=${appliedPatches.size}")
-
-        // Start breadcrumbs — every subsequent step gets traced.
-        BootTracer.start(this)
 
         BootTracer.step(this, "check_previous_boot")
         // Detect crash loop: if the previous boot didn't complete, increment
@@ -81,6 +104,24 @@ class VorvApplication : Application() {
         if (!BootTracer.previousBootCompleted(this)) {
             val count = BootTracer.incrementCrashCount(this)
             BootTracer.step(this, "previous_boot_crashed", "count=$count")
+
+            // Probation gate: a patch that was followed by a crash in the
+            // class it overrides, within 72h of applying, is rolled back.
+            val crashedClass = runCatching {
+                val latest = getLatestCrashLog()
+                latest?.let { f ->
+                    host.vorv.healer.CrashParser.extractCrashedClass(f.readText())
+                }
+            }.getOrNull()
+            rolledBackPatches = runCatching {
+                HotPatcher.quarantineIfCrashed(this, crashedClass)
+            }.getOrDefault(emptyList())
+            if (rolledBackPatches.isNotEmpty()) {
+                BootTracer.step(this, "probation_rollback",
+                    "patches=${rolledBackPatches.joinToString(",")}")
+                Log.w(TAG, "Probation rollback applied: $rolledBackPatches")
+            }
+
             if (count >= 2) {
                 safeMode = true
                 BootTracer.step(this, "SAFE_MODE_ENABLED", "skipping non-essential init")
@@ -97,8 +138,7 @@ class VorvApplication : Application() {
             startService(intent)
         }.onFailure { BootTracer.step(this, "start_watchdog_failed", it.message) }
 
-        // Write initial heartbeat — the watchdog uses this to detect when
-        // this process dies (stale heartbeat = crash).
+        // Write initial heartbeat — MAIN process only (H-1).
         host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "app_oncreate")
 
         BootTracer.step(this, "init_prefs")
@@ -124,9 +164,16 @@ class VorvApplication : Application() {
         // One-shot migration: plaintext DataStore API key → encrypted storage (C-5).
         appScope.launch {
             runCatching { secrets.migrateFromLegacy(prefs) }
-                .onFailure { android.util.Log.e(TAG, "legacy key migration failed: ${it.message}", it) }
+                .onFailure { Log.e(TAG, "legacy key migration failed: ${it.message}", it) }
         }
     }
+
+    /**
+     * H-1: true when running in the ":watchdog" (or any non-main) process.
+     * Application.getProcessName() is available from API 28; minSdk is 31.
+     */
+    private fun isWatchdogProcess(): Boolean =
+        Application.getProcessName() != packageName
 
     /**
      * Background thread that writes a heartbeat every 5s. The watchdog reads
@@ -162,7 +209,7 @@ class VorvApplication : Application() {
             try {
                 enqueueCrashReport(thread, throwable)
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "crash handler failed: ${e.message}", e)
+                Log.e(TAG, "crash handler failed: ${e.message}", e)
             }
             previousHandler?.uncaughtException(thread, throwable)
         }
@@ -187,7 +234,7 @@ class VorvApplication : Application() {
             .build()
 
         WorkManager.getInstance(this).enqueue(request)
-        android.util.Log.e(TAG, "CrashReportWorker enqueued. Thread=${thread.name}, exception=${throwable.javaClass.name}")
+        Log.e(TAG, "CrashReportWorker enqueued. Thread=${thread.name}, exception=${throwable.javaClass.name}")
     }
 
     override fun onTrimMemory(level: Int) {

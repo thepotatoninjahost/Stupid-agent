@@ -51,7 +51,7 @@ jobs:
         run: python3 app/src/main/python/test_vorv_sandbox.py
 
       - name: Unit tests (JUnit + Robolectric)
-        run: gradle test --no-daemon --stacktrace
+        run: ./gradlew test --no-daemon --stacktrace
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
@@ -97,7 +97,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Build APKs (debug always; release signed when keystore present)
-        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
+        run: ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
@@ -154,16 +154,21 @@ jobs:
           name: Vorv-release-signed-APK
           path: release/
 
-      - name: Compute short SHA
+      - name: Compute short SHA and app version
         if: env.HAS_KEYSTORE == 'true'
-        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+        run: |
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          # Audit L-3: derive the release tag from the ACTUAL versionName in
+          # app/build.gradle.kts instead of a hardcoded stale version.
+          VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts | head -1)
+          echo "APP_VERSION=$VERSION_NAME" >> "$GITHUB_ENV"
 
       - name: Publish Release
         if: env.HAS_KEYSTORE == 'true'
         # softprops/action-gh-release v2.6.2
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          tag_name: v0.6.0-${{ env.SHORT_SHA }}
+          tag_name: v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}
           name: Vorv build ${{ env.SHORT_SHA }}
           body: |
             Vorv — local-first autonomous agent.

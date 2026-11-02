@@ -5,7 +5,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Required to be declarable so the user can grant it in Android Settings
          (Settings → Apps → Vorv → Permissions → Run commands in Termux).
@@ -20,6 +20,13 @@
         WAKE_LOCK              — WorkManager merges its own; app code never holds one.
     -->
 
+    <!--
+      Backup posture (audit M-7): conversation/tool-call data NEVER leaves the
+      device. vorv.db (prompts, tool inputs/outputs, memory) is EXCLUDED from
+      cloud backup AND device transfer — see res/xml/backup_rules.xml and
+      res/xml/data_extraction_rules.xml. Only non-secret settings (DataStore)
+      participate. SECURITY.md states this explicitly.
+    -->
     <application
         android:name=".VorvApplication"
         android:allowBackup="true"
@@ -43,10 +50,21 @@
             </intent-filter>
         </activity>
 
+        <!--
+          AgentService — a COMPUTE workload (audit L-9): the agent loop while
+          a task runs. Declared as specialUse (the honest type for on-device
+          compute) with the required property. If Play distribution is ever
+          considered, document the use case in the Play console; for local
+          installs this is simply the correct type (dataSync was not).
+        -->
         <service
             android:name=".service.AgentService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Exclusively user-initiated on-device AI agent task execution" />
+        </service>
 
         <!--
           WatchdogService — runs in a SEPARATE PROCESS (":watchdog").

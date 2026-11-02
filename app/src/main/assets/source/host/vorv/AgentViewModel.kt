@@ -31,6 +31,7 @@ import host.vorv.tools.PythonExecTool
 import host.vorv.tools.ReminderRegistry
 import host.vorv.tools.ScheduleCancelTool
 import host.vorv.tools.ScheduleTool
+import host.vorv.tools.SelfFixTool
 import host.vorv.tools.ShellTool
 import host.vorv.tools.WebFetchTool
 import host.vorv.tools.WebSearchTool
@@ -132,11 +133,22 @@ class AgentViewModel(
         ScheduleTool(appContext, reminderRegistry),
         ScheduleCancelTool(appContext, reminderRegistry),
         BrowserAutomateTool(appContext),
+        SelfFixTool(appContext, prefs),
     )
 
     private val outputDir = File(appContext.cacheDir, "tool_outputs")
 
-    private val kernel = CognitiveKernel(RoomKernelEventSink(db), tools, outputDir)
+    // v0.6.8 dispatch: the kernel is created through PatchRegistry so a
+    // verified, approved patch of CognitiveKernel actually RUNS (same-FQCN
+    // classes under different classloaders are different runtime identities —
+    // dispatching through the shared KernelApi interface is the only way a
+    // patched kernel can be used). Falls back to the original on any failure.
+    private val kernel: CognitiveKernel =
+        host.vorv.watchdog.PatchRegistry.create(
+            host.vorv.kernel.KernelApi::class.java,
+            CognitiveKernel::class.java.name,
+            RoomKernelEventSink(db), tools, outputDir,
+        ) as? CognitiveKernel ?: CognitiveKernel(RoomKernelEventSink(db), tools, outputDir)
 
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
@@ -450,7 +462,7 @@ class AgentViewModel(
                 } catch (e: TimeoutCancellationException) {
                     val msg = "Task timed out after ${timeoutMs / 60000} minutes and was stopped. " +
                         "Partial tool-call history is preserved in the Tasks tab."
-                    host.vorv.kernel.TaskResult(false, msg, 0, emptyList(), 0, error = "timeout")
+                    host.vorv.kernel.KernelApi.TaskResult(false, msg, 0, emptyList(), 0, error = "timeout")
                 }
 
                 val assistantMsg = ChatMessage(
@@ -544,18 +556,41 @@ class AgentViewModel(
     }
 
     /**
-     * Clear ALL data (audit privacy section): wipes every table. The
-     * confirmation goes through the same consent bridge the tools use.
+     * Clear ALL data (audit M-4 — now actually ALL of it): every table, every
+     * scheduled reminder (WorkManager unique work + the registry), every
+     * persisted tool output file, and the crash/watchdog diagnostics.
+     * The API key is a SETTING, not agent data — it is kept, and the dialog
+     * says so. The confirmation goes through the same consent bridge the
+     * tools use.
      */
     fun clearAllData() {
         if (_state.value.busy) return
         viewModelScope.launch(Dispatchers.IO) {
             val allowed = requestConfirmation(
-                "Delete ALL Vorv data — every memory, task, tool-call log and skill stat? " +
-                "This cannot be undone."
+                "Delete ALL Vorv data — every memory, task, tool-call log and skill stat, " +
+                    "all scheduled reminders, tool output files and crash diagnostics? " +
+                    "This cannot be undone. Your API key and settings are KEPT " +
+                    "(they are settings, not agent data)."
             )
             if (!allowed) return@launch
-            withContext(Dispatchers.IO) { db.clearAllTables() }
+
+            // 1. Cancel every registered reminder's WorkManager unique work.
+            runCatching {
+                val wm = androidx.work.WorkManager.getInstance(appContext)
+                reminderRegistry.takeForCancel(null).forEach { wm.cancelUniqueWork(it.name) }
+            }
+            // 2. Clear the reminder registry preference itself.
+            runCatching { prefs.setScheduledReminders("[]") }
+            // 3. Recursively delete persisted tool outputs.
+            runCatching { outputDir.deleteRecursively() }
+            // 4. Purge crash logs + watchdog diagnostics.
+            runCatching {
+                File(appContext.getExternalFilesDir(null), "crash_logs").deleteRecursively()
+                File(appContext.getExternalFilesDir(null), "watchdog").deleteRecursively()
+                File(appContext.getExternalFilesDir(null), "healer").deleteRecursively()
+            }
+            // 5. Wipe every table.
+            runCatching { withContext(Dispatchers.IO) { db.clearAllTables() } }
             db.episodeDao().insert(Episode(kind = "boot", summary = "All data cleared by user"))
         }
     }

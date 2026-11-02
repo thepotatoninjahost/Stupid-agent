@@ -116,6 +116,41 @@ object ModelManager {
     }
 
     /**
+     * Strongest-first model selection for REPAIR work (self-fix, self-repair,
+     * crash analysis) — v0.6.9.
+     *
+     * Patch generation must use the BEST coder model on the device: the 7B
+     * whenever it is downloaded. The 3B is used ONLY when the 7B is absent.
+     * Nothing is disabled — but the weak model is never chosen to write code
+     * repairs while the strong one sits on disk (user feedback: "what good
+     * is a 3B model going to do" for fixes — correct; a 3B is a chat toy,
+     * not a repair engineer).
+     *
+     * The verifier gates (PatchVerifier, signature, consent, probation
+     * rollback) stay on regardless of which model generates a patch, so even
+     * the 3B fallback can never land a partial or broken fix — it just fails
+     * honestly more often.
+     *
+     * @return the strongest downloaded coder model, or null if none is on
+     *         disk (callers report that honestly; nothing is auto-pulled).
+     */
+    suspend fun bestRepairModel(): ModelChoice? = when {
+        isDownloaded(ModelChoice.QWEN_7B) -> ModelChoice.QWEN_7B
+        isDownloaded(ModelChoice.QWEN_3B) -> ModelChoice.QWEN_3B
+        else -> null
+    }
+
+    /**
+     * Honest engine label for repair work — says which model actually
+     * generated the patch, and flags when it had to be the 3B because the
+     * 7B is not on the device. Surfaces in logs and tool output.
+     */
+    fun repairLabel(choice: ModelChoice, purpose: String): String = when (choice) {
+        ModelChoice.QWEN_7B -> "Qwen2.5-Coder-7B ($purpose)"
+        ModelChoice.QWEN_3B -> "Qwen2.5-Coder-3B ($purpose; 7B not downloaded)"
+    }
+
+    /**
      * Stream-pull a model from HuggingFace via GenieX's ModelManagerWrapper.
      * Emits integer percent (0..100). GenieX handles checksums, resume,
      * and on-disk caching.

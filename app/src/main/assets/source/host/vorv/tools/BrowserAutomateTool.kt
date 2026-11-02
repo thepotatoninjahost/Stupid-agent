@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -13,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 
@@ -26,12 +30,23 @@ import kotlin.coroutines.resume
  *    allowUniversalAccessFromFileURLs all explicitly FALSE — no file:// or
  *    content:// reads.
  *  - Mixed content blocked (MIXED_CONTENT_NEVER_ALLOW).
- *  - NetworkGuard.checkHostAllowed() pre-checks the host before every load:
- *    no localhost, LAN, link-local or metadata endpoints.
  *  - JS snippets are built with Gson JSON string interpolation, not
  *    hand-rolled escaping (the old escape() missed backticks and ${}).
  *  - destroy() releases the WebView when the ViewModel clears (it previously
  *    leaked on activity recreation — audit performance section).
+ *
+ * v0.6.9 (audits H-3 + M-1) — per-navigation egress guard:
+ *  - The OLD single pre-check on the initial URL left redirects and
+ *    JS-initiated navigations completely unguarded. Now a GuardWebViewClient
+ *    runs NetworkGuard.checkHostAllowed on EVERY navigation
+ *    (shouldOverrideUrlLoading) and EVERY sub-resource request
+ *    (shouldInterceptRequest — iframes, fetches, XHRs).
+ *  - shouldInterceptRequest proxies the request through OkHttp wired to
+ *    NetworkGuard.PublicDns — ONE resolution, checked against the private-
+ *    network blocklist, used for the actual transfer. This closes the
+ *    DNS-rebinding TOCTOU (M-1): the WebView can no longer connect to a
+ *    different address than the one that was checked.
+ *  - A blocked navigation fails the tool call with an honest error.
  */
 class BrowserAutomateTool(private val appContext: Context) : Tool {
 
@@ -71,9 +86,94 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
         add("required", com.google.gson.JsonArray().apply { add("action") })
     }
 
+    /** The single guarded client — installed once, never replaced. */
+    private val guardClient = GuardWebViewClient()
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val webViewRef = AtomicReference<WebView?>(null)
     private val gson = Gson()
+
+    /**
+     * OkHttp client used to proxy WebView requests (M-1): DNS resolution
+     * goes through NetworkGuard.PublicDns — resolved once, checked against
+     * the private-network blocklist, and used for the transfer. The WebView
+     * cannot connect to a different address than the one that was checked.
+     */
+    private val proxyClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .dns(NetworkGuard.PublicDns)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
+    /**
+     * The per-navigation egress guard (audits H-3 + M-1). Every navigation
+     * and every sub-resource request is checked; sub-resources are proxied
+     * through the DNS-pinned OkHttp client. The last block reason is
+     * surfaced to the tool caller.
+     */
+    @Volatile private var lastBlockReason: String? = null
+
+    private inner class GuardWebViewClient : WebViewClient() {
+
+        override fun shouldOverrideUrlLoading(
+            view: WebView?,
+            request: WebResourceRequest?,
+        ): Boolean {
+            request?.url ?: return false
+            return !checkAllowed(request.url)
+        }
+
+        override fun shouldInterceptRequest(
+            view: WebView?,
+            request: WebResourceRequest?,
+        ): WebResourceResponse? {
+            val url = request?.url ?: return null
+            if (!checkAllowed(url)) {
+                // A blocked sub-resource (iframe/fetch/XHR): serve an honest
+                // empty 403 instead of letting the WebView fetch it.
+                return WebResourceResponse("text/plain", "utf-8", 403, "Blocked by Vorv",
+                    java.util.Collections.emptyMap(),
+                    java.io.ByteArrayInputStream("blocked by network guard".toByteArray()))
+            }
+            // M-1: proxy through the DNS-pinned client so the connection uses
+            // EXACTLY the addresses that were checked.
+            return try {
+                val req = okhttp3.Request.Builder().url(url.toString()).build()
+                val resp = proxyClient.newCall(req).execute()
+                val contentType = resp.header("Content-Type") ?: "application/octet-stream"
+                val (mime, charset) = contentType.split(";", limit = 2)
+                    .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
+                val headers = mutableMapOf<String, String>()
+                for ((k, v) in resp.headers) headers[k] = v
+                val body = resp.body?.byteStream()
+                    ?: java.io.ByteArrayInputStream(ByteArray(0))
+                WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
+            } catch (e: Exception) {
+                null // network failure: let the WebView surface its own error
+            }
+        }
+
+        /** True when allowed; records the reason when blocked. */
+        private fun checkAllowed(url: android.net.Uri): Boolean {
+            val scheme = url.scheme?.lowercase()
+            if (scheme != "http" && scheme != "https" && scheme != null) {
+                lastBlockReason = "navigation to non-http(s) URL blocked: $url"
+                return false
+            }
+            val host = url.host ?: ""
+            return try {
+                NetworkGuard.checkHostAllowed(host)
+                true
+            } catch (e: java.net.UnknownHostException) {
+                lastBlockReason = e.message ?: "host blocked: $host"
+                false
+            }
+        }
+    }
 
     /** Lazily create the WebView on the MAIN thread — WebViews must never be touched off-main. */
     @SuppressLint("SetJavaScriptEnabled")
@@ -89,7 +189,8 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             settings.allowFileAccessFromFileURLs = false
             settings.allowUniversalAccessFromFileURLs = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            webViewClient = WebViewClient()
+            // ---- H-3: the guarded client — every navigation checked ----
+            webViewClient = this@BrowserAutomateTool.guardClient
         }
         webViewRef.set(wv)
         return wv
@@ -114,15 +215,23 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                             error = "Refusing to load URL with scheme '$scheme' — only http/https allowed.",
                             durationMs = System.currentTimeMillis() - t0)
                     }
-                    val host = uri.host ?: ""
+                    // Initial pre-check (fast, honest failure before any load).
                     try {
-                        NetworkGuard.checkHostAllowed(host)
+                        NetworkGuard.checkHostAllowed(uri.host ?: "")
                     } catch (e: java.net.UnknownHostException) {
                         return@withContext ToolResult(ok = false, output = "",
                             error = e.message, durationMs = System.currentTimeMillis() - t0)
                     }
                     val wv = obtainWebView()
+                    lastBlockReason = null
                     loadPage(wv, url)
+                    // H-3: a redirect or JS navigation during the load may have
+                    // been blocked by the guard client — surface it honestly.
+                    lastBlockReason?.let { blocked ->
+                        return@withContext ToolResult(ok = false, output = "",
+                            error = "navigation blocked: $blocked",
+                            durationMs = System.currentTimeMillis() - t0)
+                    }
                     "Loaded $url. Page title: ${wv.title ?: "(none)"}"
                 }
                 "click" -> {
@@ -179,10 +288,24 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
         }
     }
 
-    /** Suspend until the page finishes loading. 30s hard timeout. */
+    /**
+     * Suspend until the page finishes loading. 30s hard timeout.
+     * The GUARDED client stays installed — completion is detected through a
+     * temporary onPageFinished hook layered on top (the guard keeps
+     * intercepting navigations during and after the load).
+     */
     private suspend fun loadPage(wv: WebView, url: String) = withTimeout(30_000) {
         suspendCancellableCoroutine { cont ->
+            val original = guardClient
             wv.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?, request: WebResourceRequest?,
+                ): Boolean = original.shouldOverrideUrlLoading(view, request)
+
+                override fun shouldInterceptRequest(
+                    view: WebView?, request: WebResourceRequest?,
+                ): WebResourceResponse? = original.shouldInterceptRequest(view, request)
+
                 override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                     if (cont.isActive) cont.resume(Unit)
                 }

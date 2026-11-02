@@ -75,18 +75,32 @@ class ReminderRegistry(private val prefs: VorvPrefs) {
         save(list)
     }
 
+    /** Audit M-9 rollback: remove a registry entry when its enqueue failed. */
+    suspend fun rollback(name: String) {
+        val list = load()
+        save(list.filter { it.name != name })
+    }
+
     /** Returns the unique work names matching [title] (or all when null). */
     suspend fun takeForCancel(title: String?): List<Entry> {
         val list = load()
         val now = System.currentTimeMillis()
-        // Drop entries whose reminder already fired (eta in the past).
+        // Audit M-9: entries whose reminder already fired are REMOVED from the
+        // registry and RETURNED TOO — the caller cancels their unique work,
+        // so an expired-but-still-enqueued job cannot linger uncancellable.
         val (expired, live) = list.partition { it.etaMs <= now }
-        if (expired.isNotEmpty()) save(live)
-        val current = if (expired.isNotEmpty()) live else list
+        val current = if (expired.isNotEmpty()) {
+            save(live)
+            live
+        } else {
+            list
+        }
         val matching = if (title.isNullOrBlank()) current else current.filter { it.title == title }
         val remaining = current - matching.toSet()
-        save(remaining)
-        return matching
+        if (expired.isNotEmpty() || matching.isNotEmpty()) {
+            save(remaining)
+        }
+        return matching + expired
     }
 
     private companion object {
@@ -141,17 +155,12 @@ class ScheduleTool(
         return try {
             val delay = minutes.toLong()
             val workName = "vorv_reminder_${ctx.taskId}_${ctx.iteration}"
-            val request = OneTimeWorkRequestBuilder<ReminderWorker>()
-                .setInitialDelay(delay, TimeUnit.MINUTES)
-                .setInputData(workDataOf(
-                    "title" to title,
-                    "text" to text,
-                ))
-                .build()
-            // Unique name + REPLACE: a re-run of the same iteration can't
-            // stack duplicates (audit M-5).
-            workManager.enqueueUniqueWork(workName, androidx.work.ExistingWorkPolicy.REPLACE, request)
-
+            // Audit M-9 — REGISTER FIRST, ENQUEUE SECOND (with rollback):
+            // the old order (enqueue → register) left a reminder enqueued in
+            // WorkManager but missing from the registry when register threw
+            // at the 20-entry cap — existing but uncancellable. Now the cap
+            // check and the registry write happen BEFORE the enqueue, and an
+            // enqueue failure rolls the registry entry back.
             registry.register(
                 ReminderRegistry.Entry(
                     name = workName,
@@ -159,6 +168,22 @@ class ScheduleTool(
                     etaMs = System.currentTimeMillis() + delay * 60_000,
                 )
             )
+            try {
+                val request = OneTimeWorkRequestBuilder<ReminderWorker>()
+                    .setInitialDelay(delay, TimeUnit.MINUTES)
+                    .setInputData(workDataOf(
+                        "title" to title,
+                        "text" to text,
+                    ))
+                    .build()
+                // Unique name + REPLACE: a re-run of the same iteration can't
+                // stack duplicates (audit M-5).
+                workManager.enqueueUniqueWork(workName, androidx.work.ExistingWorkPolicy.REPLACE, request)
+            } catch (e: Exception) {
+                // Roll the registry entry back — nothing half-registered.
+                runCatching { registry.rollback(workName) }
+                throw e
+            }
 
             ToolResult(
                 ok = true,

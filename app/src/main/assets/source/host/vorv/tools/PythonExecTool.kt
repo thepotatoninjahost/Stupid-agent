@@ -37,7 +37,9 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
         "Execute Python 3.11 in a layered sandbox: pure computation with the standard " +
         "library only (math, json, re, datetime, statistics, collections, ...). " +
         "File access, network, subprocesses and non-whitelisted imports are BLOCKED " +
-        "and will raise an error. Use print() to capture output. 30s max timeout."
+        "and will raise an error. The first execution per task asks the user for " +
+            "confirmation (in-process sandboxing is hardening, not a barrier). " +
+            "Use print() to capture output. 30s max timeout."
 
     override val timeoutMs: Long get() = 35_000L
     override val maxCallsPerTask: Int get() = 30
@@ -65,6 +67,9 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
      */
     private val runMutex = Mutex()
 
+    /** Per-task one-shot consent (audit C-1): the first call prompts. */
+    private val consentedTasks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
         val code = input.get("code")?.asString
@@ -72,6 +77,31 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
                 durationMs = System.currentTimeMillis() - t0)
         val timeoutMs = (input.get("timeout_ms")?.takeIf { !it.isJsonNull }?.asInt ?: 10_000)
             .coerceIn(500, 30_000)
+
+        // ---- audit C-1: user consent on the first execution of this task ----
+        if (consentedTasks.putIfAbsent(ctx.taskId, true) == null) {
+            val confirm = ctx.confirm
+                ?: return@withContext ToolResult(
+                    ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                    error = "User confirmation bridge unavailable — refusing to run " +
+                        "python_exec (fail closed).",
+                )
+            val codeLines = code.lines()
+            val preview = codeLines.take(6).joinToString("\n") +
+                (if (codeLines.size > 6) "\n… (+${codeLines.size - 6} more lines)" else "")
+            val allowed = confirm(
+                "Vorv wants to run PYTHON CODE in-app (first run for this task; later " +
+                    "runs in the same task won't re-prompt). The sandbox blocks files, " +
+                    "network and processes — but an in-process sandbox is hardening, " +
+                    "not a security barrier.\n\n$preview\n\nAllow?")
+            if (!allowed) {
+                consentedTasks.remove(ctx.taskId)
+                return@withContext ToolResult(
+                    ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                    error = "User DENIED python execution. Do not claim it ran.",
+                )
+            }
+        }
 
         if (started.compareAndSet(false, true)) {
             try {

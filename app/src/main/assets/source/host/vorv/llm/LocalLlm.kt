@@ -41,6 +41,14 @@ class LocalLlm(
 
     override val label = displayLabel
 
+    /**
+     * Honest prompt budget (audit M-2): nCtx is 4096 and GenerationConfig
+     * reserves up to 2048 output tokens plus chat-template overhead — so the
+     * kernel must keep the PROMPT (messages) under ~1800 tokens or the
+     * engine truncates/fails opaquely. The kernel compacts history to fit.
+     */
+    override val contextTokenBudget: Int get() = 1_800
+
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
 

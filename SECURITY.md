@@ -57,7 +57,16 @@ Therefore every tool treats its input as hostile data. The defense is layered:
 
 ### python_exec (Chaquopy, CPython 3.11)
 
-Four layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
+Five layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
+
+0. **Namespace scrubbing + verification (v0.6.9, audit C-1):** the whitelist
+   closure is scrubbed of the real `os`/`sys` module objects (inert proxies
+   with only `urandom`/`getpid` survive), every callable the sandbox exposes
+   is defined in a clean namespace (`fn.__globals__` yields nothing), a
+   transitive walk verifies no real `os`/`sys` is reachable, and per-module
+   canaries drop any module that cannot be offered safely. The first
+   execution per task additionally requires USER CONSENT — an in-process
+   sandbox is hardening, not a barrier (see residual limits below).
 
 1. **CPython audit hook** (`sys.addaudithook`, cannot be removed by user code):
    blocks `open`, `os.system`, `os.exec`, `subprocess.Popen`, `socket.*`,
@@ -112,12 +121,21 @@ Four layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
   (AES-256-GCM values, AES-256-SIV keys, master key in the Android Keystore —
   hardware-backed on the S25). It is never logged, never sent anywhere except
   `api.z.ai` in an `Authorization` header, and excluded from backups
-  (`data_extraction_rules.xml` / `backup_rules.xml` include only `vorv.db`).
+  (`data_extraction_rules.xml` / `backup_rules.xml` EXCLUDE `vorv.db`, crash
+logs and healer diagnostics entirely — conversation and tool-call data never
+participate in cloud backup or device transfer; only non-secret settings do).
 - The pre-0.6.0 plaintext copy (DataStore) is migrated once and erased.
 - No secrets are committed to the repository. The previously committed debug
   keystore was removed; release signing uses GitHub Actions secrets only.
 
 ## Data
+
+**Backup posture (v0.6.9, audit M-7):** `vorv.db` — prompts, tool inputs and
+outputs, memory — is EXCLUDED from Android cloud backup AND device transfer.
+The same applies to crash logs and healer diagnostics. Only non-secret
+settings (DataStore) participate. Data that stays local means it stays
+local.
+
 
 - Stored locally: prompts, task history, tool-call logs (30-day retention),
   taught memories (kept until you delete them), model files.
@@ -130,6 +148,22 @@ Four layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
 ## Reporting a vulnerability
 
 Open a GitHub issue marked **[security]** or contact the maintainer directly.
+## Self-healing: what is honestly patchable
+
+The on-device self-repair system (crash dialog "Self-repair", the `self_fix`
+tool) can patch exactly the classes with a `PatchRegistry` dispatch point:
+the 16 agent tools, `CognitiveKernel` (via `KernelApi`) and `HealingAgent`
+(via `HealerApi`) — 18 classes. A problem outside that surface (Activity,
+Application, Service, helpers) is refused with an honest explanation, because
+a patch for such a class would compile but could never actually run.
+
+Every patch passes ALL gates before it takes effect: on-device compile
+(Termux round-trip through the user-granted workspace), the PatchVerifier
+completeness check (the full public API of the original class must survive),
+an Ed25519/ECDSA signature by the device patch key, explicit user APPROVAL,
+and version gates. After applying, a 72-hour probation window auto-rolls-back
+any patch followed by a crash in the class it overrides.
+
 Please include a PoC; for sandbox escapes, the sandbox self-test files
 (`app/src/main/python/test_vorv_sandbox.py`, `JsExecToolTest.kt`) are the
 place to add a regression case.

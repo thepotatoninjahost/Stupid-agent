@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Audit M-7: vorv.db (episodes, tool calls, memory, tasks) must NEVER be
+  uploaded to Google cloud backup — SECURITY.md promises conversation data
+  stays local. The database is excluded; only non-secret DataStore settings
+  participate in backup.
+-->
 <full-backup-content>
-    <include domain="database" path="vorv.db"/>
+    <exclude domain="database" path="vorv.db" />
+    <exclude domain="database" path="vorv.db-wal" />
+    <exclude domain="database" path="vorv.db-shm" />
+    <exclude domain="external" path="crash_logs" />
+    <exclude domain="external" path="watchdog" />
+    <exclude domain="external" path="healer" />
 </full-backup-content>

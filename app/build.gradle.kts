@@ -14,8 +14,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.5"
+        versionCode = 18
+        versionName = "0.6.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -89,6 +89,58 @@ chaquopy {
         // Python 3.11 stdlib only — no external packages.
         // Chaquopy doesn't ship a C compiler, so anything with native deps fails.
         // The agent's vorv_runner.py uses only stdlib (sys, io, time, threading).
+    }
+}
+
+// ======================================================================
+// Healer build support (audits H-4, H-5)
+// ======================================================================
+
+/**
+ * H-5: sync the bundled source mirror (assets/source) from the live tree
+ * on every build, so the healer's LLM always reads the code that matches
+ * the running binary. The audited repo shipped a mirror that had drifted
+ * from the real sources — patches would be generated against stale code.
+ * Wired into preBuild: drift is structurally impossible.
+ */
+tasks.register<Sync>("syncSourceMirror") {
+    from("src/main/java")
+    into("src/main/assets/source")
+}
+
+tasks.named("preBuild") { dependsOn("syncSourceMirror") }
+
+/**
+ * H-4: package the app's compiled classes as the healer's compile
+ * classpath (assets/healer/app_classes.jar). The audited code referenced a
+ * path that was never populated — every Termux compile was doomed. The
+ * healer extracts this jar once and stages it into the workspace so
+ * kotlinc can resolve the app's own types (Tool, ToolContext, ...).
+ */
+val healerAssetsDir = layout.buildDirectory.dir("generated/healer/assets")
+
+tasks.register<Jar>("packageHealerClasspath") {
+    archiveFileName.set("app_classes.jar")
+    destinationDirectory.set(healerAssetsDir.map { it.dir("healer") })
+    // The compiled app classes (Kotlin output + generated BuildConfig) so a
+    // patch can compile against every app type it references.
+    from(layout.buildDirectory.dir("tmp/kotlin-classes/debug"))
+    from(layout.buildDirectory.dir("generated/source/buildConfig/debug"))
+    dependsOn("compileDebugKotlin")
+}
+
+android {
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(healerAssetsDir)
+        }
+    }
+}
+
+// Make asset merging depend on the packaged classpath jar.
+android.applicationVariants.all {
+    if (name == "debug") {
+        tasks.named("mergeDebugAssets") { dependsOn("packageHealerClasspath") }
     }
 }
 

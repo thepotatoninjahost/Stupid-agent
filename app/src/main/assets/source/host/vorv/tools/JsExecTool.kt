@@ -72,6 +72,10 @@ class JsExecTool : Tool {
      * ContextFactory whose observeInstructionCount hook aborts evaluation once
      * the deadline passes. The hook fires on the evaluating thread — Rhino's
      * documented interruption mechanism.
+     *
+     * Audit L-5: a NEW factory is created per run() — the previous single
+     * shared instance had @Volatile deadline/aborted state mutated by
+     * concurrent evaluations, a latent race under parallel tool calls.
      */
     private class WatchdogFactory : ContextFactory() {
         @Volatile var deadline: Long = 0L
@@ -85,8 +89,6 @@ class JsExecTool : Tool {
             }
         }
     }
-
-    private val factory = WatchdogFactory()
 
     /**
      * The ONLY Java object placed in the sandbox scope. PLAIN class on
@@ -172,6 +174,9 @@ class JsExecTool : Tool {
         val resultRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var timedOut = false
+
+        // Per-run factory (audit L-5): no state is shared between evaluations.
+        val factory = WatchdogFactory()
 
         // Evaluation runs on a dedicated daemon thread: a blocking native
         // call inside the sandbox can never pin an IO-pool thread — the join

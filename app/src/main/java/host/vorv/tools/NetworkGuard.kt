@@ -47,6 +47,16 @@ object NetworkGuard {
             val first = addr.getAddress()[0].toInt() and 0xFF
             if (first and 0xFE == 0xFC) return true
         }
+        // Carrier-grade NAT 100.64.0.0/10 (audit L-4): first octet 100,
+        // second octet 64..127 — the ISP-shared address space mobile
+        // carriers use internally; same class of "not the public internet"
+        // as RFC1918.
+        val bytes = addr.address
+        if (bytes.size == 4) {
+            val o1 = bytes[0].toInt() and 0xFF
+            val o2 = bytes[1].toInt() and 0xFF
+            if (o1 == 100 && o2 in 64..127) return true
+        }
         return false
     }
 
@@ -81,10 +91,34 @@ object NetworkGuard {
         }
     }
 
-    private fun parseLiteral(host: String): InetAddress? = try {
-        InetAddress.getByName(host) // for literals, no DNS lookup happens
-    } catch (e: Exception) {
-        null
+    /**
+     * Syntactic IP-literal detection (audit L-8): a hostname that IS an
+     * IPv4/IPv6 literal is parsed without any DNS lookup — InetAddress
+     * .getByName performs a lookup for non-literals despite the old
+     * comment claiming otherwise.
+     */
+    private val ipv4Literal = Regex(
+        "^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$")
+
+    private fun parseLiteral(host: String): InetAddress? {
+        val h = host.trim().removePrefix("[").removeSuffix("]")
+        // IPv4 literal — validate octets syntactically, then build.
+        ipv4Literal.find(h)?.let { m ->
+            val octets = m.destructured.toList().map { it.toInt() }
+            if (octets.all { it in 0..255 }) {
+                return runCatching { InetAddress.getByAddress(
+                    octets.map { it.toByte() }.toByteArray()) }.getOrNull()
+            }
+            return null
+        }
+        // IPv6 literal — contains a colon and only hex/colon/dot/percent chars.
+        if (h.contains(':') &&
+            h.all { it.isDigit() || it == ':' || it == '.' || it == '%' ||
+                (it.lowercaseChar() in 'a'..'f') }
+        ) {
+            return runCatching { InetAddress.getByName(h) }.getOrNull() // literal: no DNS
+        }
+        return null // a real hostname — resolution path decides
     }
 
     /**

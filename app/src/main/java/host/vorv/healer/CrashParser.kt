@@ -13,8 +13,13 @@ object CrashParser {
      * Returns the fully-qualified class name, or null if none found.
      *
      * Example stack trace line:
-     *   at host.vorv.llm.ToolCallParser.parse(ToolCallParser.kt:66)
-     * → returns "host.vorv.llm.ToolCallParser"
+     *   at host.vorv.tools.NotifyTool.run(NotifyTool.kt:66)
+     * → returns "host.vorv.tools.NotifyTool"
+     *
+     * v0.6.9 fix: the regex used to capture the METHOD too
+     * ("…NotifyTool.run") because [A-Za-z0-9_.]+ eats both — the trailing
+     * lowercase method segment is now stripped (inner-class '$' suffixes
+     * were already handled).
      */
     fun extractCrashedClass(stackTrace: String): String? {
         val lines = stackTrace.lines()
@@ -22,11 +27,17 @@ object CrashParser {
             // Match: "at host.vorv.<rest>(<file>:<line>)"
             val match = Regex("at\\s+(host\\.vorv\\.[A-Za-z0-9_.]+)").find(line)
             if (match != null) {
-                val className = match.groupValues[1]
+                var className = match.groupValues[1]
                 // Strip inner-class suffixes — the outer class is what we want
                 // to patch (inner classes are compiled into the outer).
-                val outerClass = className.substringBefore("$")
-                return outerClass
+                className = className.substringBefore("$")
+                // Strip a trailing METHOD segment: stack frames end with
+                // .methodName, where the method starts lowercase. Class
+                // segments start uppercase by Kotlin/Java convention.
+                val segments = className.split('.')
+                val classSegments = segments.dropLastWhile { it.isNotEmpty() && !it[0].isUpperCase() }
+                if (classSegments.isEmpty()) continue
+                return classSegments.joinToString(".")
             }
         }
         return null

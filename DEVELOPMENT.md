@@ -102,14 +102,18 @@ debuggable build.
   re-enable when fixed.
 - First build downloads the 89 MB GenieX AAR and the Chaquopy Python stdlib;
   subsequent builds are cached.
-- Room schemas are exported to `app/schemas/` (KSP arg). Commit them — they
-  are what makes future `MigrationTestHelper` tests possible.
+- Room has `exportSchema = false` BY DECISION: the schema is pinned by
+  `MigrationTest`, which builds the v1 database from the actual DDL and
+  asserts every migration lands exactly on it. No `app/schemas/` directory
+  exists and none is committed — if you flip exportSchema on, decide where
+  the files live BEFORE committing them (audit L-2: the old text instructed
+  committing schemas that the build never produced).
 
 ## CI pipeline
 
 `.github/workflows/build.yml`:
 
-1. **test** — `gradle test` + Python sandbox self-test. SHA-pinned actions.
+1. **test** — `./gradlew test` + Python sandbox self-test. SHA-pinned actions.
 2. **build** — assembleDebug + assembleRelease (signed when secrets exist).
 3. **publish** (main only, keystore required) — GitHub Release with the signed
    APK. Feature branches build and test only, so you can verify CI is green

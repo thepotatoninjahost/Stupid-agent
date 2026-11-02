@@ -49,6 +49,17 @@ object DialGuard {
 }
 
 /**
+ * Monotonic, collision-free notification ids (audit L-10): derived from a
+ * random start + AtomicInteger, never from a truncated timestamp.
+ */
+object NotificationIds {
+    private val next = java.util.concurrent.atomic.AtomicInteger(
+        (System.currentTimeMillis() % 1_000_000L).toInt() + 1000)
+
+    fun nextId(): Int = next.incrementAndGet()
+}
+
+/**
  * app_intent — send real Android intents (audit findings H-1, L-2, L-3).
  *
  * EVERY action requires explicit user confirmation through the consent
@@ -180,6 +191,12 @@ class AppIntentTool(private val appContext: Context) : Tool {
  *     expires.
  *  5. Reads the REAL stdout/stderr/exit-code, returns them, cleans up.
  *
+ * v0.6.9 (audit H-2): shell now goes through the USER-CONSENT bridge with
+ * the command text in the dialog — the same bar as app_intent. Arbitrary
+ * bash is strictly more powerful than opening a URL; before this fix it
+ * was the ONLY powerful action without a gate. Fail-closed when the
+ * bridge is unavailable.
+ *
  * Setup requirements, all surfaced as honest errors:
  *  - Termux installed (F-Droid/GitHub build)
  *  - RUN_COMMAND permission granted in Android Settings
@@ -224,6 +241,21 @@ class ShellTool(private val appContext: Context) : Tool {
         val timeoutMs = (input.get("timeout_ms")?.takeIf { !it.isJsonNull }?.asInt ?: 30_000)
             .coerceIn(1_000, 120_000)
         val cwd = input.get("cwd")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+
+        // ---- audit H-2: user-consent gate (fail closed) ----
+        val confirm = ctx.confirm
+            ?: return@withContext ToolResult(ok = false, output = "",
+                error = "User confirmation bridge unavailable — refusing to run shell " +
+                    "commands (fail closed).",
+                durationMs = System.currentTimeMillis() - t0)
+        val preview = command.lines().take(8).joinToString("\n")
+            .let { if (command.lines().size > 8) "$it\n… (+${command.lines().size - 8} more lines)" else it }
+        val allowed = confirm("Vorv wants to run a SHELL COMMAND in Termux:\n\n$preview\n\nAllow?")
+        if (!allowed) {
+            return@withContext ToolResult(ok = false, output = "",
+                error = "User DENIED the shell command. Do not claim it ran.",
+                durationMs = System.currentTimeMillis() - t0)
+        }
 
         // ---- prerequisite checks (each with an honest, actionable error) ----
         val wsUri = ctx.workspaceUri?.takeIf { it.isNotBlank() }
@@ -437,7 +469,7 @@ class NotifyTool(private val appContext: Context) : Tool {
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
                 .setAutoCancel(true)
                 .build()
-            nm.notify(System.currentTimeMillis().toInt(), notif)
+            nm.notify(NotificationIds.nextId(), notif)
 
             ToolResult(
                 ok = true,

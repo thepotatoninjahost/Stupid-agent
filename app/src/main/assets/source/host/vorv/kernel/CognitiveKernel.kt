@@ -13,38 +13,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
-/**
- * Step in the live reasoning trace. UI observes these in real-time.
- */
-sealed class TraceStep {
-    data class Thinking(val label: String, val detail: String? = null) : TraceStep()
-    data class ToolStart(val iteration: Int, val tool: String, val input: JsonObject) : TraceStep()
-    data class ToolEnd(val iteration: Int, val tool: String, val result: ToolResult) : TraceStep()
-    data class Answer(val text: String, val citations: List<Citation>) : TraceStep()
-    data class Error(val message: String) : TraceStep()
-    data class Done(val summary: String, val iterations: Int) : TraceStep()
-    /**
-     * Real measured telemetry from the LLM call. tok/s and generate-time
-     * come straight from the GenieX profiling data for local inference —
-     * never fabricated. CloudLlm doesn't emit these (no per-call telemetry).
-     */
-    data class Telemetry(val tokensPerSecond: Float, val generateMs: Long, val engine: String) : TraceStep()
-}
-
-/**
- * Result of running a full task.
- */
-data class TaskResult(
-    val ok: Boolean,
-    val answer: String,
-    val iterations: Int,
-    val citations: List<Citation>,
-    val toolCalls: Int,
-    val error: String? = null,
-)
+// TraceStep and TaskResult live in KernelApi.kt (shared dispatch types).
 
 /**
  * Real ReAct loop. perceive → plan → tool → observe → repeat.
+ *
+ * Implements [KernelApi] — construction sites dispatch through
+ * PatchRegistry so a verified, approved patch of the kernel can actually
+ * run (v0.6.8 dispatch fix).
  *
  * Hard cap: MAX_ITERATIONS. On hitting cap, summarize what happened and stop.
  * Every iteration logged to tool_calls for verifiable replay.
@@ -60,16 +36,33 @@ data class TaskResult(
  *    is [uncited] only when both are empty (H-10)
  *  - persistence goes through [KernelEventSink], so the kernel is
  *    unit-testable without Room (H-6)
+ *
+ * v0.6.9 (audit M-2) — history compaction: the local engine's nCtx is 4096
+ * with 2048 output tokens reserved; conversations that grow every iteration
+ * used to overflow it opaquely. The kernel now estimates the prompt size
+ * per iteration (chars/4 ≈ tokens) against llm.contextTokenBudget and, when
+ * approaching the budget, compacts completed tool results into a digest
+ * message (system + task + the most recent turns stay verbatim). Overflow
+ * errors from the engine surface honestly.
  */
 class CognitiveKernel(
     private val eventSink: KernelEventSink,
     private val tools: List<Tool>,
     private val outputDir: File,
-) {
+) : KernelApi {
     companion object {
         const val MAX_ITERATIONS = 20
         const val OUTPUT_PREVIEW_CHARS = 2000
         const val LLM_VISIBLE_TOOL_OUTPUT_CHARS = 2000
+
+        /** chars ≈ 4 per token — a conservative estimate for compaction. */
+        const val CHARS_PER_TOKEN = 4
+
+        /** How many recent messages always survive compaction verbatim. */
+        const val COMPACT_KEEP_RECENT = 6
+
+        /** Tool outputs older than the keep-window are digested to this size. */
+        const val DIGEST_TOOL_OUTPUT_CHARS = 200
     }
 
     private val _trace = MutableSharedFlow<TraceStep>(replay = 0, extraBufferCapacity = 64)
@@ -86,13 +79,13 @@ class CognitiveKernel(
         _trace.emit(TraceStep.Telemetry(tokensPerSecond, generateMs, engine))
     }
 
-    suspend fun run(
+    override suspend fun run(
         taskId: String,
         prompt: String,
         llm: Llm,
         workspaceUri: String?,
-        confirm: (suspend (String) -> Boolean)? = null,
-    ): TaskResult {
+        confirm: (suspend (String) -> Boolean)?,
+    ): KernelApi.TaskResult {
         eventSink.logEpisode("task_started", prompt.take(200), "{\"id\":\"$taskId\"}")
 
         val toolSpecs = tools.map { t ->
@@ -119,13 +112,25 @@ class CognitiveKernel(
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
                 val resp = try {
+                    // M-2: compact history to the engine's honest budget right
+                    // before every call — growth without bound used to overflow
+                    // the 4096-token context opaquely.
+                    compactHistoryIfNeeded(messages, llm.contextTokenBudget)
                     llm.step(messages, toolSpecs)
                 } catch (e: Exception) {
                     // Preserve the REAL cause — previously this fell through to
                     // the "reached max iterations" summary, mis-reporting an LLM
                     // failure as a stuck loop (caught by CognitiveKernelTest).
-                    lastError = e.message ?: e.javaClass.simpleName
-                    _trace.emit(TraceStep.Error("LLM call failed: $lastError"))
+                    val honest = if (e.message?.contains("context", ignoreCase = true) == true ||
+                        e.message?.contains("token", ignoreCase = true) == true) {
+                        "context window exhausted at iteration $iterations " +
+                            "(budget ${llm.contextTokenBudget} tokens — history was compacted; " +
+                            "the task is too large for the local engine)"
+                    } else {
+                        e.message ?: e.javaClass.simpleName
+                    }
+                    lastError = honest
+                    _trace.emit(TraceStep.Error("LLM call failed: $honest"))
                     break
                 }
                 when (resp) {
@@ -147,7 +152,7 @@ class CognitiveKernel(
                             "task_completed", finalClean.take(200),
                             "{\"iterations\":$iterations,\"uncited\":$uncited}"
                         )
-                        return TaskResult(true, finalClean, iterations, allCitations, toolCallCount)
+                        return KernelApi.TaskResult(true, finalClean, iterations, allCitations, toolCallCount)
                     }
                     is Llm.LlmResponse.ToolUse -> {
                         // Record assistant message with tool_calls
@@ -263,20 +268,78 @@ class CognitiveKernel(
                 val answer = "LLM error: $lastError"
                 _trace.emit(TraceStep.Done(answer, iterations))
                 eventSink.logEpisode("error", answer.take(200), "{\"iterations\":$iterations,\"taskId\":\"$taskId\"}")
-                return TaskResult(false, answer, iterations, toolCitations, toolCallCount, error = lastError)
+                return KernelApi.TaskResult(false, answer, iterations, toolCitations, toolCallCount, error = lastError)
             }
             val summary = "Reached max iterations ($MAX_ITERATIONS) without a final answer. " +
                 "Last $toolCallCount tool calls executed; see Tasks tab for the full log."
             _trace.emit(TraceStep.Done(summary, iterations))
             eventSink.logEpisode("task_completed", "stuck", "{\"iterations\":$iterations,\"toolCalls\":$toolCallCount}")
-            return TaskResult(false, summary, iterations, toolCitations, toolCallCount, error = "max_iterations")
+            return KernelApi.TaskResult(false, summary, iterations, toolCitations, toolCallCount, error = "max_iterations")
 
         } catch (e: Exception) {
             _trace.emit(TraceStep.Error("Kernel exception: ${e.message}"))
             eventSink.logEpisode("error", e.message ?: "unknown", "{\"taskId\":\"$taskId\"}")
-            return TaskResult(false, "Error: ${e.message}", iterations, toolCitations, toolCallCount, error = e.message)
+            return KernelApi.TaskResult(false, "Error: ${e.message}", iterations, toolCitations, toolCallCount, error = e.message)
         }
     }
+
+    /**
+     * M-2 compaction: keep the conversation under the engine's honest token
+     * budget (estimate: 4 chars per token). The system message and the task
+     * prompt always survive; the most recent [COMPACT_KEEP_RECENT] messages
+     * survive verbatim; older tool results are folded into a single digest
+     * message with truncated outputs. Runs in place, before every LLM call.
+     */
+    internal fun compactHistoryIfNeeded(messages: MutableList<Llm.Message>, tokenBudget: Int) {
+        val charBudget = tokenBudget * CHARS_PER_TOKEN
+        var total = messages.sumOf { estChars(it) }
+        if (total <= charBudget) return
+
+        // Indices 0 (system) and 1 (task) are sacred. Fold everything between
+        // the task and the tail window into a digest.
+        val keepFrom = maxOf(2, messages.size - COMPACT_KEEP_RECENT)
+        if (keepFrom <= 2) {
+            // Everything is recent — trim old tool outputs in place instead.
+            for (i in 2 until messages.size) {
+                val m = messages[i]
+                if (m.role == "tool" && m.content.length > DIGEST_TOOL_OUTPUT_CHARS) {
+                    total -= m.content.length - DIGEST_TOOL_OUTPUT_CHARS
+                    messages[i] = m.copy(content = m.content.take(DIGEST_TOOL_OUTPUT_CHARS) + "…(compacted)")
+                }
+            }
+            return
+        }
+
+        val digest = StringBuilder()
+        digest.appendLine("[Earlier progress digest — full logs in the Tasks tab]")
+        for (i in 2 until keepFrom) {
+            val m = messages[i]
+            when (m.role) {
+                "assistant" -> digest.appendLine("• Assistant: ${m.content.take(150)}")
+                "tool" -> digest.appendLine("• Tool result: ${m.content.take(DIGEST_TOOL_OUTPUT_CHARS)}")
+                "user" -> digest.appendLine("• User: ${m.content.take(150)}")
+            }
+        }
+        val kept = listOf(messages[0], messages[1], Llm.Message("user", digest.toString())) +
+            messages.subList(keepFrom, messages.size)
+        messages.clear()
+        messages.addAll(kept)
+
+        // Still over? Trim the tail's tool outputs in place as a last resort.
+        total = messages.sumOf { estChars(it) }
+        if (total > charBudget) {
+            for (i in messages.indices) {
+                if (total <= charBudget) break
+                val m = messages[i]
+                if (m.role == "tool" && m.content.length > DIGEST_TOOL_OUTPUT_CHARS) {
+                    total -= m.content.length - DIGEST_TOOL_OUTPUT_CHARS
+                    messages[i] = m.copy(content = m.content.take(DIGEST_TOOL_OUTPUT_CHARS) + "…(compacted)")
+                }
+            }
+        }
+    }
+
+    private fun estChars(m: Llm.Message): Int = m.content.length + m.toolCalls.sumOf { it.arguments.length + it.name.length }
 
     /**
      * When a tool's output exceeds the preview budget, writes the full text to

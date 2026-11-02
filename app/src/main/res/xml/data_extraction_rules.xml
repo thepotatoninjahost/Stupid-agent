@@ -1,9 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Audit M-7: same policy for Android 12+ device transfer / cloud backup —
+  conversation and tool-call data (vorv.db), crash logs and healer
+  diagnostics never leave the device. Settings (DataStore) do transfer.
+-->
 <data-extraction-rules>
     <cloud-backup>
-        <include domain="database" path="vorv.db"/>
+        <exclude domain="database" path="vorv.db" />
+        <exclude domain="database" path="vorv.db-wal" />
+        <exclude domain="database" path="vorv.db-shm" />
+        <exclude domain="external" path="crash_logs" />
+        <exclude domain="external" path="watchdog" />
+        <exclude domain="external" path="healer" />
     </cloud-backup>
     <device-transfer>
-        <include domain="database" path="vorv.db"/>
+        <exclude domain="database" path="vorv.db" />
+        <exclude domain="database" path="vorv.db-wal" />
+        <exclude domain="database" path="vorv.db-shm" />
+        <exclude domain="external" path="crash_logs" />
+        <exclude domain="external" path="watchdog" />
+        <exclude domain="external" path="healer" />
     </device-transfer>
 </data-extraction-rules>

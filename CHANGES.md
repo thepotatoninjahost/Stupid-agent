@@ -1,3 +1,98 @@
+# Changelog — v0.6.9 "27/27 Remediated"
+
+This release fixes every finding from the VRA-2026-1102 forensic audit
+(27 findings: 2 critical, 5 high, 10 medium, 10 low) — in-place hardening
+that PRESERVES every feature. Nothing is disabled: Python execution, JS
+execution, DEX hot-patching, the watchdog, shell, and network tools all
+keep working, now with real gates.
+
+Severity legend: C = Critical, H = High, M = Medium, L = Low.
+
+---
+
+## Critical
+
+### C-1 — python_exec sandbox was escapable (dunder guard only wrapped the getattr() builtin; whitelisted modules leaked os/sys)
+**Was:** the guarded getattr/hasattr/setattr builtins never saw attribute SYNTAX — `uuid.uuid4.__globals__['os']` handed user code the live os module (uuid.py imports os/sys at module level). Verified by the audit's PoC.
+**Now (vorv_runner.py, Layer 0):**
+- namespace scrubbing of the entire whitelist closure: real os/sys references are replaced with inert proxies (only urandom/getpid and safe sys constants survive — C builtins with no reachable namespace);
+- every callable the sandbox exposes (guarded getattr/setattr/hasattr, the safe `__import__`, the meta-path finder, the trace watchdog) is defined in a CLEAN namespace, so `fn.__globals__` yields nothing;
+- a transitive verification walk (module dicts, function `__globals__`, class dicts, MROs) asserts no real os/sys is reachable from the whitelist; a module that cannot be scrubbed or whose canary self-test fails is dropped from the session whitelist with an honest ImportError;
+- **the user-consent bridge gates the first python_exec call per task** (audit-recommended: a prompt-injected model can call it up to 30 times/task) — the in-process sandbox is documented as hardening, not a barrier (SECURITY.md updated);
+- test_vorv_sandbox.py gains the direct-syntax attack battery: the exact audit PoC, attribute-syntax walks on random/json/statistics, inert-proxy refusal, clean-namespace probing of the exposed guard functions.
+**Files:** `app/src/main/python/vorv_runner.py`, `app/src/main/python/test_vorv_sandbox.py`, `PythonExecTool.kt`
+
+### C-2 — HotPatcher loaded unsigned .dex files and skipped hash verification when a manifest entry was missing
+**Was:** a self-attested dex loading into the app process; a missing manifest entry meant NO verification at all; auto-generated patches never required user consent; and loaded patches never actually ran (see the dispatch fix below).
+**Now:**
+- every patch dex is **signed with the device patch keypair** (`PatchKeys`: Android-Keystore Ed25519 on API 33+, ECDSA P-256 fallback, software fallback for environments without a Keystore) and HotPatcher REFUSES (quarantines, never skips) any dex failing signature, hash, version-gate, consent-registry, or dispatch-interface checks;
+- the manifest fetch is pinned to HTTPS allow-listed hosts and resolves through the NetworkGuard DNS;
+- **every auto-generated patch goes through the user-consent bridge** (the same APPROVE/DENY dialog as app_intent and shell) before anything is registered;
+- the v0.6.5 "load the class" mechanism could never dispatch (same-FQCN classes under different classloaders are different runtime identities) — patches now run through **interface-based dispatch**: shared interfaces (Tool / KernelApi / HealerApi) + `PatchRegistry` with an honest 18-class patchable surface, and the kernel/healer/tools are constructed through it;
+- **probation + auto-rollback**: a patch followed by a crash in the class it overrides within 72h of first apply is rolled back at next boot (a fix that makes things worse undoes itself).
+**Files:** `watchdog/PatchKeys.kt` (new), `watchdog/HotPatcher.kt`, `watchdog/PatchRegistry.kt` (new), `healer/HealerApi.kt` (new), `kernel/KernelApi.kt` (new)
+
+## High
+
+### H-1 — Watchdog crash detection was structurally dead
+**Was:** the watchdog process ran the same `VorvApplication.onCreate` and wrote its own "alive" heartbeats (poisoning the stale-heartbeat check), MainActivity never called bindService (the documented binder-death signal did not exist), and the heartbeat pid was recorded but ignored.
+**Now:** `VorvApplication` guards init by process name (main process = full init; `:watchdog` = none); heartbeats are written exclusively from the main process; **MainActivity binds to the watchdog and registers a death token** — `linkToDeath` fires immediately when the main process dies, with the pid-checked stale heartbeat as fallback.
+
+### H-2 — shell executed arbitrary bash with no consent gate
+**Now:** ShellTool routes through `ctx.confirm` with the first lines of the command in the dialog — the same bar as app_intent. Fail-closed without the bridge; a denial is reported honestly.
+
+### H-3 — browser_automate validated only the initial URL (redirects/JS navigations bypassed the guard)
+**Now:** a `GuardWebViewClient` runs `NetworkGuard.checkHostAllowed` on EVERY navigation (`shouldOverrideUrlLoading`) and EVERY sub-resource request (`shouldInterceptRequest` — iframes, fetches, XHRs). Blocked navigations fail the tool call with the reason.
+
+### H-4 — the self-heal compile pipeline could not work on a stock device (Termux paths it cannot read)
+**Now:** the compile round-trips through the SAF workspace exactly like ShellTool (script/source/jar/dex inside the granted folder, `/storage/emulated/0/...` paths), the app classpath jar is PACKAGED at build time (new `packageHealerClasspath` Gradle task → `assets/healer/app_classes.jar`) and staged into the workspace before each compile, and the heal runs in the MAIN process (see M-8). Tool-missing errors (kotlinc/d8) are honest and actionable.
+
+### H-5 — the bundled source mirror (assets/source) was stale
+**Now:** a `syncSourceMirror` Gradle task copies the live tree into `assets/source` on every build (wired into preBuild) — drift is structurally impossible, so patches are always generated against the code that matches the running binary.
+
+## Medium
+
+- **M-1 (DNS-rebinding TOCTOU):** WebView requests are proxied through an OkHttp client wired to `NetworkGuard.PublicDns` — one resolution, checked, and used for the actual transfer.
+- **M-2 (unbounded local-mode context):** `LocalLlm.contextTokenBudget` states the honest 1800-token prompt budget; the kernel estimates size per iteration and compacts completed tool results into a digest (system + task + recent turns survive); GenieX context/token errors surface as "context window exhausted at iteration N".
+- **M-3 (Rhino CVE-2025-66453):** bumped to `org.mozilla:rhino:1.7.15.1`; the JsExecTool attack suite pins the upgrade.
+- **M-4 (clear-all-data left data behind):** clearAllData now cancels every registered reminder (WorkManager + registry), clears the registry preference, recursively deletes tool-output files, and purges crash/watchdog/healer diagnostics. The API key is kept (a setting, not agent data) and the dialog says so.
+- **M-5 (file_read buffered whole file before the cap):** streams at most 200 KB then truncates to the 50 000-char cap.
+- **M-6 (web_fetch decoded UTF-8 per 16 KB chunk):** decodes through an InputStreamReader — multi-byte characters split across chunk boundaries survive.
+- **M-7 (vorv.db in cloud backup despite "stays local"):** the database, crash logs and healer diagnostics are excluded from cloud backup AND device transfer; SECURITY.md states exactly what participates.
+- **M-8 (watchdog ran runBlocking LLM heals on the heartbeat thread):** the watchdog NEVER runs the LLM. Healing runs in the restarted MAIN process (crash dialog "Self-repair") on Dispatchers.IO under a hard 15-minute budget.
+- **M-9 (schedule enqueue/registry not atomic):** register-first-then-enqueue with rollback on enqueue failure; expired entries are returned for cancellation too, so nothing lingers uncancellable.
+- **M-10 (crash filenames had one-second resolution):** millisecond timestamp + pid in the filename.
+
+## Low
+
+- **L-1:** Gradle wrapper committed (gradlew, gradlew.bat, gradle-wrapper.jar, `distributionSha256Sum`); CI uses `./gradlew`.
+- **L-2:** DEVELOPMENT.md describes the actual schema decision (exportSchema off; MigrationTest builds v1 by DDL).
+- **L-3:** the release tag is derived from the real `versionName` in app/build.gradle.kts.
+- **L-4:** carrier-grade NAT 100.64.0.0/10 blocked in NetworkGuard.
+- **L-5:** JsExecTool creates a WatchdogFactory per run (no shared mutable deadline/aborted state).
+- **L-6:** file_write colliding with a directory name is an honest error, not a provider-suffixed duplicate.
+- **L-7:** BootTracer writes BOOT_STARTED before the hot-patch step (a hotpatch-phase crash is no longer misclassified as the previous boot's).
+- **L-8:** IP literals are detected syntactically — no DNS lookup for non-literal hosts in parseLiteral.
+- **L-9:** AgentService declared `specialUse` with the required property (the honest type for a compute workload).
+- **L-10:** notification IDs come from an AtomicInteger seeded randomly — no truncated-timestamp collisions.
+
+## Feature completion (user requirements)
+
+- **Self-healing covers EVERY problem, not just crashes**: `HealingAgent.modify(HealRequest)` runs the same hardened pipeline from a free-text problem statement; the crash-dialog path is a thin wrapper over it.
+- **`self_fix` agent tool (16th)**: the user can tell Vorv IN CHAT to fix or change its own code ("make notify use a different sound"); the agent drives generate → compile → verify → sign → user consent → apply-at-next-boot, fail-closed at every step.
+- **Completeness gate (`PatchVerifier`)**: before a patch is signed or shown to the user, it is loaded in an isolated classloader and checked against the running class — every public constructor, method and field must survive, the dispatch interface must be implemented. Failures feed back into the regeneration loop. **No partial fixes, ever.**
+- **Target-class inference** for problems that do not name a class: the model may only pick from the dispatchable surface; anything else is refused honestly.
+- **Multi-class source files handled** (ShellTool lives in SystemTools.kt): the source lookup scans the package for the class declaration instead of assuming `<Class>.kt`.
+- **CrashParser no longer swallows the method name** (`…NotifyTool.run` → `host.vorv.tools.NotifyTool`), which used to break every source lookup.
+- **Repairs use the STRONGEST on-device model**: `ModelManager.bestRepairModel()` picks the 7B whenever it is downloaded (the 3B only if the 7B was never pulled), and `repairLabel()` names the model that wrote each patch — a 3B patch can never masquerade as a 7B one.
+
+## Also fixed along the way
+
+- CI workflow: the push trigger had a broken `branches:` list (a stray `[` made it `ain, …`), so pushes to main did not run CI deterministically.
+- `CrashReportWorker` filenames include the pid (two crashes in the same millisecond from different processes cannot overwrite each other).
+
+---
+
 # Changelog — v0.6.0 "Full Remediation"
 
 This release implements every finding from the forensic audit (44 findings:

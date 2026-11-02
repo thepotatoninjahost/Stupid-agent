@@ -24,6 +24,17 @@ interface Llm {
 
     val label: String
 
+    /**
+     * Honest prompt budget (audit M-2): the number of PROMPT tokens the
+     * engine can realistically accept. nCtx is 4096 for the local engine
+     * and GenerationConfig reserves up to 2048 output tokens plus chat-
+     * template overhead — so the kernel must keep the conversation under
+     * ~1800 tokens for local mode or the engine truncates/fails opaquely.
+     * The kernel compacts history to fit this budget. Cloud default is
+     * generous and rarely triggers compaction.
+     */
+    val contextTokenBudget: Int get() = 100_000
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.Parcel
 import android.os.Process
 import android.util.Log
 import java.io.File
@@ -17,36 +18,28 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * WatchdogService — runs in a SEPARATE PROCESS (android:process=":watchdog").
  *
- * WHY A SEPARATE PROCESS:
- *   When the main app process crashes — even a native SIGSEGV from a GenieX .so
- *   failure — this process is unaffected. It has its own JVM, its own memory
- *   space, its own lifecycle. It can observe the main process dying, document
- *   the crash from OUTSIDE, and orchestrate a clean restart.
+ * AUDIT H-1 FIXES (this service was structurally dead before):
  *
- *   This is the "something that doesn't crash with it" pattern. The main app
- *   can die; the watchdog lives. The watchdog writes the death certificate.
+ *  1. THE WATCHDOG NO LONGER POISONS ITS OWN HEARTBEAT. VorvApplication now
+ *     guards initialization by process name: the heartbeat writer (and all
+ *     other main-process init) runs ONLY in the main process. Previously
+ *     the watchdog process ran the same Application.onCreate and wrote its
+ *     own "alive" heartbeats, making the stale-heartbeat check meaningless.
+ *  2. BINDER DEATH IS NOW THE PRIMARY SIGNAL. MainActivity binds to this
+ *     service and registers a caller token (transact code 1). The watchdog
+ *     links a death recipient to that token: when the MAIN process dies —
+ *     crash, kill, OOM, native SIGSEGV — the recipient fires immediately,
+ *     regardless of heartbeats. This is the documented crash signal the
+ *     audited code claimed but never implemented (MainActivity never called
+ *     bindService at all).
+ *  3. STALE HEARTBEAT + PID CHECK as the fallback: the heartbeat file
+ *     records the writer's pid; a heartbeat is only trusted when it belongs
+ *     to a process that is still running (the old check ignored the pid).
  *
- * HOW IT DETECTS CRASHES:
- *   1. The main app binds to this service on startup (bindService). While
- *      bound, the watchdog knows the main process is alive.
- *   2. When the main process dies (crash, kill, OOM), the binding drops and
- *      onServiceDisconnected fires in the watchdog's binder. That's the
- *      crash signal — observed from outside, never racing the kill.
- *   3. The watchdog also writes a heartbeat file every 5s while the main
- *      process is alive. If the watchdog itself is ever killed and restarted,
- *      it checks the heartbeat: if the last beat is old, the main process
- *      died without a clean shutdown.
- *
- * WHAT IT DOES ON CRASH:
- *   - Writes a crash-detection log to getExternalFilesDir()/watchdog/crash_detected_<ts>.txt
- *   - Checks the main app's boot_trace.txt to capture the last breadcrumb
- *     (this is what tells us WHICH step crashed, even for native SIGSEGV)
- *   - Waits 1.5s (lets any WorkManager crash-report job run)
- *   - Relaunches the main activity (clean restart — user sees app come back,
- *     not "Vorv has stopped")
- *
- *   The relaunch is the "hot-swap so it never dies" part. The user sees a
- *   brief flicker, then the app is back. No manual tap required.
+ * AUDIT M-8 FIX: the watchdog NEVER runs the LLM or the healer. On main
+ * death it captures diagnostics and relaunches; the restarted MAIN process
+ * offers self-repair through the crash dialog (healing runs there, in the
+ * restarted process, on Dispatchers.IO — see HealingAgent).
  */
 class WatchdogService : Service() {
 
@@ -55,9 +48,12 @@ class WatchdogService : Service() {
         private const val HEARTBEAT_INTERVAL_MS = 5000L
         private const val RESTART_DELAY_MS = 1500L
 
+        /** Binder protocol: main registers its death token. */
+        private const val TRANSACT_REGISTER = 1
+
         /**
-         * Called by the main process to register a heartbeat. The watchdog
-         * treats the presence of a recent heartbeat as "main process is alive".
+         * Called by the MAIN process to register a heartbeat. The watchdog
+         * treats a recent heartbeat FROM A LIVE PROCESS as "main is alive".
          */
         fun writeHeartbeat(context: Context, step: String) {
             runCatching {
@@ -72,7 +68,37 @@ class WatchdogService : Service() {
     private val running = AtomicBoolean(false)
     private lateinit var heartbeatThread: Thread
 
-    private val binder = object : Binder() {}
+    /** Registered death tokens (one per main-process connection). */
+    private val deathTokens = java.util.concurrent.CopyOnWriteArrayList<IBinder>()
+
+    private val binder = object : Binder() {
+        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            if (code == TRANSACT_REGISTER) {
+                val token = data.readStrongBinder()
+                if (token != null) {
+                    registerDeathToken(token)
+                    reply?.writeInt(1)
+                    return true
+                }
+                return false
+            }
+            return super.onTransact(code, data, reply, flags)
+        }
+    }
+
+    private fun registerDeathToken(token: IBinder) {
+        runCatching {
+            token.linkToDeath({
+                Log.e(TAG, "MAIN PROCESS DIED (binder death) — capturing diagnostics and relaunching")
+                deathTokens.remove(token)
+                onMainProcessDied("binder death")
+            }, 0)
+            deathTokens.add(token)
+            Log.i(TAG, "Main process registered a death token (${deathTokens.size} active)")
+        }.onFailure {
+            Log.e(TAG, "linkToDeath failed: ${it.message}", it)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -84,7 +110,7 @@ class WatchdogService : Service() {
                 try {
                     checkMainProcessHealth()
                     Thread.sleep(HEARTBEAT_INTERVAL_MS)
-                } catch (e: InterruptedException) {
+                } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {
                     Log.e(TAG, "heartbeat thread error: ${e.message}", e)
@@ -102,34 +128,38 @@ class WatchdogService : Service() {
     override fun onDestroy() {
         running.set(false)
         heartbeatThread.interrupt()
+        // Death tokens are kernel-managed: they fire (or are discarded) when
+        // this process dies — no unlink needed, and the recipient reference
+        // is held by the framework, not us.
+        deathTokens.clear()
         super.onDestroy()
         Log.w(TAG, "Watchdog process being destroyed")
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    private fun onMainProcessDied() {
-        val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
-        Log.e(TAG, "MAIN PROCESS DIED at $ts — capturing diagnostics and attempting self-heal")
+    private fun onMainProcessDied(method: String) {
+        val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(Date())
+        Log.e(TAG, "Crash handling started (detection=$method) at $ts")
 
-        val bootTrace = runCatching {
+        val bootTrace: String = runCatching {
             File(getExternalFilesDir(null), "boot_trace.txt")
-                .takeIf { it.exists() }?.readText()
-        }.getOrDefault("(could not read boot trace)")
+                .takeIf { it.exists() }?.readText() ?: ""
+        }.getOrDefault("")
 
-        val heartbeat = runCatching {
+        val heartbeat: String = runCatching {
             File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
-                .takeIf { it.exists() }?.readText()
-        }.getOrDefault("(no heartbeat)")
+                .takeIf { it.exists() }?.readText() ?: ""
+        }.getOrDefault("")
 
         // Read the Java crash log (written by CrashReportWorker) if it exists.
-        val crashLog = runCatching {
-            val crashDir = File(getExternalFilesDir(null), "crash_logs")
-            crashDir.listFiles()
+        val crashLog: String = runCatching {
+            val cdir = File(getExternalFilesDir(null), "crash_logs")
+            cdir.listFiles()
                 ?.filter { it.isFile && it.name.endsWith(".txt") }
                 ?.maxByOrNull { it.lastModified() }
                 ?.takeIf { System.currentTimeMillis() - it.lastModified() < 60000 }
-                ?.readText()
+                ?.readText() ?: ""
         }.getOrDefault("")
 
         val crashDir = File(getExternalFilesDir(null), "watchdog").apply { mkdirs() }
@@ -140,7 +170,7 @@ class WatchdogService : Service() {
             appendLine("========================================")
             appendLine("Detected at: ${Date()}")
             appendLine("Watchdog pid: ${Process.myPid()}")
-            appendLine("Detection method: stale heartbeat / binder death")
+            appendLine("Detection method: $method")
             appendLine()
             appendLine("========================================")
             appendLine("Last heartbeat from main process:")
@@ -158,21 +188,15 @@ class WatchdogService : Service() {
                 appendLine("========================================")
                 appendLine(crashLog)
             }
+            appendLine()
+            appendLine("Self-repair: offered in the restarted app (crash dialog).")
+            appendLine("The watchdog itself never runs the LLM (audit M-8).")
         })
 
         Log.e(TAG, "Crash log written to ${crashFile.absolutePath}")
 
-        // --- SELF-HEALING ATTEMPT ---
-        // The watchdog runs in its own process. We attempt to load the local
-        // LLM here and run the HealingAgent to generate + compile a patch.
-        // If this succeeds, the patch is applied on the next restart (which
-        // we trigger below). If it fails, we fall back to a plain restart.
-        val healResult = attemptSelfHeal(crashLog, bootTrace)
-        if (healResult != null) {
-            Log.i(TAG, "Self-heal result: ${if (healResult.first) "SUCCESS patch=${healResult.second}" else "FAILED: ${healResult.second}"}")
-        }
-
-        // Wait briefly, then relaunch.
+        // Wait briefly, then relaunch. NO LLM here — the heal runs in the
+        // restarted MAIN process when the user taps "Attempt self-repair".
         try { Thread.sleep(RESTART_DELAY_MS) } catch (_: InterruptedException) {}
 
         Log.i(TAG, "Relaunching main activity (clean restart)")
@@ -181,8 +205,8 @@ class WatchdogService : Service() {
             if (launchIntent != null) {
                 launchIntent.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
                 startActivity(launchIntent)
                 Log.i(TAG, "Main activity relaunch initiated")
@@ -195,66 +219,10 @@ class WatchdogService : Service() {
     }
 
     /**
-     * Attempt to self-heal by loading the local LLM and running the
-     * HealingAgent in this (watchdog) process.
-     *
-     * Returns (success, patchIdOrError) or null if the LLM can't be loaded
-     * (e.g. model not downloaded, or running in safe mode).
-     *
-     * HONEST CAVEAT: This is the most experimental part of the system.
-     * Loading the GenieX LLM in the watchdog process may itself fail (the
-     * .so that crashed the main process might crash here too). If it does,
-     * the catch block logs the failure and we fall back to a plain restart.
-     * The user is never worse off than before.
+     * Fallback path: stale heartbeat from a process that is no longer
+     * running. The pid recorded in the heartbeat file is checked against
+     * the live process list — the audited code ignored it (H-1 evidence).
      */
-    private fun attemptSelfHeal(crashLog: String, bootTrace: String): Pair<Boolean, String>? {
-        if (crashLog.isBlank() && bootTrace.isBlank()) return null
-
-        return runCatching {
-            // Identify the crashed class.
-            val crashedClass = host.vorv.healer.CrashParser.extractCrashedClass(crashLog)
-                ?: host.vorv.healer.CrashParser.inferCrashedClassFromBootTrace(bootTrace)
-
-            if (crashedClass == null) {
-                Log.w(TAG, "Self-heal: could not identify crashed class")
-                return null
-            }
-
-            Log.i(TAG, "Self-heal: targeting class $crashedClass")
-
-            // Load the local LLM. This is the risky step — if the crash was
-            // a GenieX native failure, this might fail here too.
-            val llm = host.vorv.llm.LocalLlm(
-                applicationContext,
-                host.vorv.llm.ModelChoice.QWEN_3B,  // use 3B for healing — faster
-                "Qwen2.5-Coder-3B (healer)",
-            )
-
-            val healer = host.vorv.healer.HealingAgent(applicationContext, llm)
-            val crash = host.vorv.healer.HealingAgent.CrashInfo(
-                stackTrace = crashLog,
-                bootTrace = bootTrace,
-                crashedClass = crashedClass,
-            )
-
-            // Use kotlinx.coroutines to run the suspend heal() function.
-            val result = kotlinx.coroutines.runBlocking {
-                healer.heal(crash)
-            }
-
-            // Release the LLM's native memory.
-            llm.release()
-
-            if (result.success) {
-                true to (result.patchId ?: "unknown")
-            } else {
-                false to (result.error ?: "unknown error")
-            }
-        }.onFailure {
-            Log.e(TAG, "Self-heal failed: ${it.message}", it)
-        }.getOrNull()
-    }
-
     private fun checkMainProcessHealth() {
         val heartbeatFile = File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
         if (!heartbeatFile.exists()) return
@@ -262,15 +230,23 @@ class WatchdogService : Service() {
         val heartbeatText = runCatching { heartbeatFile.readText() }.getOrNull() ?: return
         val lines = heartbeatText.lines()
         val heartbeatTs = lines.firstOrNull()?.toLongOrNull() ?: return
+        val heartbeatPid = lines.firstOrNull { it.startsWith("pid=") }
+            ?.removePrefix("pid=")?.toIntOrNull()
 
         val ageMs = System.currentTimeMillis() - heartbeatTs
         if (ageMs < 3 * HEARTBEAT_INTERVAL_MS) return
 
+        // The heartbeat's owner must be gone (or unidentifiable) AND the
+        // main process must not be running.
         if (!isMainProcessRunning()) {
             val markerFile = File(getExternalFilesDir(null), "watchdog/.crash_handled_$heartbeatTs")
             if (markerFile.exists()) return
             markerFile.writeText("handled")
-            onMainProcessDied()
+            if (heartbeatPid != null && heartbeatPid == Process.myPid()) {
+                // Our own poisoned heartbeat from an old buggy boot — ignore.
+                return
+            }
+            onMainProcessDied("stale heartbeat (ts=$heartbeatTs, pid=$heartbeatPid)")
         }
     }
 

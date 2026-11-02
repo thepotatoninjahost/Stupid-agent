@@ -244,21 +244,26 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         .dns(NetworkGuard.PublicDns)
         .build()
 
-    /** Streams at most [maxBytes] bytes as UTF-8 text (audit H-8). */
+    /** Streams at most [maxBytes] as UTF-8 text (audit H-8, M-6). */
     private fun readCapped(stream: java.io.InputStream?, maxBytes: Long): String {
         if (stream == null) return ""
         val sb = StringBuilder()
         stream.use { s ->
-            val buf = ByteArray(16 * 1024)
+            // Audit M-6: decode through an InputStreamReader so multi-byte
+            // UTF-8 sequences split across 16 KB chunk boundaries are decoded
+            // incrementally, instead of becoming U+FFFD replacement chars per
+            // chunk (the old per-chunk String(buf, 0, n, UTF_8)).
+            val reader = java.io.InputStreamReader(
+                java.io.BufferedInputStream(s), Charsets.UTF_8)
             var total = 0L
+            val cbuf = CharArray(16 * 1024)
             while (total < maxBytes) {
-                val want = minOf(buf.size.toLong(), maxBytes - total).toInt()
-                val n = s.read(buf, 0, want)
+                val n = reader.read(cbuf)
                 if (n <= 0) break
                 total += n
-                sb.append(String(buf, 0, n, Charsets.UTF_8))
+                sb.append(cbuf, 0, n)
             }
-            if (total >= maxBytes) sb.append("\n…(truncated at $maxBytes bytes)")
+            if (total >= maxBytes) sb.append("\n…(truncated at $maxBytes chars)")
         }
         return sb.toString()
     }
