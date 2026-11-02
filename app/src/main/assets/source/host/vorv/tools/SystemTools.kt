@@ -163,10 +163,13 @@ class AppIntentTool(private val appContext: Context) : Tool {
 
 /**
  * shell — run bash commands via Termux's RUN_COMMAND intent with REAL
- * output capture (audit finding C-3).
+ * output capture (audit finding C-3; consent gate added for audit H-2).
  *
- * v0.5.x lied: RUN_COMMAND is fire-and-forget, so the tool returned a
- * placeholder string with ok=true and the LLM treated it as command output.
+ * v0.6.6 (audit H-2): every invocation goes through the user-consent
+ * bridge (ctx.confirm) showing the command text — the SAME gate app_intent
+ * uses. Arbitrary bash is a strictly stronger action than opening a URL,
+ * so it must clear at least as high a bar. A denied or timed-out
+ * confirmation is reported back to the model as an honest failure.
  *
  * v0.6.0 does the round-trip for real:
  *  1. Requires a workspace folder granted on PRIMARY local storage (the
@@ -190,11 +193,14 @@ class ShellTool(private val appContext: Context) : Tool {
     override val name = "shell"
     override val description =
         "Run a bash command in Termux and return the REAL stdout, stderr and exit code. " +
-        "Requires: Termux installed, RUN_COMMAND permission granted, Termux storage access " +
+        "EVERY command requires the user to approve a confirmation dialog first — " +
+        "if they deny it, report that it did not run. Requires: Termux installed, " +
+        "RUN_COMMAND permission granted, Termux storage access " +
         "(termux-setup-storage), and a workspace folder on local storage (Files tab). " +
         "If setup is incomplete the tool returns an honest error — it never fakes output."
 
-    override val timeoutMs: Long get() = 125_000L
+    // 60s consent dialog + up to 120s command timeout + margin (audit H-2).
+    override val timeoutMs: Long get() = 190_000L
     override val maxCallsPerTask: Int get() = 10
 
     override fun schema() = JsonObject().apply {
@@ -256,6 +262,27 @@ class ShellTool(private val appContext: Context) : Tool {
                 error = "RUN_COMMAND permission not granted. Android Settings → Apps → Vorv → " +
                     "Permissions → Additional permissions → Run commands in Termux environment. " +
                     "Also ensure ~/.termux/termux.properties has allow-external-apps=true.",
+                durationMs = System.currentTimeMillis() - t0)
+        }
+
+        // ---- USER CONSENT (audit H-2) -------------------------------------
+        // Arbitrary bash execution must clear the same bar as app_intent's
+        // actions — the consent bridge, fail closed when unavailable.
+        val confirm = ctx.confirm
+            ?: return@withContext ToolResult(ok = false, output = "",
+                error = "User confirmation bridge unavailable — refusing to run shell " +
+                    "command (fail closed).",
+                durationMs = System.currentTimeMillis() - t0)
+        val commandLines = command.lines()
+        val shown = commandLines.take(CONSENT_PREVIEW_LINES).joinToString("\n")
+        val preview = if (commandLines.size > CONSENT_PREVIEW_LINES) {
+            shown + "\n… (+${commandLines.size - CONSENT_PREVIEW_LINES} more lines)"
+        } else shown
+        val allowed = confirm("Vorv wants to run this command in Termux:\n\n$preview")
+        if (!allowed) {
+            return@withContext ToolResult(ok = false, output = "",
+                error = "User DENIED the confirmation to run the shell command. " +
+                    "Do not claim it ran.",
                 durationMs = System.currentTimeMillis() - t0)
         }
 
@@ -373,7 +400,21 @@ class ShellTool(private val appContext: Context) : Tool {
         const val POLL_INTERVAL_MS = 250L
         const val MAX_OUTPUT_CHARS = 100_000
         const val MAX_ERR_CHARS = 20_000
+        const val CONSENT_PREVIEW_LINES = 8
     }
+}
+
+/**
+ * Collision-free notification IDs (audit L-10). System.currentTimeMillis()
+ * .toInt() truncated the timestamp and collided for notifications posted in
+ * the same second — stacking duplicates. Monotonic counter seeded from a
+ * random start, shared by every notification site in the app.
+ */
+object NotificationIds {
+    private val counter = java.util.concurrent.atomic.AtomicInteger(
+        java.util.concurrent.ThreadLocalRandom.current().nextInt(1000, Int.MAX_VALUE))
+
+    fun next(): Int = counter.incrementAndGet()
 }
 
 /**
@@ -437,7 +478,7 @@ class NotifyTool(private val appContext: Context) : Tool {
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
                 .setAutoCancel(true)
                 .build()
-            nm.notify(System.currentTimeMillis().toInt(), notif)
+            nm.notify(NotificationIds.next(), notif)
 
             ToolResult(
                 ok = true,

@@ -244,23 +244,29 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         .dns(NetworkGuard.PublicDns)
         .build()
 
-    /** Streams at most [maxBytes] bytes as UTF-8 text (audit H-8). */
+    /**
+     * Streams at most [maxBytes] bytes as UTF-8 text (audit H-8).
+     * Audit M-6: bytes are accumulated FIRST and decoded ONCE at the end —
+     * the old per-16KB-chunk String(buf, 0, n, UTF_8) decode turned any
+     * multi-byte character split across a chunk boundary into U+FFFD
+     * replacement characters (mojibake in CJK pages every 16 KB).
+     */
     private fun readCapped(stream: java.io.InputStream?, maxBytes: Long): String {
         if (stream == null) return ""
-        val sb = StringBuilder()
+        val bos = java.io.ByteArrayOutputStream()
+        var total = 0L
         stream.use { s ->
             val buf = ByteArray(16 * 1024)
-            var total = 0L
             while (total < maxBytes) {
                 val want = minOf(buf.size.toLong(), maxBytes - total).toInt()
                 val n = s.read(buf, 0, want)
                 if (n <= 0) break
+                bos.write(buf, 0, n)
                 total += n
-                sb.append(String(buf, 0, n, Charsets.UTF_8))
             }
-            if (total >= maxBytes) sb.append("\n…(truncated at $maxBytes bytes)")
         }
-        return sb.toString()
+        val text = bos.toString("UTF-8")
+        return if (total >= maxBytes) text + "\n…(truncated at $maxBytes bytes)" else text
     }
 
     private fun isTextual(contentType: String): Boolean =

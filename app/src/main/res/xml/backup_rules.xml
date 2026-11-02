@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<full-backup-content>
-    <include domain="database" path="vorv.db"/>
-</full-backup-content>
+<!-- Audit M-7: nothing is backed up. vorv.db used to be INCLUDED in Android
+     cloud backup / device transfer while SECURITY.md promised data stays
+     local. allowBackup="false" in the manifest is the enforcement; this file
+     is kept (and empty) so the intent is explicit at both layers. -->
+<full-backup-content />

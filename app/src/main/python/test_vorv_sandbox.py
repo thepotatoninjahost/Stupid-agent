@@ -93,6 +93,47 @@ expect_blocked("sys.exit", "import sys\nsys.exit(0)", ("sandbox", "import"))
 expect_blocked("raise SystemExit", "raise SystemExit(0)", ("systemexit",))
 expect_blocked("breakpoint()", "breakpoint()", ())
 
+# ---- C-1 regression: DIRECT dunder syntax (bypassed the old getattr-only guard)
+expect_blocked("direct __class__ syntax", "x = []\nprint(x.__class__)", ())
+expect_blocked("direct __subclasses__ syntax", "print(object.__subclasses__())", ())
+expect_blocked("direct __globals__ syntax", "import re\nprint(re.sub.__globals__)", ())
+expect_blocked("direct __dict__ syntax", "import json\nprint(json.dumps.__dict__)", ())
+expect_blocked("direct __builtins__ attr syntax", "print(len.__builtins__)", ())
+expect_blocked("class walk via type", "print(type(1).__subclasses__())", ())
+expect_blocked("f-string dunder", "x = []\nprint(f'{x.__class__}')", ())
+expect_blocked("delattr dunder", "x = []\ndel x.__class__", ())
+expect_blocked("dunder attribute store", "x = []\nx.__class__ = int", ())
+
+# ---- C-1 regression: format-string reflection (str.format does attribute
+# access inside C code, invisible to any Python-level guard)
+expect_blocked("str.format reflection", "print('{0.__class__}'.format([]))", ())
+expect_blocked("str.format_map reflection", "print('{x.__class__}'.format_map({'x': []}))", ())
+expect_ok("percent formatting is fine", "print('%s-%d' % ('a', 1))", "a-1")
+expect_ok("f-string attribute is fine", "import datetime\nd = datetime.date(2025, 1, 2)\nprint(f'{d.year}')", "2025")
+
+# ---- C-1 regression: module-hop chains (whitelisted modules that transitively
+# import os/sys/enumeration modules)
+expect_blocked("re.enum module hop", "import re\nprint(re.enum)", ("whitelist", "module"))
+expect_blocked("enum.sys chain", "import re\ne = re.enum\nprint(e.sys)", ())
+expect_blocked("from re import enum", "from re import enum", ("whitelist", "module"))
+expect_blocked("uuid no longer whitelisted", "import uuid", ("sandbox", "import"))
+expect_blocked("uuid4 via old API gone", "import uuid\nprint(uuid.uuid4())", ("sandbox", "import"))
+expect_blocked("random no longer whitelisted", "import random\nprint(random.random())", ("sandbox", "import"))
+expect_blocked("statistics no longer whitelisted", "import statistics\nprint(statistics.mean([1, 2]))", ("sandbox", "import"))
+expect_blocked("import java (Chaquopy interop)", "import java", ("sandbox", "import"))
+expect_blocked("json.decoder module hop", "import json\nprint(json.decoder)", ("whitelist", "module"))
+
+# ---- C-1 regression: guard shadowing (the exposed getattr IS the guarded one)
+expect_blocked("shadow guard with builtin getattr", "g = getattr\nimport re\nprint(g(re, 'enum'))", ("whitelist", "module"))
+expect_blocked("shadow via __builtins__ dict", "g = __builtins__['getattr']\nimport re\nprint(g(re, 'enum'))", ("whitelist", "module"))
+expect_blocked("guarded getattr dunder via shadow", "g = __builtins__['getattr']\nprint(g([], '__class__'))", ("dunder",))
+
+# ---- C-1 regression: module state poisoning across runs
+expect_blocked("module attr write", "import json\njson.dumps = lambda *a: 'pwned'", ("read-only",))
+expect_blocked("module attr delete", "import json\ndel json.dumps", ("read-only",))
+expect_blocked("star import", "from json import *", ())
+expect_blocked("relative import", "from . import json", ())
+
 # ---------------------------------------------------------------- allowed
 expect_ok("arithmetic + print", "print(2 + 2)", "4")
 expect_ok("math", "import math\nprint(math.sqrt(16))", "4.0")
@@ -109,15 +150,39 @@ expect_ok("class definition", textwrap.dedent("""
             return self.x ** 2 + self.y ** 2
     print(Point(3, 4).mag2())
 """), "25")
+expect_ok("method call on instance", textwrap.dedent("""
+    class Box:
+        def __init__(self):
+            self.items = []
+        def add(self, v):
+            self.items.append(v)
+            return len(self.items)
+    b = Box()
+    print(b.add(1) + b.add(2))
+"""), "3")
+expect_ok("instance attribute read", textwrap.dedent("""
+    class Box:
+        def __init__(self):
+            self.items = [1, 2, 3]
+    print(Box().items[1])
+"""), "2")
+expect_ok("attribute store and read", textwrap.dedent("""
+    class C:
+        pass
+    c = C()
+    c.x = 10
+    c.x += 5
+    print(c.x)
+"""), "15")
 expect_ok("f-strings + sorted", "items = [3, 1, 2]\nprint(f'sorted={sorted(items)}')", "sorted=[1, 2, 3]")
 expect_ok("collections", "from collections import Counter\nprint(Counter('abca')['a'])", "2")
 expect_ok("functools", "import functools\nprint(functools.reduce(lambda a, b: a + b, [1, 2, 3]))", "6")
-expect_ok("statistics", "import statistics\nprint(statistics.mean([1, 2, 3]))", "2")
 expect_ok("decimal", "from decimal import Decimal\nprint(Decimal('0.1') + Decimal('0.2'))", "0.3")
 expect_ok("hashlib", "import hashlib\nprint(hashlib.sha256(b'x').hexdigest()[:8])", "")
 expect_ok("base64", "import base64\nprint(base64.b64encode(b'hi').decode())", "aGk=")
-expect_ok("uuid", "import uuid\nprint(len(str(uuid.uuid4())))", "36")
 expect_ok("textwrap", "import textwrap\nprint(textwrap.fill('ab cd', 2))", "ab\ncd")
+expect_ok("uuid4 builtin (safe replacement)", "u = uuid4()\nprint(len(u) == 36 and u[14] == '4')", "True")
+expect_ok("randint builtin (safe replacement)", "v = randint(1, 6)\nprint(1 <= v <= 6)", "True")
 expect_ok("try/except works", textwrap.dedent("""
     try:
         1 / 0
@@ -125,6 +190,7 @@ expect_ok("try/except works", textwrap.dedent("""
         print('caught')
 """), "caught")
 expect_ok("isinstance/type single-arg", "print(type(1) is int)", "True")
+expect_ok("dict/list mutation", "d = {'k': [1]}\nd['k'].append(2)\nprint(d)", "{'k': [1, 2]}")
 
 # ---------------------------------------------------------------- honest errors
 r = vorv_runner.run_code("1/0", 5000)

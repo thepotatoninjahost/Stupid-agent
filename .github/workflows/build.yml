@@ -154,16 +154,26 @@ jobs:
           name: Vorv-release-signed-APK
           path: release/
 
-      - name: Compute short SHA
+      - name: Compute short SHA and app version
         if: env.HAS_KEYSTORE == 'true'
-        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+        run: |
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          # Audit L-3: the release tag was hard-coded to v0.6.0-<sha> while
+          # the app shipped 0.6.5. Derive it from app/build.gradle.kts so it
+          # can never drift again.
+          APP_VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          if [ -z "$APP_VERSION" ]; then
+            echo "::error::Could not read versionName from app/build.gradle.kts"
+            exit 1
+          fi
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
 
       - name: Publish Release
         if: env.HAS_KEYSTORE == 'true'
         # softprops/action-gh-release v2.6.2
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          tag_name: v0.6.0-${{ env.SHORT_SHA }}
+          tag_name: v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}
           name: Vorv build ${{ env.SHORT_SHA }}
           body: |
             Vorv — local-first autonomous agent.

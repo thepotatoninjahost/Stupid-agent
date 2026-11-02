@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Audit M-7: no cloud backup and no device transfer of app data. The
+     database (prompts, tool logs, memories) is device-local, full stop. -->
 <data-extraction-rules>
-    <cloud-backup>
-        <include domain="database" path="vorv.db"/>
-    </cloud-backup>
-    <device-transfer>
-        <include domain="database" path="vorv.db"/>
-    </device-transfer>
+    <cloud-backup />
+    <device-transfer />
 </data-extraction-rules>

@@ -11,33 +11,42 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * python_exec — run Python 3.11 locally via Chaquopy in a layered sandbox
- * (audit finding C-2).
+ * (audit finding C-2; rebuilt after audit finding C-1).
  *
  * Sandbox layers (implemented in vorv_runner.py, self-tested by
  * test_vorv_sandbox.py in CI):
  *   1. CPython audit hook blocking file/process/socket operations
- *   2. Restricted __builtins__ (no open/eval/exec/compile/__import__; dunder
- *      getattr guard)
- *   3. Import whitelist — pure-computation stdlib only (math, json, re,
- *      datetime, statistics, ...)
+ *   2. AST-level attribute guard: user code is rewritten so EVERY attribute
+ *      read/write/delete and every `from X import y` routes through guarded
+ *      helpers that block dunder names, str.format reflection, module-hop
+ *      chains (re.enum → enum.sys) and module-state poisoning. This closes
+ *      the C-1 bypass where attribute syntax skipped the getattr-only guard.
+ *   3. Restricted __builtins__ (no open/eval/exec/compile/__import__) +
+ *      import whitelist — pure-computation stdlib only (math, json, re,
+ *      datetime, collections, ...). uuid/random/statistics are NOT
+ *      whitelisted (they import os/sys); safe builtins uuid4(), randint(),
+ *      random_float() are provided instead.
  *   4. Time budget via a trace watchdog
  *
- * HONEST capability statement (the v0.5.x description falsely claimed
- * "cannot access files outside the agent's workspace" and that the requests
- * package was available):
+ * HONEST capability statement:
  *  - The 'requests' package is NOT available (Chaquopy ships stdlib only).
  *  - Network and file access are blocked by the sandbox, not merely by
  *    policy. Legitimate pure-computation code runs fine.
+ *  - Dunder attribute access (x.__class__, f.__globals__) and str.format
+ *    are blocked — use f-strings and the len/type/iter builtins.
  *  - Residual limit: C-extension compute cannot be interrupted mid-call;
  *    such calls hard-timeout at the Kotlin join and leak a daemon thread.
+ *    An in-process sandbox is defense-in-depth, not a formal boundary.
  */
 class PythonExecTool(private val appContext: android.content.Context) : Tool {
     override val name = "python_exec"
     override val description =
         "Execute Python 3.11 in a layered sandbox: pure computation with the standard " +
-        "library only (math, json, re, datetime, statistics, collections, ...). " +
-        "File access, network, subprocesses and non-whitelisted imports are BLOCKED " +
-        "and will raise an error. Use print() to capture output. 30s max timeout."
+        "library only (math, json, re, datetime, collections, ...). File access, network, " +
+        "subprocesses and non-whitelisted imports are BLOCKED and will raise an error. " +
+        "Dunder attribute access (x.__class__) and str.format are blocked — use f-strings " +
+        "and the len/type builtins. Safe replacements uuid4(), randint(a, b) and " +
+        "random_float() are available as builtins. Use print() to capture output. 30s max timeout."
 
     override val timeoutMs: Long get() = 35_000L
     override val maxCallsPerTask: Int get() = 30

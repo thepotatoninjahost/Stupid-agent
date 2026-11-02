@@ -22,15 +22,15 @@ fun ToolsScreen(state: AgentState) {
         "file_read" to "Read a file from granted workspace (SAF, 50KB cap)",
         "file_write" to "Write/overwrite a file in workspace (SAF, 1MB cap)",
         "file_list" to "Recursive list of workspace files (SAF)",
-        "python_exec" to "Hardened Python 3.11 sandbox: audit hooks, import whitelist, no file/network",
+        "python_exec" to "Hardened Python 3.11 sandbox: AST attribute guard, audit hooks, import whitelist, no file/network",
         "web_search" to "Z.ai Web Search API (documented /web_search endpoint)",
         "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",
         "app_intent" to "Android intents (view/share/dial/open_app) — every action needs your confirmation",
-        "shell" to "Bash via Termux with REAL stdout/stderr/exit-code capture (needs workspace + Termux setup)",
+        "shell" to "Bash via Termux — every command asks for confirmation; REAL stdout/stderr/exit-code capture",
         "notify" to "Post a system notification (checks permission, honest error if missing)",
         "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
         "schedule_cancel" to "Cancel pending reminders by title or all",
-        "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
+        "browser_automate" to "Headless WebView: http/https only, no file://, every navigation host-checked",
     )
     val engines = listOf(
         "local_llm" to if (state.localModelReady) {

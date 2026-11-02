@@ -6,13 +6,14 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ---
 
-## Status (v0.6.0) — honest, as always
+## Status (v0.6.6) — honest, as always
 
 ✅ **Local LLM**: Qwen2.5-Coder-3B/7B-Instruct (Q4_0 GGUF) on the Hexagon NPU via Qualcomm **GenieX** — fully offline after a one-time 1.8–4.4 GB download.
 ✅ **Cloud LLM**: GLM-4.6 via Z.ai (optional; needs your API key, stored encrypted at rest).
-✅ **15 tools, all wired** (list below). js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
+✅ **15 tools, all wired** (list below). js_exec and python_exec run in hardened in-process sandboxes; sensitive actions — including every shell command — require explicit user confirmation; outputs are real or the tool reports an honest error.
 ✅ **Verifiable logging**: every tool call persists real input/output/duration/exit-code; long outputs are stored in full and viewable from the Tasks screen.
-⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.6.x series is a security/correctness remediation release — see [CHANGES.md](CHANGES.md).
+✅ **Second audit fully remediated**: all 27 findings from audit VRA-2026-1102 fixed (see [CHANGES.md](CHANGES.md)) — including a rebuilt python_exec sandbox (AST-level attribute guard), a fail-closed hot-patch loader (unsigned dex loading removed), a live watchdog (binder-death + main-process-only heartbeats) and per-navigation network guarding in the browser tool.
+⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.**
 
 ---
 
@@ -54,6 +55,8 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 │   SAF DocumentFile (user-granted workspace)                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Foreground service (AgentService) + WorkManager reminders    │
+│  Watchdog (:watchdog process) — binder-death + heartbeat      │
+│    crash detection, diagnostics, clean restart                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,15 +105,15 @@ Without any of these, `shell` returns an honest error explaining exactly what's 
 |---|---|---|
 | `memory_write` / `memory_recall` | Room + FTS4 long-term memory | DB only |
 | `js_exec` | JavaScript, 5s budget | **Rhino sandbox**: ClassShutter denies all Java except immutable `java.lang` types; LiveConnect globals (`Packages`, `java`, …) deleted; scope sealed; instruction-count watchdog |
-| `python_exec` | Python 3.11, 30s budget | **Layered sandbox**: CPython audit hook blocks file/process/socket ops; restricted builtins (no `open`/`eval`/`exec`/`compile`; dunder-guarded getattr); import whitelist (pure-computation stdlib only); trace watchdog. Self-tested in CI |
+| `python_exec` | Python 3.11, 30s budget | **Layered sandbox**: AST-rewritten attribute guard (no dunder access, no `str.format` reflection, no module-hop chains, read-only modules); CPython audit hook blocks file/process/socket ops; restricted builtins; import whitelist (pure-computation stdlib only; safe `uuid4()`/`randint()` builtins). Self-tested in CI with direct-attack regression cases |
 | `file_read` / `file_write` / `file_list` | SAF workspace I/O | Scoped to the granted folder; 50KB read / 1MB write caps |
 | `web_search` | Z.ai Web Search API (documented `/web_search` endpoint) | Key-gated |
 | `web_fetch` | HTTP fetch → text | 2MB cap; content-type allowlist; **private/loopback/LAN/metadata egress blocked**; jsoup extraction |
 | `app_intent` | view URL / share / dial / open app | **Every action needs a confirmation dialog**; http/https URLs only; premium-rate numbers refused outright |
-| `shell` | Bash via Termux | **Real stdout/stderr/exit-code** captured via workspace round-trip; honest errors when setup is incomplete |
+| `shell` | Bash via Termux | **Every command needs a confirmation dialog** (command text shown); real stdout/stderr/exit-code captured via workspace round-trip; honest errors when setup is incomplete |
 | `notify` | System notification | Checks POST_NOTIFICATIONS; honest error when missing |
 | `schedule` / `schedule_cancel` | WorkManager reminders | Unique work names; 7-day cap; 20-pending cap; cancellable |
-| `browser_automate` | Headless WebView automation | http/https only; file/content access disabled; mixed content blocked; private hosts blocked; Gson-quoted JS interpolation |
+| `browser_automate` | Headless WebView automation | http/https only; file/content access disabled; mixed content blocked; **every navigation host-checked (redirects + JS moves included)**; GET traffic proxied through guarded DNS (no DNS rebinding); Gson-quoted JS interpolation |
 
 See [SECURITY.md](SECURITY.md) for the full threat model, including the honest residual limits of the in-process sandboxes.
 

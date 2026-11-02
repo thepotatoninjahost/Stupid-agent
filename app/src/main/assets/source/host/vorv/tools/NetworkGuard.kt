@@ -42,6 +42,14 @@ object NetworkGuard {
         if (addr.isLinkLocalAddress) return true
         if (addr.isSiteLocalAddress) return true
         if (addr.isMulticastAddress) return true
+        val octets = addr.address
+        if (octets.size == 4) {
+            // Carrier-grade NAT 100.64.0.0/10 (audit L-4) — shared address
+            // space used inside mobile/carrier networks; same trust level as RFC1918.
+            val first = octets[0].toInt() and 0xFF
+            val second = octets[1].toInt() and 0xFF
+            if (first == 100 && second in 64..127) return true
+        }
         if (addr is Inet6Address) {
             // IPv6 unique-local fc00::/7 (siteLocal only covers deprecated fec0::/10).
             val first = addr.getAddress()[0].toInt() and 0xFF
@@ -81,10 +89,23 @@ object NetworkGuard {
         }
     }
 
-    private fun parseLiteral(host: String): InetAddress? = try {
-        InetAddress.getByName(host) // for literals, no DNS lookup happens
-    } catch (e: Exception) {
-        null
+    // Strict dotted-quad and hex/colon IPv6 shapes. Anything else is a
+    // HOSTNAME: InetAddress.getByName would perform a real DNS lookup for it
+    // (audit L-8 — the old comment claimed otherwise), so it is rejected
+    // here and left to the caller\u2019s getAllByName path.
+    private val IPV4_LITERAL = Regex("""^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$""")
+
+    private fun isIpv6LiteralShape(h: String): Boolean =
+        h.contains(':') && h.all { it.isDigit() || it in "abcdefABCDEF:.%" }
+
+    private fun parseLiteral(host: String): InetAddress? {
+        val h = host.trim().removeSurrounding("[", "]")
+        if (!IPV4_LITERAL.matches(h) && !isIpv6LiteralShape(h)) return null
+        return try {
+            InetAddress.getByName(h) // genuinely a literal: no DNS lookup happens
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**

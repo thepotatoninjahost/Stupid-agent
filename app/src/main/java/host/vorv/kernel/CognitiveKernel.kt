@@ -70,6 +70,14 @@ class CognitiveKernel(
         const val MAX_ITERATIONS = 20
         const val OUTPUT_PREVIEW_CHARS = 2000
         const val LLM_VISIBLE_TOOL_OUTPUT_CHARS = 2000
+
+        // ---- context budget management (audit M-2) ----
+        /** Compaction kicks in when the estimated prompt exceeds this fraction of the budget. */
+        const val COMPACT_TRIGGER_FRACTION = 0.85
+        /** Newest messages kept verbatim (current-iteration context). */
+        const val RECENT_MESSAGES_KEPT = 6
+        /** Tool results in the compactable window shrink to this length. */
+        const val COMPACTED_TOOL_RESULT_CHARS = 400
     }
 
     private val _trace = MutableSharedFlow<TraceStep>(replay = 0, extraBufferCapacity = 64)
@@ -84,6 +92,86 @@ class CognitiveKernel(
      */
     suspend fun emitTelemetry(tokensPerSecond: Float, generateMs: Long, engine: String) {
         _trace.emit(TraceStep.Telemetry(tokensPerSecond, generateMs, engine))
+    }
+
+    // -------------------------------------------------- context budget (M-2)
+
+    /** Rough token estimate (~4 chars/token) + per-message protocol overhead. */
+    private fun estimateTokens(messages: List<Llm.Message>): Int =
+        messages.sumOf { m ->
+            (m.content.length + 30) / 4 + m.toolCalls.sumOf { (it.arguments.length + 40) / 4 }
+        }
+
+    private class BudgetOutcome(val fits: Boolean, val compacted: Boolean)
+
+    /**
+     * Context budget management (audit M-2): local mode runs against a
+     * 4096-token context, and conversations used to grow without bound —
+     * every iteration appended an assistant message plus one message per
+     * tool call, each contributing up to 2000 chars. Long tasks silently
+     * truncated or failed opaquely. Before every LLM call the estimated
+     * prompt size is checked against [Llm.contextTokenBudget]; when it is
+     * close, older tool results are compacted into short digests. If
+     * compaction cannot free enough space, the kernel stops with an honest
+     * "context window exhausted at iteration N" instead of a silent overflow.
+     */
+    private fun ensureFitsBudget(messages: MutableList<Llm.Message>, budget: Int): BudgetOutcome {
+        val limit = (budget * COMPACT_TRIGGER_FRACTION).toInt()
+        var compacted = false
+        var guard = 0
+        while (estimateTokens(messages) > limit && guard < 200) {
+            guard++
+            if (!compactOnce(messages)) break
+            compacted = true
+        }
+        return BudgetOutcome(fits = estimateTokens(messages) <= budget, compacted = compacted)
+    }
+
+    /**
+     * One protocol-safe compaction pass over the middle window (everything
+     * after the system prompt + original user request, except the newest
+     * [RECENT_MESSAGES_KEPT] messages). Tool-call pairing is preserved:
+     * truncation only rewrites tool-result CONTENT; whole-message removal
+     * only drops complete assistant(+toolCalls)-with-its-tool-results blocks
+     * or standalone text messages.
+     */
+    private fun compactOnce(messages: MutableList<Llm.Message>): Boolean {
+        val first = 2 // 0 = system, 1 = original user prompt — never touched
+        val last = messages.size - RECENT_MESSAGES_KEPT
+        if (last <= first) return false
+
+        // Pass 1: truncate long tool results in the middle window.
+        for (i in first until last) {
+            val m = messages[i]
+            if (m.role == "tool" && m.content.length > COMPACTED_TOOL_RESULT_CHARS) {
+                messages[i] = m.copy(
+                    content = m.content.take(COMPACTED_TOOL_RESULT_CHARS) +
+                        " …[compacted from ${m.content.length} chars — full output is in the Tasks tab]"
+                )
+                return true
+            }
+        }
+
+        // Pass 2: drop standalone assistant text messages (no tool calls to orphan).
+        for (i in first until last) {
+            if (messages[i].role == "assistant" && messages[i].toolCalls.isEmpty()) {
+                messages.removeAt(i)
+                return true
+            }
+        }
+
+        // Pass 3: drop the oldest complete block — an assistant message with
+        // its toolCalls plus all immediately following tool-result messages.
+        var i = first
+        while (i < last) {
+            if (messages[i].role == "assistant" && messages[i].toolCalls.isNotEmpty()) {
+                messages.removeAt(i)
+                while (i < messages.size && messages[i].role == "tool") messages.removeAt(i)
+                return true
+            }
+            i++
+        }
+        return false
     }
 
     suspend fun run(
@@ -116,6 +204,24 @@ class CognitiveKernel(
             while (iterations < MAX_ITERATIONS) {
                 iterations++
                 eventSink.setTaskIterations(taskId, iterations)
+
+                // ---- context budget (audit M-2) ----
+                val budget = llm.contextTokenBudget
+                val outcome = ensureFitsBudget(messages, budget)
+                if (outcome.compacted) {
+                    _trace.emit(TraceStep.Thinking(
+                        "Context compacted",
+                        "History exceeded ${budget} tokens — older tool results were summarized into digests (full outputs remain in the Tasks tab)."
+                    ))
+                }
+                if (!outcome.fits) {
+                    val est = estimateTokens(messages)
+                    lastError = "context window exhausted at iteration $iterations " +
+                        "(estimated ~$est tokens > budget $budget even after compaction)"
+                    _trace.emit(TraceStep.Error(lastError!!))
+                    break
+                }
+
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
                 val resp = try {
@@ -124,7 +230,14 @@ class CognitiveKernel(
                     // Preserve the REAL cause — previously this fell through to
                     // the "reached max iterations" summary, mis-reporting an LLM
                     // failure as a stuck loop (caught by CognitiveKernelTest).
-                    lastError = e.message ?: e.javaClass.simpleName
+                    // If the engine still overflowed despite the estimate
+                    // (chars/4 is an approximation), say so honestly (M-2).
+                    if (estimateTokens(messages) > budget) {
+                        lastError = "context window exhausted at iteration $iterations " +
+                            "(engine error after a ~${estimateTokens(messages)}-token prompt: ${e.message})"
+                    } else {
+                        lastError = e.message ?: e.javaClass.simpleName
+                    }
                     _trace.emit(TraceStep.Error("LLM call failed: $lastError"))
                     break
                 }

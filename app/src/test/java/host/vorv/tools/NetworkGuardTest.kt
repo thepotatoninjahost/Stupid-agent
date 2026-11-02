@@ -51,6 +51,13 @@ class NetworkGuardTest {
         assertTrue(NetworkGuard.isBlockedAddress(InetAddress.getByName("fe80::1")))
     }
 
+    @Test fun `carrier grade NAT blocked (audit L-4)`() {
+        assertTrue(NetworkGuard.isBlockedAddress(InetAddress.getByName("100.64.0.1")))
+        assertTrue(NetworkGuard.isBlockedAddress(InetAddress.getByName("100.127.255.255")))
+        assertFalse("100.63.x.x is public", NetworkGuard.isBlockedAddress(InetAddress.getByName("100.63.0.1")))
+        assertFalse("100.128.x.x is public", NetworkGuard.isBlockedAddress(InetAddress.getByName("100.128.0.1")))
+    }
+
     @Test fun `ipv6 unique local blocked`() {
         assertTrue(NetworkGuard.isBlockedAddress(InetAddress.getByName("fd00::1")))
         assertTrue(NetworkGuard.isBlockedAddress(InetAddress.getByName("fc00::1")))

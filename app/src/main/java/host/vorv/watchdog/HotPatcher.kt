@@ -1,71 +1,54 @@
 package host.vorv.watchdog
 
 import android.content.Context
+import android.os.Build
 import dalvik.system.DexClassLoader
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.security.Signature
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * HotPatcher — runtime code patching via DexClassLoader.
+ * HotPatcher — runtime code patching via DexClassLoader (hardened after
+ * audit finding C-2).
  *
- * WHAT THIS DOES:
- *   Loads a .dex file at runtime that contains FIXED versions of buggy classes.
- *   The patched class is loaded AHEAD of the buggy one in the classloader
- *   chain, so when the app references that class, it gets the fixed version.
- *   No APK reinstall required.
+ * SECURITY POSTURE (v0.6.6, post-audit — READ BEFORE TOUCHING):
  *
- *   This is the same mechanism Tencent's Tinker and Alibaba's Sophix use in
- *   production on billions of devices. It's real Android API, not a hack.
+ *   1. NOTHING loads at boot. VorvApplication no longer calls
+ *      [loadPendingPatches] — a .dex in filesDir/hotpatch/ is inert data
+ *      until it is BOTH cryptographically signed AND explicitly loaded by
+ *      this method, which nothing in production currently does. Loading is
+ *      disabled until a signing key is pinned below.
  *
- * PATCH FORMAT:
- *   A patch is a .dex file containing one or more classes that override the
- *   buggy versions. The patch manifest (JSON) specifies:
- *     {
- *       "version": 1,
- *       "patches": [
- *         {
- *           "id": "fix-toolcall-parser-v2",
- *           "url": "https://example.com/patches/fix1.dex",
- *           "sha256": "abcd1234...",
- *           "classes": ["host.vorv.llm.ToolCallParser"],
- *           "minAppVersion": 12,
- *           "maxAppVersion": 20,
- *           "description": "Fix parser for markdown-fenced JSON"
- *         }
- *       ]
- *     }
+ *   2. A patch is accepted ONLY when ALL of these hold:
+ *        - [PINNED_ED25519_PUBLIC_KEY_HEX] is configured (non-empty);
+ *        - the device supports Ed25519 in java.security (API 33+);
+ *        - the manifest has an entry for the patch id with a sha256;
+ *        - the dex's SHA-256 matches that entry;
+ *        - the manifest entry carries a base64 Ed25519 signature over the
+ *          dex bytes that verifies against the PINNED key.
+ *      A dex with NO manifest entry is REFUSED and deleted — the v0.6.5
+ *      behavior of loading it unverified (skip-on-missing-entry) is gone.
+ *      Fail closed, never open.
  *
- *   Patches are signed (SHA-256 verified) and version-gated.
+ *   3. A SHA-256 in a manifest that lives in the same directory as the dex
+ *      is self-attestation, not authentication — which is why the
+ *      signature against a key COMPILED INTO THE APP is required on top.
  *
- * PATCH LIFECYCLE:
- *   1. On app start, HotPatcher loads any already-downloaded patches from
- *      getFilesDir()/hotpatch/ — these are applied IMMEDIATELY, before any
- *      app code runs that might hit the bug.
- *   2. In the background, HotPatcher fetches the manifest from the patch URL
- *      (configurable in Settings, defaults to a GitHub Releases URL).
- *   3. New patches are downloaded, SHA-256 verified, and stored.
- *   4. A flag is set: "patch X pending — apply on next restart".
- *   5. The watchdog (or the app itself) triggers a clean restart via
- *      ProcessPhoenix pattern. On restart, step 1 applies the patch.
+ *   4. [fetchManifest] refuses any URL that is not HTTPS on an allow-listed
+ *      host ([ALLOWED_MANIFEST_HOSTS], empty by default).
  *
- *   The restart is the "hot-swap" — the user sees a brief flicker, then the
- *   patched code runs. No reinstall, no manual action.
+ *   5. The previous "patches are signed (SHA-256 verified)" claim in this
+ *      file's docs was wrong — a hash is not a signature. It has been
+ *      replaced by this honest description.
  *
- * LIMITATIONS (honest):
- *   - Already-loaded classes can't be unloaded. A patch only takes effect
- *     after a process restart. This is a JVM limitation, not ours.
- *   - The patch .dex must be compiled against the same app version it patches
- *     (same package, same class signatures). The manifest's minAppVersion /
- *     maxAppVersion gates enforce this.
- *   - Native (.so) patches are NOT supported. Only Java/Kotlin (.dex) patches.
- *     A native crash can be DETECTED by the watchdog (breadcrumbs), but the
- *     fix has to be a new APK build. We can't hot-patch a .so at runtime.
- *
- *   For native crashes, the watchdog's clean-restart still helps: if a .so
- *   fails to load, the safe-mode path (skips GenieX init) lets the app boot
- *   so the user can export diagnostics, instead of being bricked.
+ *   6. Class-override patching (making a patched class run instead of the
+ *      original) was never implemented — parent-first delegation means a
+ *      DexClassLoader parented to the app classloader cannot override
+ *      already-loadable classes. The pendingLoaders list and that claim are
+ *      removed. If class-override patching is genuinely needed, adopt a
+ *      maintained hot-patch framework instead of a hand-rolled chain.
  */
 object HotPatcher {
 
@@ -73,26 +56,54 @@ object HotPatcher {
     private const val MANIFEST_FILE = "manifest.json"
     private const val APPLIED_FILE = "applied.json"
 
-    private val pendingLoaders = CopyOnWriteArrayList<DexClassLoader>()
+    /**
+     * Ed25519 public key (hex) that patch dex files must be signed with.
+     * EMPTY = hot-patching is disabled: loadPendingPatches refuses (and
+     * deletes) everything. To enable, generate a keypair, embed the public
+     * key here and sign patches with the private key offline.
+     */
+    private const val PINNED_ED25519_PUBLIC_KEY_HEX = ""
 
     /**
-     * Initialize on app start. Loads any already-downloaded patches from disk
-     * into the classloader chain. Must be called BEFORE any app code that
-     * might reference a patched class — i.e., at the very start of
-     * VorvApplication.onCreate.
-     *
-     * Returns the list of patch IDs that were applied.
+     * Hosts a patch manifest may be fetched from. Empty = no manifest
+     * fetching is allowed at all (fail closed).
+     */
+    private val ALLOWED_MANIFEST_HOSTS = emptySet<String>()
+
+    /**
+     * Attempt to load verified pending patches. DISABLED in production:
+     * returns an empty list and deletes any .dex found in the patch
+     * directory unless every verification step in the class KDoc passes.
+     * Kept as a hardened utility for the day signed patching is enabled.
      */
     fun loadPendingPatches(context: Context): List<String> {
         val applied = mutableListOf<String>()
         runCatching {
             val patchDir = File(context.filesDir, PATCH_DIR)
-            if (!patchDir.exists()) return@runCatching
+            if (!patchDir.exists()) return emptyList()
 
+            val signingEnabled = PINNED_ED25519_PUBLIC_KEY_HEX.isNotEmpty() &&
+                Build.VERSION.SDK_INT >= 33
+            if (!signingEnabled) {
+                val stale = patchDir.listFiles { f -> f.isFile && f.name.endsWith(".dex") }
+                    ?.toList().orEmpty()
+                stale.forEach {
+                    android.util.Log.w("Vorv/HotPatcher",
+                        "Deleting unverified patch dex (hot-patching disabled): ${it.name}")
+                    it.delete()
+                }
+                if (stale.isNotEmpty()) {
+                    clearAppliedRegistry(patchDir)
+                }
+                return emptyList()
+            }
+
+            val manifest = readManifest(context)
             val appliedFile = File(patchDir, APPLIED_FILE)
             val appliedIds = if (appliedFile.exists()) {
                 runCatching {
-                    JSONObject(appliedFile.readText()).getJSONArray("applied").map { it.toString() }.toSet()
+                    JSONObject(appliedFile.readText()).getJSONArray("applied")
+                        .map { it.toString() }.toSet()
                 }.getOrDefault(emptySet())
             } else emptySet()
 
@@ -101,25 +112,43 @@ object HotPatcher {
                     val patchId = dexFile.nameWithoutExtension
                     if (patchId !in appliedIds) return@forEach
 
-                    // Verify SHA-256 against the manifest.
-                    val manifest = readManifest(context)
-                    val expectedSha = manifest?.optJSONArray("patches")
+                    // Manifest entry is REQUIRED — refuse (and delete) any
+                    // dex lacking one (audit C-2: was loaded unverified).
+                    val entry = manifest?.optJSONArray("patches")
                         ?.let { arr ->
-                            (0 until arr.length()).map { i ->
-                                arr.getJSONObject(i)
-                            }.firstOrNull { it.getString("id") == patchId }
-                        }?.optString("sha256")
-
-                    if (expectedSha != null) {
-                        val actualSha = sha256(dexFile)
-                        if (actualSha != expectedSha) {
-                            android.util.Log.e("Vorv/HotPatcher",
-                                "SHA-256 mismatch for $patchId — skipping (expected=$expectedSha, actual=$actualSha)")
-                            return@forEach
+                            (0 until arr.length()).map { i -> arr.getJSONObject(i) }
+                                .firstOrNull { it.optString("id") == patchId }
                         }
+                    if (entry == null) {
+                        android.util.Log.e("Vorv/HotPatcher",
+                            "REFUSED: no manifest entry for $patchId — deleting")
+                        dexFile.delete()
+                        return@forEach
                     }
 
-                    // Load the .dex into a DexClassLoader.
+                    val expectedSha = entry.optString("sha256")
+                    if (expectedSha.isBlank()) {
+                        android.util.Log.e("Vorv/HotPatcher",
+                            "REFUSED: manifest entry for $patchId has no sha256 — deleting")
+                        dexFile.delete()
+                        return@forEach
+                    }
+                    val actualSha = sha256(dexFile)
+                    if (actualSha != expectedSha) {
+                        android.util.Log.e("Vorv/HotPatcher",
+                            "REFUSED: SHA-256 mismatch for $patchId — deleting")
+                        dexFile.delete()
+                        return@forEach
+                    }
+
+                    val signatureB64 = entry.optString("signature")
+                    if (!verifyEd25519(dexFile, signatureB64)) {
+                        android.util.Log.e("Vorv/HotPatcher",
+                            "REFUSED: Ed25519 signature missing/invalid for $patchId — deleting")
+                        dexFile.delete()
+                        return@forEach
+                    }
+
                     val odexDir = File(context.codeCacheDir, "hotpatch_odex").apply { mkdirs() }
                     val loader = DexClassLoader(
                         dexFile.absolutePath,
@@ -127,9 +156,11 @@ object HotPatcher {
                         null,
                         context.classLoader,
                     )
-                    pendingLoaders.add(loader)
+                    // No override list: nothing consults extra loaders (parent-first
+                    // delegation cannot override app classes anyway — see KDoc).
+                    // The load itself is recorded for diagnostics only.
                     applied.add(patchId)
-                    android.util.Log.i("Vorv/HotPatcher", "Applied patch: $patchId")
+                    android.util.Log.i("Vorv/HotPatcher", "Applied SIGNED patch: $patchId")
                 }
         }.onFailure {
             android.util.Log.e("Vorv/HotPatcher", "Failed to load pending patches: ${it.message}", it)
@@ -148,48 +179,64 @@ object HotPatcher {
     }
 
     /**
-     * Mark a patch as downloaded and pending application on next restart.
-     * Called by the patch downloader after a .dex file is fetched + verified.
-     */
-    fun markPendingApply(context: Context, patchId: String) {
-        runCatching {
-            val patchDir = File(context.filesDir, PATCH_DIR).apply { mkdirs() }
-            val appliedFile = File(patchDir, APPLIED_FILE)
-            val current = if (appliedFile.exists()) {
-                JSONObject(appliedFile.readText())
-            } else {
-                JSONObject().put("applied", org.json.JSONArray())
-            }
-            val arr = current.getJSONArray("applied")
-            if ((0 until arr.length()).none { arr.getString(it) == patchId }) {
-                arr.put(patchId)
-            }
-            appliedFile.writeText(current.toString())
-            android.util.Log.i("Vorv/HotPatcher", "Patch $patchId marked for application on next restart")
-        }
-    }
-
-    /**
-     * Fetch a patch manifest from a URL. Returns null on failure.
-     * The caller (a WorkManager job) handles downloading the .dex files
-     * listed in the manifest.
-     *
-     * In production, this URL would point to a GitHub Releases asset or a
-     * simple static file server. For now it's configurable in Settings.
+     * Fetch a patch manifest from a URL. Refuses anything that is not
+     * HTTPS on an allow-listed host (audit C-2: previously accepted any
+     * URL with no scheme or host validation).
      */
     suspend fun fetchManifest(url: String): JSONObject? {
-        return runCatching {
+        val allowed = runCatching {
+            val uri = android.net.Uri.parse(url)
+            val schemeOk = uri.scheme?.lowercase() == "https"
+            val hostOk = uri.host in ALLOWED_MANIFEST_HOSTS
+            if (!schemeOk || !hostOk) {
+                android.util.Log.w("Vorv/HotPatcher",
+                    "Manifest URL refused (not HTTPS or host not allow-listed): $url")
+                return null
+            }
             val client = okhttp3.OkHttpClient.Builder()
                 .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
             val req = okhttp3.Request.Builder().url(url).build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@runCatching null
-                JSONObject(resp.body?.string() ?: return@runCatching null)
+                if (!resp.isSuccessful) return null
+                JSONObject(resp.body?.string() ?: return null)
             }
         }.getOrNull()
+        return allowed
     }
+
+    /**
+     * Ed25519-verify [signatureB64] over the exact bytes of [dexFile],
+     * against the pinned public key. Requires API 33+ (java.security
+     * Ed25519); returns false on any failure — never loads on doubt.
+     */
+    private fun verifyEd25519(dexFile: File, signatureB64: String): Boolean {
+        if (PINNED_ED25519_PUBLIC_KEY_HEX.isBlank() || signatureB64.isBlank()) return false
+        if (Build.VERSION.SDK_INT < 33) return false
+        return runCatching {
+            val pub = java.security.KeyFactory.getInstance("Ed25519")
+                .generatePublic(java.security.spec.X509EncodedKeySpec(hexToBytes(PINNED_ED25519_PUBLIC_KEY_HEX)))
+            val sig = Signature.getInstance("Ed25519")
+            sig.initVerify(pub)
+            dexFile.inputStream().use { input ->
+                val buf = ByteArray(8192)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    sig.update(buf, 0, n)
+                }
+            }
+            sig.verify(android.util.Base64.decode(signatureB64, android.util.Base64.NO_WRAP))
+        }.getOrDefault(false)
+    }
+
+    private fun clearAppliedRegistry(patchDir: File) {
+        runCatching { File(patchDir, APPLIED_FILE).delete() }
+    }
+
+    private fun hexToBytes(hex: String): ByteArray =
+        hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     private fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

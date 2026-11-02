@@ -3,10 +3,14 @@ package host.vorv
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -48,6 +52,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.geniex.sdk.GenieXSdk
+import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
 import host.vorv.ui.VorvApp
 import host.vorv.ui.theme.VorvTheme
@@ -63,6 +68,23 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "POST_NOTIFICATIONS granted=$granted")
         }
 
+    /**
+     * BINDING to the watchdog (audit H-1): while the main process holds this
+     * binding, its death is reported to the watchdog as an unbind — the
+     * primary, never-late crash signal. The watchdog re-checks
+     * isMainProcessRunning() before declaring a crash, so a normal unbind
+     * (activity destroyed, app still alive) passes through harmlessly.
+     */
+    private val watchdogConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            BootTracer.step(this@MainActivity, "watchdog_bound")
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            // Fires here only if the WATCHDOG process died while we're bound.
+            BootTracer.step(this@MainActivity, "watchdog_disconnected")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -70,6 +92,17 @@ class MainActivity : ComponentActivity() {
         val app = application as VorvApplication
 
         BootTracer.step(this, "mainactivity_oncreate_begin")
+
+        // Bind to the watchdog service so binder death is a crash signal
+        // (audit H-1 — the v0.6.5 docs claimed this binding existed; it didn't).
+        BootTracer.step(this, "bind_watchdog")
+        runCatching {
+            bindService(
+                Intent(this, host.vorv.watchdog.WatchdogService::class.java),
+                watchdogConnection,
+                Context.BIND_AUTO_CREATE,
+            )
+        }.onFailure { BootTracer.step(this, "bind_watchdog_failed", it.message) }
 
         // Check for crash logs from a previous run (written by CrashReportWorker).
         val crashLogFile = app.getLatestCrashLog()
@@ -189,6 +222,9 @@ class MainActivity : ComponentActivity() {
                                 clipboard.setPrimaryClip(ClipData.newPlainText("vorv_crash_log", crashLogText!!))
                                 Toast.makeText(this, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
+                            onAnalyze = {
+                                analyzeCrash(crashLogText ?: "", previousTrace ?: "")
+                            },
                             onDismiss = {
                                 crashLogFile?.let { app.clearCrashLog(it) }
                                 crashLogText = null
@@ -203,6 +239,54 @@ class MainActivity : ComponentActivity() {
         // Mark boot as complete — the UI is up. If the app crashes after this
         // point, the crash counter resets on next boot.
         BootTracer.complete(this)
+    }
+
+    override fun onDestroy() {
+        runCatching { unbindService(watchdogConnection) }
+        super.onDestroy()
+    }
+
+    /**
+     * On-device crash ANALYSIS (audit H-4): runs the healer in THIS (main)
+     * process, on explicit user request, and writes a diagnostic bundle.
+     * It never compiles or applies anything — the output is a report for
+     * the user. The watchdog no longer runs the LLM itself (audit M-8).
+     */
+    private fun analyzeCrash(crashText: String, bootTrace: String) {
+        if (crashText.isBlank()) return
+        val app = application as VorvApplication
+        if (app.safeMode) {
+            Toast.makeText(this, "Safe mode — GenieX is not initialized, analysis unavailable.", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "Analyzing crash on-device…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                if (!ModelManager.isDownloaded(ModelChoice.QWEN_3B)) {
+                    toastMain("The 3B model isn't downloaded — analysis needs it (Setup tab).")
+                    return@launch
+                }
+                val llm = host.vorv.llm.LocalLlm(
+                    applicationContext,
+                    ModelChoice.QWEN_3B,
+                    "Qwen2.5-Coder-3B (crash analysis)",
+                )
+                val bundle = try {
+                    host.vorv.healer.HealingAgent(applicationContext, llm)
+                        .produceDiagnosticBundle(crashText, bootTrace)
+                } finally {
+                    llm.release()
+                }
+                toastMain("Analysis saved to ${bundle.bundleDir.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "crash analysis failed: ${e.message}", e)
+                toastMain("Analysis failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun toastMain(text: String) {
+        runOnUiThread { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
     }
 
     companion object {
@@ -311,10 +395,15 @@ private fun SafeModeScreen(
     }
 }
 
+/**
+ * Crash dialog — copy the log, run an optional on-device analysis (audit
+ * H-4: analysis only — never a compiled/applied patch), or dismiss.
+ */
 @Composable
 private fun CrashLogDialog(
     crashText: String,
     onCopy: () -> Unit,
+    onAnalyze: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -357,6 +446,9 @@ private fun CrashLogDialog(
                 ) {
                     TextButton(onClick = onDismiss) {
                         Text("Dismiss")
+                    }
+                    TextButton(onClick = onAnalyze) {
+                        Text("Analyze crash")
                     }
                     Button(
                         onClick = onCopy,

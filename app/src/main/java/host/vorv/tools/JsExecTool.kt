@@ -86,8 +86,6 @@ class JsExecTool : Tool {
         }
     }
 
-    private val factory = WatchdogFactory()
-
     /**
      * The ONLY Java object placed in the sandbox scope. PLAIN class on
      * purpose: Rhino's WrapFactory wraps it in a NativeJavaObject and exposes
@@ -172,6 +170,12 @@ class JsExecTool : Tool {
         val resultRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var timedOut = false
+
+        // Audit L-5: ONE WatchdogFactory PER EVALUATION. The shared factory
+        // carried mutable deadline/aborted state across concurrent runs, so
+        // one evaluation's deadline could abort (or fail to abort) another's.
+        // A local factory makes every evaluation self-contained.
+        val factory = WatchdogFactory()
 
         // Evaluation runs on a dedicated daemon thread: a blocking native
         // call inside the sandbox can never pin an IO-pool thread — the join

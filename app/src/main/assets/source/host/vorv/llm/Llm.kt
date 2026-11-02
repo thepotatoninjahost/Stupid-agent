@@ -24,6 +24,15 @@ interface Llm {
 
     val label: String
 
+    /**
+     * Approximate prompt token budget the kernel should stay within
+     * (audit M-2). The kernel compacts history before each call when the
+     * estimated prompt size approaches this. Local (GenieX/llama.cpp, nCtx
+     * 4096) must reserve room for generation; cloud engines have a much
+     * larger window.
+     */
+    val contextTokenBudget: Int get() = 8_192
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,
@@ -64,6 +73,9 @@ class CloudLlm(
     client: OkHttpClient? = null,
 ) : Llm {
     override val label = "GLM-4.6"
+
+    /** GLM-4.6 has a 128K window; keep prompts under 100K (audit M-2). */
+    override val contextTokenBudget: Int get() = 100_000
 
     private val client: OkHttpClient = client ?: Companion.client
 

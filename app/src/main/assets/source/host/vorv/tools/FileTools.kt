@@ -104,10 +104,28 @@ class FileReadTool(private val appContext: Context) : Tool {
 
         try {
             appContext.contentResolver.openInputStream(file.uri)?.use { stream ->
-                val content = stream.bufferedReader().readText()
+                // Audit M-5: stream-read at most MAX_READ_BYTES (the char cap
+                // x 4 bytes/char UTF-8 safety) BEFORE decoding — the old
+                // readText() slurped the WHOLE file into memory first, so a
+                // multi-gigabyte workspace file OOM-crashed the app before
+                // the 50k-char cap could ever apply.
+                val bos = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(16 * 1024)
+                var total = 0L
+                var hitByteCap = false
+                while (total < MAX_READ_BYTES) {
+                    val want = minOf(buf.size.toLong(), MAX_READ_BYTES - total).toInt()
+                    val n = stream.read(buf, 0, want)
+                    if (n <= 0) break
+                    bos.write(buf, 0, n)
+                    total += n
+                }
+                if (total >= MAX_READ_BYTES) hitByteCap = true
+                val content = bos.toString("UTF-8").take(MAX_READ_CHARS)
+                val note = if (hitByteCap) "\n…(truncated at $MAX_READ_BYTES bytes)" else ""
                 ToolResult(
                     ok = true,
-                    output = content.take(50000),  // hard cap to keep prompt small
+                    output = content + note,  // hard cap to keep prompt small
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("file", file.uri.toString(), "file: $path"),
                 )
@@ -115,6 +133,11 @@ class FileReadTool(private val appContext: Context) : Tool {
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "Read failed: ${e.message}", durationMs = System.currentTimeMillis() - t0)
         }
+    }
+
+    private companion object {
+        const val MAX_READ_CHARS = 50_000
+        const val MAX_READ_BYTES = 200_000L   // 50k chars x 4-byte UTF-8 safety
     }
 
     private fun navigate(root: DocumentFile, path: String): DocumentFile? {
@@ -171,6 +194,15 @@ class FileWriteTool(private val appContext: Context) : Tool {
             if (i == segments.lastIndex) {
                 // File
                 val existing = current.findFile(segment)
+                // Audit L-6: colliding with an existing DIRECTORY must be an
+                // explicit error — the provider used to "helpfully" create
+                // "name (1).txt" duplicates that the model never asked for.
+                if (existing != null && existing.isDirectory) {
+                    return@withContext ToolResult(ok = false, output = "",
+                        error = "Cannot write '$path': '$segment' already exists as a DIRECTORY. " +
+                            "Pick a different file name.",
+                        durationMs = System.currentTimeMillis() - t0)
+                }
                 val target = existing?.takeIf { it.isFile }
                     ?: current.createFile("text/plain", segment)
                     ?: return@withContext ToolResult(ok = false, output = "", error = "Could not create file: $segment", durationMs = System.currentTimeMillis() - t0)

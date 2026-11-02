@@ -75,18 +75,43 @@ class ReminderRegistry(private val prefs: VorvPrefs) {
         save(list)
     }
 
-    /** Returns the unique work names matching [title] (or all when null). */
-    suspend fun takeForCancel(title: String?): List<Entry> {
+    /**
+     * Remove [entry] from the registry. Audit M-9: called when the WorkManager
+     * enqueue FAILS after a successful register, so a reminder can never
+     * exist in the registry without a live work request (or vice versa).
+     */
+    suspend fun rollback(entry: Entry) {
+        val list = load()
+        save(list.filter { it.name != entry.name })
+    }
+
+    /** Snapshot of every registry entry (used by "clear ALL data", audit M-4). */
+    suspend fun allEntries(): List<Entry> = load()
+
+    data class CancelBatch(
+        /** Registry entries matching the cancel request. */
+        val matching: List<Entry>,
+        /** Expired entries whose work is ALSO cancelled so nothing lingers (audit M-9). */
+        val expired: List<Entry>,
+    )
+
+    /**
+     * Returns the entries to cancel for [title] (or all when null).
+     * Audit M-9: expired entries (eta in the past) used to be silently
+     * dropped from the registry WITHOUT cancelling their WorkManager work —
+     * a doze-delayed reminder could still fire, uncancellable. They are now
+     * returned alongside the matches so the caller cancels their work too.
+     */
+    suspend fun takeForCancel(title: String?): CancelBatch {
         val list = load()
         val now = System.currentTimeMillis()
-        // Drop entries whose reminder already fired (eta in the past).
         val (expired, live) = list.partition { it.etaMs <= now }
         if (expired.isNotEmpty()) save(live)
         val current = if (expired.isNotEmpty()) live else list
         val matching = if (title.isNullOrBlank()) current else current.filter { it.title == title }
         val remaining = current - matching.toSet()
         save(remaining)
-        return matching
+        return CancelBatch(matching = matching, expired = expired)
     }
 
     private companion object {
@@ -141,24 +166,33 @@ class ScheduleTool(
         return try {
             val delay = minutes.toLong()
             val workName = "vorv_reminder_${ctx.taskId}_${ctx.iteration}"
-            val request = OneTimeWorkRequestBuilder<ReminderWorker>()
-                .setInitialDelay(delay, TimeUnit.MINUTES)
-                .setInputData(workDataOf(
-                    "title" to title,
-                    "text" to text,
-                ))
-                .build()
-            // Unique name + REPLACE: a re-run of the same iteration can't
-            // stack duplicates (audit M-5).
-            workManager.enqueueUniqueWork(workName, androidx.work.ExistingWorkPolicy.REPLACE, request)
-
-            registry.register(
-                ReminderRegistry.Entry(
-                    name = workName,
-                    title = title,
-                    etaMs = System.currentTimeMillis() + delay * 60_000,
-                )
+            val entry = ReminderRegistry.Entry(
+                name = workName,
+                title = title,
+                etaMs = System.currentTimeMillis() + delay * 60_000,
             )
+
+            // Audit M-9: register FIRST (this is where the 20-entry cap
+            // throws), THEN enqueue — the old order (enqueue, then register)
+            // left an enqueued, uncancellable work request behind whenever
+            // register threw at the cap. If the enqueue itself fails, roll
+            // the registry entry back so the two never disagree.
+            registry.register(entry)
+            try {
+                val request = OneTimeWorkRequestBuilder<ReminderWorker>()
+                    .setInitialDelay(delay, TimeUnit.MINUTES)
+                    .setInputData(workDataOf(
+                        "title" to title,
+                        "text" to text,
+                    ))
+                    .build()
+                // Unique name + REPLACE: a re-run of the same iteration can't
+                // stack duplicates (audit M-5).
+                workManager.enqueueUniqueWork(workName, androidx.work.ExistingWorkPolicy.REPLACE, request)
+            } catch (e: Exception) {
+                registry.rollback(entry)
+                throw e
+            }
 
             ToolResult(
                 ok = true,
@@ -207,15 +241,20 @@ class ScheduleCancelTool(
         val title = input.get("title")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
 
         return try {
-            val matching = registry.takeForCancel(title)
-            matching.forEach { workManager.cancelUniqueWork(it.name) }
+            val batch = registry.takeForCancel(title)
+            // Cancel BOTH the matches and any expired entries (audit M-9):
+            // an expired-but-still-pending work request (doze delay) must not
+            // linger uncancellable just because its eta passed.
+            (batch.matching + batch.expired).forEach { workManager.cancelUniqueWork(it.name) }
             val scope = if (title.isNullOrBlank()) "all pending reminders" else "reminders titled '$title'"
             ToolResult(
                 ok = true,
-                output = if (matching.isEmpty()) {
-                    "No $scope were pending."
+                output = if (batch.matching.isEmpty()) {
+                    if (batch.expired.isEmpty()) "No $scope were pending."
+                    else "No $scope were pending; also cleaned up ${batch.expired.size} expired entr${if (batch.expired.size == 1) "y" else "ies"}."
                 } else {
-                    "Cancelled ${matching.size} $scope: ${matching.joinToString { it.title }}"
+                    "Cancelled ${batch.matching.size} $scope: ${batch.matching.joinToString { it.title }}" +
+                        (if (batch.expired.isNotEmpty()) "; also cleaned up ${batch.expired.size} expired." else "")
                 },
                 durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("exec", ctx.taskId, "schedule_cancel iter ${ctx.iteration}"),

@@ -18,14 +18,23 @@ import java.io.PrintWriter
 import java.io.StringWriter
 
 /**
- * Application-scoped wiring (audit findings H-4, L-7):
+ * Application-scoped wiring (audit findings H-4, L-7, H-1, C-2).
  *  - owns the DB, prefs, secrets and the ModelRepository as singletons
- *  - migrates the legacy plaintext API key into encrypted storage, once
+ *    - migrates the legacy plaintext API key into encrypted storage, once
  *  - releases the local LLM's native memory under system memory pressure
  *
+ * PROCESS GUARD (audit H-1): Android instantiates this class in EVERY
+ * process, including ":watchdog". The watchdog process must run ONLY the
+ * WatchdogService — the v0.6.5 behavior of letting it execute the full
+ * onCreate (DB, ModelRepository, a heartbeat writer that poisoned the
+ * watchdog's own crash detection, a redundant startService of itself)
+ * is gone. Heartbeats are written exclusively by the main process now.
+ *
  * v0.6.3 crash diagnostics:
- *  - [BootTracer] writes breadcrumbs at each startup step — catches native
- *    SIGSEGV crashes that no Java handler can catch
+ *  - [BootTracer] starts FIRST (audit L-7) so every subsequent breadcrumb
+ *    lands in the new boot's section — previously the pre-start steps were
+ *    appended to the PREVIOUS boot's section, misclassifying healthy boots
+ *    as crashes.
  *  - Global UncaughtExceptionHandler enqueues [CrashReportWorker] via
  *    WorkManager — the worker writes the full Java stack trace to a file in
  *    a FRESH process, so the write isn't racing the process kill
@@ -33,6 +42,9 @@ import java.io.StringWriter
  *    the crash counter is incremented; MainActivity enters safe mode after
  *    2 crashes (skips GenieX init so the app can at least boot and show
  *    diagnostics)
+ *
+ * NO HOT-PATCH LOADING AT BOOT (audit C-2): unsigned .dex loading was
+ * removed from onCreate entirely. See [host.vorv.watchdog.HotPatcher].
  */
 class VorvApplication : Application() {
 
@@ -57,22 +69,28 @@ class VorvApplication : Application() {
         private set
 
     override fun onCreate() {
+        // ---- PROCESS GUARD (audit H-1) ---------------------------------
+        // The watchdog service runs in a separate process and must NOT get
+        // the full app init: no DB, no ModelRepository, no BootTracer, and
+        // above all NO heartbeat writer — the watchdog process writing its
+        // own "alive" heartbeats made main-process crash detection
+        // structurally dead in v0.6.5.
+        val processName = getProcessNameSafe()
+        if (processName != null && processName != packageName) {
+            super.onCreate()
+            android.util.Log.i(TAG,
+                "Secondary process '$processName' — minimal init (service only)")
+            return
+        }
+
         // Install the crash handler FIRST, before anything else can throw.
         installCrashHandler()
         super.onCreate()
 
-        // Load any pending hot-patches BEFORE app code runs. A patch .dex
-        // loaded here overrides buggy classes for the entire process lifetime.
-        // (Honest limitation: already-loaded classes can't be unloaded, so a
-        // newly-downloaded patch only takes effect after a restart. The
-        // watchdog orchestrates that restart.)
-        BootTracer.step(this, "hotpatch_load_begin")
-        val appliedPatches = runCatching { host.vorv.watchdog.HotPatcher.loadPendingPatches(this) }
-            .onFailure { BootTracer.step(this, "hotpatch_load_failed", it.message) }
-            .getOrDefault(emptyList())
-        BootTracer.step(this, "hotpatch_load_end", "applied=${appliedPatches.size}")
-
-        // Start breadcrumbs — every subsequent step gets traced.
+        // Start the breadcrumb trace BEFORE any step is written (audit L-7):
+        // the separator + BOOT_STARTED marker must open the new boot's
+        // section, so pre-init steps can't pollute the previous boot's
+        // trace and misclassify a healthy boot as a crash.
         BootTracer.start(this)
 
         BootTracer.step(this, "check_previous_boot")
@@ -90,7 +108,9 @@ class VorvApplication : Application() {
         }
 
         // Start the watchdog service in a separate process. It survives this
-        // process's crashes and orchestrates clean restarts.
+        // process's crashes and orchestrates clean restarts. MainActivity
+        // additionally BINDS to it so binder-death — not just a stale
+        // heartbeat — is a crash signal (audit H-1).
         BootTracer.step(this, "start_watchdog")
         runCatching {
             val intent = android.content.Intent(this, host.vorv.watchdog.WatchdogService::class.java)
@@ -98,8 +118,16 @@ class VorvApplication : Application() {
         }.onFailure { BootTracer.step(this, "start_watchdog_failed", it.message) }
 
         // Write initial heartbeat — the watchdog uses this to detect when
-        // this process dies (stale heartbeat = crash).
+        // this process dies (stale heartbeat = crash). Written ONLY by the
+        // main process now (audit H-1).
         host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "app_oncreate")
+
+        // NOTE (audit C-2): HotPatcher.loadPendingPatches() used to run here,
+        // loading every .dex in filesDir/hotpatch whose id appeared in
+        // applied.json — with NO verification when the manifest lacked an
+        // entry. Unsigned dex loading is removed from boot entirely; see
+        // HotPatcher for the fail-closed design if patching is ever enabled.
+        BootTracer.step(this, "hotpatch_boot_load_removed", "audit C-2")
 
         BootTracer.step(this, "init_prefs")
         prefs = VorvPrefs(this)
@@ -128,9 +156,16 @@ class VorvApplication : Application() {
         }
     }
 
+    /** Application.getProcessName() (API 28+; minSdk 31 makes it always available). */
+    private fun getProcessNameSafe(): String? =
+        runCatching { android.app.Application.getProcessName() }.getOrNull()
+
     /**
-     * Background thread that writes a heartbeat every 5s. The watchdog reads
-     * this to detect when this process has died (stale heartbeat = crash).
+     * Background thread that writes a heartbeat every 5s. MAIN PROCESS ONLY
+     * (audit H-1) — the watchdog reads this file to detect when the main
+     * process has died (stale heartbeat = crash). If the watchdog process
+     * wrote heartbeats too, the file would never go stale and crash
+     * detection would be structurally dead.
      */
     private var heartbeatThread: Thread? = null
     @Volatile private var heartbeatRunning = false

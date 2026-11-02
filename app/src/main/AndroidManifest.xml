@@ -5,7 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Audit L-9: AgentService is an LLM-inference (compute) workload, not
+         data sync. specialUse is the honest type for it; the subtype string
+         below documents the actual purpose as Android 14+ requires. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Required to be declarable so the user can grant it in Android Settings
          (Settings → Apps → Vorv → Permissions → Run commands in Termux).
@@ -20,9 +23,13 @@
         WAKE_LOCK              — WorkManager merges its own; app code never holds one.
     -->
 
+    <!-- Audit M-7: vorv.db (prompts, tool inputs/outputs, taught memories)
+         used to ride Android cloud backup and device transfer while
+         SECURITY.md promised data stays local. Local-first means local:
+         allowBackup=false keeps ALL app data on the device. -->
     <application
         android:name=".VorvApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -46,7 +53,11 @@
         <service
             android:name=".service.AgentService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="On-device LLM (NPU) inference while an agent task runs — a compute workload, not data synchronization" />
+        </service>
 
         <!--
           WatchdogService — runs in a SEPARATE PROCESS (":watchdog").

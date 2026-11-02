@@ -49,7 +49,7 @@ class ReminderWorker(
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .build()
-            nm.notify(System.currentTimeMillis().toInt(), notif)
+            nm.notify(NotificationIds.next(), notif)
             Result.success()
         } catch (e: Exception) {
             Result.failure()

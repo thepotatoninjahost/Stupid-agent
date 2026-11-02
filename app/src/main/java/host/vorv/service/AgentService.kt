@@ -61,7 +61,15 @@ class AgentService : Service() {
             ACTION_STOP -> { stopForeground(Service.STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY }
             else -> {
                 val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Vorv is thinking…"
-                startForeground(NOTIF_ID, buildNotification(title))
+                // Audit L-9: startForeground with the explicit SPECIAL_USE
+                // type on API 34+ (plain startForeground would default to
+                // the manifest type but Android 14+ wants it explicit when
+                // multiple types could apply; ServiceCompat handles both).
+                val type = if (Build.VERSION.SDK_INT >= 34) {
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else 0
+                androidx.core.app.ServiceCompat.startForeground(
+                    this, NOTIF_ID, buildNotification(title), type)
             }
         }
         return START_STICKY

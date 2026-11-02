@@ -1,3 +1,145 @@
+# Changelog — v0.6.6 "Audit Remediation Round 2"
+
+This release fixes ALL 27 findings from the second comprehensive security &
+code-quality audit (report VRA-2026-1102: 2 critical, 5 high, 10 medium,
+10 low). Every fix below is in code; the Python sandbox self-test grew
+direct-attack regression cases for C-1 and runs in CI as before.
+
+Severity legend: C = Critical, H = High, M = Medium, L = Low.
+
+---
+
+## Critical
+
+### C-1 — python_exec sandbox was escapable (direct attribute syntax + module leaks)
+**Was:** the dunder guard only wrapped the `getattr()` BUILTIN; `x.__class__` / `f.__globals__` attribute syntax never routed through it. `uuid` in the import whitelist leaked `os`/`sys` via `uuid.uuid4.__globals__`; `sys.modules` was readable, the whitelist self-modifiable, threads spawnable untraced, the meta_path finder removable. All six PoC escapes ran with `ok=True`.
+**Now:** `vorv_runner.py` rebuilt around an AST-level attribute guard:
+- user code is PARSED AND REWRITTEN — every attribute read/write/delete routes through guarded helpers; every `from X import y` too (star and relative imports refused);
+- ALL dunder attribute names are blocked statically in ANY syntax position, plus reflection routes invisible to Python-level guards (`str.format`/`format_map`, frame/coroutine internals);
+- any attribute whose VALUE is a module outside the whitelist is refused (kills `re.enum` → `enum.sys` chains);
+- module objects are read-only (no poisoning module state across runs);
+- `uuid`, `random`, `statistics` removed from the whitelist (they import os/sys transitively); safe runner-implemented `uuid4()`, `randint()`, `random_float()` builtins provided instead;
+- the exposed `getattr`/`setattr`/`delattr` ARE the guarded functions — shadowing them with each other gains nothing.
+**Verified:** the original 6-step PoC now refuses every step (`ok=False`); 90+ self-test assertions pass including new direct-syntax, format-string, module-hop, shadowing and poisoning regression cases.
+**Files:** `app/src/main/python/vorv_runner.py`, `app/src/main/python/test_vorv_sandbox.py`, `app/src/main/java/host/vorv/tools/PythonExecTool.kt`
+
+### C-2 — HotPatcher loaded unsigned .dex (and none at all when the manifest entry was missing)
+**Was:** every boot, `loadPendingPatches()` loaded each .dex in `filesDir/hotpatch/` listed in `applied.json`, verifying only a SHA-256 from a manifest in the SAME directory — and when the manifest had NO entry for a patch, it loaded it UNVERIFIED. `fetchManifest` accepted any URL. HealingAgent compiled untrusted LLM output into .dex and registered it into this path.
+**Now:** fail-closed by design:
+- NO loading at boot at all — the `loadPendingPatches` call is removed from `VorvApplication.onCreate`;
+- the hardened loader (kept for the day signed patching is enabled) refuses AND DELETES any dex lacking a manifest entry, sha256, or a valid **Ed25519 signature over the dex bytes verified against a public key compiled into the app** (API 33+); with no key pinned it refuses everything;
+- `fetchManifest` accepts only HTTPS on an allow-listed host (empty allow-list by default);
+- `markPendingApply` is gone — nothing feeds the pipeline;
+- the false "patches are signed (SHA-256 verified)" doc claim is corrected (a hash is not a signature), and the never-implemented class-override claim/pendingLoaders list is removed.
+**Files:** `watchdog/HotPatcher.kt`, `VorvApplication.kt`, `healer/HealingAgent.kt`
+
+---
+
+## High
+
+### H-1 — watchdog crash detection was structurally dead
+**Was:** `VorvApplication.onCreate` ran in BOTH processes; the watchdog process wrote its own "alive" heartbeats (so the heartbeat never went stale), opened the DB, built a ModelRepository, and even `startService`d the watchdog from inside the watchdog. The documented bindService-based binder-death signal did not exist anywhere.
+**Now:** a process guard in `VorvApplication` (API-28+ `getProcessName`) gives the `:watchdog` process a minimal init (service only); heartbeats are written exclusively by the main process; **MainActivity now binds to WatchdogService** so binder death — verified against `isMainProcessRunning()` — is the primary crash signal, with the (now meaningful) stale heartbeat as fallback; duplicate crash handling is guarded.
+**Files:** `VorvApplication.kt`, `watchdog/WatchdogService.kt`, `MainActivity.kt`
+
+### H-2 — shell executed arbitrary bash with no user consent
+**Was:** `ShellTool` dispatched any command to Termux after setup checks only — a weaker bar than `app_intent`'s confirmation for merely opening a URL.
+**Now:** every shell invocation goes through the same consent bridge (`ctx.confirm`) with the command text (first 8 lines + overflow note) in the dialog; fail-closed when the bridge is absent; denials reported to the model as honest failures. Timeout raised to cover dialog + execution.
+**File:** `tools/SystemTools.kt`
+
+### H-3 — browser_automate validated only the initial URL
+**Was:** redirects and JS navigation bypassed the private-network guard entirely — the WebView followed a public URL's 302 to `192.168.1.1` and the agent could read the page back.
+**Now:** a `GuardWebClient` installed for the WebView's LIFETIME (the old `loadPage` used to replace the client on every load, which would have thrown the guard away) host-checks EVERY navigation in `shouldOverrideUrlLoading` AND `doUpdateVisitedHistory`; blocked navigations stop the load and are reported honestly in the tool output.
+**File:** `tools/BrowserAutomateTool.kt`
+
+### H-4 — the self-heal compile pipeline could never work on a stock device
+**Was:** compileToDex passed `/data/data/host.vorv/...` paths to Termux (different UID — can't read script/source/classpath, can't write outputs); the `APP_CLASSES_JAR` classpath entry never existed; every compile timed out after 90s × 3 retries; the output round-trip path was unreachable under scoped storage.
+**Now:** the on-device compile step is GONE. `HealingAgent` is a diagnostics-only bundle generator: crash identification, bundled-source lookup, an on-device LLM analysis (unverified suggestion, clearly labeled), all written to `healer/diag_<ts>/`. It runs in the restarted MAIN process on explicit user request ("Analyze crash" in the crash dialog), never compiles, never patches. Dead references deleted.
+**Files:** `healer/HealingAgent.kt`, `watchdog/WatchdogService.kt`, `MainActivity.kt`
+
+### H-5 — the bundled source tree (assets/source) was stale
+**Was:** two files had drifted from the compiled tree — the healer would prompt against source that no longer matched the running binary.
+**Now:** a Gradle `Sync` task (`syncSourceMirror`) mirrors `src/main/java` into `src/main/assets/source` before every build, making drift structurally impossible; the mirror is regenerated in this release.
+**Files:** `app/build.gradle.kts`, `app/src/main/assets/source/**`
+
+---
+
+## Medium
+
+### M-1 — DNS-rebinding TOCTOU in browser_automate
+All GET traffic (top frame + subresources) is now proxied through OkHttp wired to `NetworkGuard.PublicDns`, which re-resolves and validates every hop INCLUDING redirects at connect time. Non-GET requests cannot be proxied (Android does not expose request bodies to `shouldInterceptRequest`) and are covered by the navigation-level checks; the residual is documented in SECURITY.md. (`tools/BrowserAutomateTool.kt`)
+
+### M-2 — local-mode conversations grew without bound against a 4096-token context
+The kernel now estimates the prompt per iteration against `Llm.contextTokenBudget` (local: 1800 tokens — honest arithmetic for nCtx 4096 minus the 2048-token generation reserve; cloud: 100k) and compacts older tool results into short digests (full outputs remain in the Tasks tab) in protocol-safe units. When compaction can't free enough space it stops with an honest "context window exhausted at iteration N" instead of silent truncation; engine errors on over-budget prompts are reported as exhaustion. (`kernel/CognitiveKernel.kt`, `llm/Llm.kt`, `llm/LocalLlm.kt`)
+
+### M-3 — Rhino pinned to the CVE-2025-66453 version
+Bumped `org.mozilla:rhino` 1.7.15 → **1.7.15.1**. (`gradle/libs.versions.toml`)
+
+### M-4 — "Clear ALL data" left things behind
+It now also cancels every scheduled reminder (WorkManager unique work + registry), deletes `cacheDir/tool_outputs`, purges `crash_logs/`, `watchdog/`, `healer/` diagnostics and leftover `hotpatch/` files. The dialog says the API key and settings are kept. (`AgentViewModel.kt`, `tools/ScheduleTool.kt`)
+
+### M-5 — file_read buffered the entire file before its 50 KB cap
+Now stream-reads at most 200 KB of bytes (cap × 4 UTF-8 safety) before decoding and truncating to 50 000 chars. (`tools/FileTools.kt`)
+
+### M-6 — web_fetch decoded UTF-8 per 16 KB chunk (mojibake at boundaries)
+Bytes are now accumulated under the cap and decoded ONCE. (`tools/WebTools.kt`)
+
+### M-7 — vorv.db rode Android cloud backup while SECURITY.md said "local"
+`allowBackup=false` + empty backup/data-extraction rules: NO app data (prompts, tool logs, memories) leaves the device via Auto Backup or device transfer. SECURITY.md's data section now states this explicitly. (`AndroidManifest.xml`, `res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`, `SECURITY.md`)
+
+### M-8 — self-heal ran runBlocking on the watchdog's heartbeat thread
+The watchdog never loads the LLM anymore — crash analysis moved to the restarted main process behind an explicit user action (see H-4). (`watchdog/WatchdogService.kt`)
+
+### M-9 — schedule: enqueue and registry were not atomic
+Registration now happens FIRST (where the 20-entry cap throws), the WorkManager enqueue follows, and a failed enqueue rolls the registry entry back. `schedule_cancel` also cancels the work of EXPIRED entries, which used to be silently dropped from the registry while their (doze-delayed) reminder could still fire. (`tools/ScheduleTool.kt`)
+
+### M-10 — crash-report filenames collided at one-second resolution
+Filenames now carry milliseconds + pid (`crash_<ts>_pid<N>.txt`). (`CrashReportWorker.kt`)
+
+---
+
+## Low
+
+### L-1 — Gradle wrapper scripts and jar not committed
+`gradlew`, `gradlew.bat` and `gradle-wrapper.jar` are committed (official Gradle 8.9 artifacts), and `distributionSha256Sum` is pinned in `gradle-wrapper.properties` so a tampered distribution is refused. Fresh clones build per README.
+
+### L-2 — DEVELOPMENT.md instructed committing Room schemas while exportSchema = false
+Docs now describe the actual decision: exportSchema deliberately off (flaky KSP export path in clean CI), `MigrationTest` builds v1 by DDL and runs `MIGRATION_1_2` directly.
+
+### L-3 — CI published releases tagged v0.6.0-<sha> while the app was 0.6.5
+The publish job now derives the tag from `versionName` in `app/build.gradle.kts` (with a hard error if unreadable). (`.github/workflows/build.yml`)
+
+### L-4 — NetworkGuard missed carrier-grade NAT space
+`100.64.0.0/10` is blocked (with tests for both the blocked span and the public 100.63/100.128 edges). (`tools/NetworkGuard.kt`)
+
+### L-5 — JsExecTool shared one mutable WatchdogFactory across evaluations
+A fresh factory per evaluation; no cross-run deadline/abort interference. (`tools/JsExecTool.kt`)
+
+### L-6 — file_write colliding with a directory created "(1)" duplicates
+Colliding with an existing DIRECTORY is now an explicit error telling the model to pick another name. (`tools/FileTools.kt`)
+
+### L-7 — BootTracer misclassified crashes that happened before start()
+`BootTracer.start()` (separator + BOOT_STARTED) now runs FIRST in `VorvApplication.onCreate`, so no breadcrumb can ever land in the previous boot's section. (`VorvApplication.kt`)
+
+### L-8 — parseLiteral did a DNS lookup for non-literal hosts
+Literal detection is now syntactic (strict dotted-quad / hex-colon shape); `InetAddress.getByName` is only called for genuine literals. Comment corrected. (`tools/NetworkGuard.kt`)
+
+### L-9 — AgentService declared foregroundServiceType=dataSync for a compute workload
+Changed to `specialUse` with the `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` property documenting the LLM-inference purpose; `startForeground` passes the explicit type on API 34+. (`AndroidManifest.xml`, `service/AgentService.kt`)
+
+### L-10 — notification IDs derived from a truncated timestamp could collide
+A shared `NotificationIds` counter (AtomicInteger, random seed, monotonic) is used by `notify` and reminder notifications. (`tools/SystemTools.kt`, `tools/ReminderWorker.kt`)
+
+---
+
+## Also in this release
+
+- Version bumped to **0.6.6 (versionCode 15)**.
+- SECURITY.md rewritten for the new sandbox architecture, the shell consent gate, the browser guard (incl. the residual non-GET rebinding window), the backup posture (nothing leaves the device), and the de-scoped hot-patch feature.
+- README safety table and setup copy updated to match the new behavior.
+
+---
+
 # Changelog — v0.6.0 "Full Remediation"
 
 This release implements every finding from the forensic audit (44 findings:

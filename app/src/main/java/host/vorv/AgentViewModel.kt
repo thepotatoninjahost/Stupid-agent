@@ -544,18 +544,51 @@ class AgentViewModel(
     }
 
     /**
-     * Clear ALL data (audit privacy section): wipes every table. The
-     * confirmation goes through the same consent bridge the tools use.
+     * Clear ALL data (audit privacy section, completed for audit M-4):
+     * wipes every table AND everything the tables reference —
+     *  - all scheduled reminders (WorkManager unique work + registry),
+     *  - tool-output files under cacheDir/tool_outputs,
+     *  - crash logs, watchdog reports and healer diagnostic bundles,
+     *  - any leftover hot-patch files.
+     * The API key and settings (workspace, LLM mode) are KEPT — they are
+     * user settings, not agent data — and the dialog says so.
      */
     fun clearAllData() {
         if (_state.value.busy) return
         viewModelScope.launch(Dispatchers.IO) {
             val allowed = requestConfirmation(
-                "Delete ALL Vorv data — every memory, task, tool-call log and skill stat? " +
-                "This cannot be undone."
+                "Delete ALL Vorv data — every memory, task, tool-call log and skill stat, " +
+                "all scheduled reminders, tool-output files and crash diagnostics? " +
+                "This cannot be undone. Your API key and settings are kept."
             )
             if (!allowed) return@launch
+
+            // Scheduled reminders: cancel every WorkManager request via its
+            // unique name, then empty the registry (audit M-4 — these used
+            // to survive the wipe and could still fire).
+            runCatching {
+                val wm = androidx.work.WorkManager.getInstance(appContext)
+                reminderRegistry.allEntries().forEach { wm.cancelUniqueWork(it.name) }
+            }.onFailure { android.util.Log.w("Vorv/ViewModel", "reminder cancel failed: ${it.message}") }
+            runCatching { prefs.setScheduledReminders("[]") }
+
             withContext(Dispatchers.IO) { db.clearAllTables() }
+
+            // Tool-output files persisted by the kernel (M-7 full outputs).
+            runCatching { outputDir.deleteRecursively() }
+
+            // Crash logs, watchdog reports, healer diagnostic bundles.
+            runCatching {
+                val ext = appContext.getExternalFilesDir(null) ?: return@runCatching
+                listOf("crash_logs", "watchdog", "healer").forEach { dir ->
+                    java.io.File(ext, dir).deleteRecursively()
+                }
+            }
+
+            // Any leftover hot-patch files (audit C-2 — never loaded, but
+            // "clear ALL data" should mean all of it).
+            runCatching { java.io.File(appContext.filesDir, "hotpatch").deleteRecursively() }
+
             db.episodeDao().insert(Episode(kind = "boot", summary = "All data cleared by user"))
         }
     }

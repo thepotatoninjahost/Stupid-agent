@@ -37,9 +37,11 @@ class CrashReportWorker(
             val stackTrace = inputData.getString(KEY_STACK_TRACE) ?: ""
             val crashNumber = inputData.getInt(KEY_CRASH_NUMBER, 0)
 
-            val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+            // Audit M-10: second-resolution filenames made two crashes in the
+            // same second overwrite each other. Milliseconds + pid are unique.
+            val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(Date())
             val crashDir = File(applicationContext.getExternalFilesDir(null), "crash_logs").apply { mkdirs() }
-            val crashFile = File(crashDir, "crash_${timestamp}.txt")
+            val crashFile = File(crashDir, "crash_${timestamp}_pid${android.os.Process.myPid()}.txt")
 
             val sb = StringBuilder()
             sb.appendLine("========================================")

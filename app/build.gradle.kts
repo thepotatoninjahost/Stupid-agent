@@ -14,8 +14,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.5"
+        versionCode = 15
+        versionName = "0.6.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -80,6 +80,25 @@ android {
         // time so the model manager can find them at runtime. Verified pattern
         // from Qualcomm's official geniex_chat_android sample (build.gradle line 41).
         jniLibs { useLegacyPackaging = true }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bundled source mirror (audit H-5): assets/source is what the healer's
+// crash analysis reads, and it drifted from the compiled tree (two stale
+// files at audit time). This Sync task runs before every build and makes
+// drift structurally impossible — the mirror is always exactly src/main/java.
+// ---------------------------------------------------------------------------
+val syncSourceMirror = tasks.register<Sync>("syncSourceMirror") {
+    group = "vorv"
+    description = "Mirrors src/main/java into src/main/assets/source (healer reads it)."
+    from("src/main/java")
+    into("src/main/assets/source")
+}
+
+afterEvaluate {
+    tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn(syncSourceMirror)
     }
 }
 
