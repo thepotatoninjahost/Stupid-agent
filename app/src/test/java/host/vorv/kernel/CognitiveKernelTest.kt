@@ -381,5 +381,99 @@ class CognitiveKernelTest {
         assertTrue(systemMsg.content.contains("UNTRUSTED DATA"))
         assertTrue(systemMsg.content.contains("- alpha:"))
         assertTrue(systemMsg.content.contains("confirmation"))
+        // v0.6.13: the act-don't-advise rule is part of the standing prompt.
+        assertTrue(systemMsg.content.contains("code block is NOT doing it"))
+    }
+
+    // ------------------------------------------------ nudge (v0.6.13):
+    // local coder models sometimes PROPOSE commands in a code block instead
+    // of CALLING the tool. The kernel must correct that ONCE, and only when
+    // nothing has been executed yet.
+
+    @Test
+    fun `bash-block answer with no tool call gets one nudge then the tool call runs`() = runTest {
+        val sink = FakeSink()
+        val executed = mutableListOf<String>()
+        val tool = FakeTool("shell", onRun = { executed.add(it.toString()) })
+        val llm = FakeLlm(listOf(
+            // The exact failure from the user's screenshot: advice + ```bash,
+            // no tool call.
+            Llm.LlmResponse.Text(
+                "You can run:\n```bash\npkg update && pkg upgrade\npkg install git\n```",
+                done = true,
+            ),
+            // After the nudge the model does the right thing.
+            toolUse("shell", """{"x":"pkg update"}"""),
+            Llm.LlmResponse.Text("Installed. [cite:exec:shell]", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "install packages", llm, null)
+
+        assertTrue(result.ok)
+        assertEquals(1, result.toolCalls)
+        assertEquals(1, executed.size)
+        // The nudge episode is logged for the verifiable record.
+        assertTrue(sink.episodes.any { it.first == "nudge" && it.second == "code-block-without-tool-call" })
+        // The corrective message was actually sent to the model.
+        assertEquals(3, llm.steps.size)
+        val lastStep = llm.steps.last()
+        assertTrue(lastStep.any { it.role == "user" && it.content.contains("no tool call") })
+        // The final answer is cited (a tool really ran).
+        assertFalse(result.answer.startsWith("[uncited]"))
+    }
+
+    @Test
+    fun `nudge fires at most once — a second code-block answer is delivered as final`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(
+            Llm.LlmResponse.Text("```bash\npkg update\n```", done = true),
+            Llm.LlmResponse.Text("```bash\npkg update\n```", done = true),
+        ))
+        val result = kernel(sink, emptyList()).run("t1", "q", llm, null)
+
+        // No infinite nudge loop: exactly one nudge, then the answer.
+        assertEquals(2, llm.steps.size)
+        assertTrue(result.ok)
+        assertTrue(result.answer.startsWith("[uncited]"))
+        assertEquals(1, sink.episodes.count { it.first == "nudge" })
+    }
+
+    @Test
+    fun `no nudge when a tool already ran — code in the final summary is legitimate`() = runTest {
+        val sink = FakeSink()
+        val tool = FakeTool("shell")
+        val llm = FakeLlm(listOf(
+            toolUse("shell", """{"x":"ls"}"""),
+            // Final answer after the tool ran, quoting what it did.
+            Llm.LlmResponse.Text("Ran it. For reference: ```bash\nls\n```", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertEquals(2, llm.steps.size)
+        assertTrue(sink.episodes.none { it.first == "nudge" })
+        assertTrue(result.ok)
+    }
+
+    @Test
+    fun `no nudge for a plain text answer without code blocks`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("Just an answer.", done = true)))
+        kernel(sink, emptyList()).run("t1", "q", llm, null)
+
+        assertEquals(1, llm.steps.size)
+        assertTrue(sink.episodes.none { it.first == "nudge" })
+    }
+
+    @Test
+    fun `python code block also triggers the nudge`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(
+            Llm.LlmResponse.Text("```python\nprint('hi')\n```", done = true),
+            Llm.LlmResponse.Text("Final advice, no code.", done = true),
+        ))
+        val result = kernel(sink, emptyList()).run("t1", "q", llm, null)
+
+        assertEquals(2, llm.steps.size)
+        assertEquals(1, sink.episodes.count { it.first == "nudge" })
+        assertTrue(result.ok)
     }
 }

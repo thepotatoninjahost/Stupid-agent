@@ -1,3 +1,40 @@
+# Changelog — v0.6.13 "Act, Don't Advise"
+
+Found in real-world testing: asked to "use termux to install all the
+packages you need", the local model (Qwen2.5-Coder-7B) replied with a
+bash code block of suggested commands — ADVICE — instead of calling the
+shell tool. Nothing ran; the honesty system flagged the answer
+"uncited — no tool evidence" (that part worked exactly as designed).
+But the agent still wasn't ACTING. Two fixes:
+
+## The nudge: one correction when the model advises instead of acting
+
+- When the model's answer contains runnable commands (a ```bash or
+  ```python block) but it made NO tool call and NOTHING has been
+  executed yet, the kernel sends it ONE corrective message: if the user
+  asked you to PERFORM these actions, call the matching tool now (shell
+  / python_exec); if the user only wanted advice, restate the final
+  answer without runnable code blocks. Then the loop continues.
+- The nudge never executes anything itself. Every execution still goes
+  through the consent dialog — unchanged.
+- At most ONE nudge per task (no loops burning slow on-device inference),
+  and never after a tool already ran (quoting commands in a final
+  summary is legitimate). Pinned by six new CognitiveKernelTest cases.
+- Each nudge is logged as a "nudge" episode in the task's verifiable
+  record.
+
+## The standing rule: act-don't-advise in the system prompt
+
+- New HARD RULE 9 in the kernel's system prompt: when the user asks you
+  to DO something on this device, you MUST call a tool to actually do
+  it — writing commands in a code block is NOT doing it.
+
+## Version
+
+- `versionCode` 21 → 22, `versionName` 0.6.12 → 0.6.13.
+
+---
+
 # Changelog — v0.6.12 "Show Me Everything, Part 2"
 
 One more truncation was hiding in a place the v0.6.11 sweep missed:
