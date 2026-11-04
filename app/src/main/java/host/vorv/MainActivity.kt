@@ -292,23 +292,26 @@ class MainActivity : ComponentActivity() {
      * The consent dialog for a patch proposal (audit C-2). The deferred is
      * local — the dialog answers it; nothing needs a field (audit N-L3,
      * VRA-2026-1103: the old patchConsent field was assigned but never read).
+     *
+     * N-I4: the body SCROLLS and the text is SELECTABLE, so the complete
+     * message is readable and independently checkable (copy the SHA-256,
+     * verify it yourself) at ANY length — length is never a reason to cut
+     * anything.
      */
     private suspend fun requestPatchConsent(proposal: PatchProposal): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         runOnUiThread {
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            val body = android.widget.TextView(this).apply {
+                text = buildPatchConsentMessage(proposal)
+                textSize = 13f
+                setTextIsSelectable(true)
+                setPadding(pad, pad, pad, pad)
+            }
+            val scroll = android.widget.ScrollView(this).apply { addView(body) }
             android.app.AlertDialog.Builder(this)
                 .setTitle("Apply self-repair patch?")
-                .setMessage(buildString {
-                    appendLine("Class: ${proposal.targetClass}")
-                    appendLine("Patch: ${proposal.patchId}")
-                    appendLine("SHA-256: ${proposal.sha256.take(16)}…")
-                    appendLine("Verified: ${if (proposal.surfaceVerified) "full public API kept" else "NOT verified"}")
-                    appendLine()
-                    appendLine(proposal.description.take(400))
-                    appendLine()
-                    append("APPROVE = replaces the class at the next app start. ")
-                    append("DENY = nothing changes. A crash in the patched class within 72h rolls it back automatically.")
-                })
+                .setView(scroll)
                 .setPositiveButton("Approve") { _, _ -> deferred.complete(true) }
                 .setNegativeButton("Deny") { _, _ -> deferred.complete(false) }
                 .setOnCancelListener { deferred.complete(false) }
@@ -479,6 +482,25 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "Vorv/MainActivity"
+
+        /**
+         * The crash-repair patch consent text (audit C-2; VRA-2026-1103
+         * N-I4 follow-up: the COMPLETE 64-char SHA-256 and the COMPLETE
+         * description are shown — never a 16-char prefix, never a 400-char
+         * cap, no ellipsis). Pinned by ConsentPromptTest.
+         */
+        internal fun buildPatchConsentMessage(p: PatchProposal): String = buildString {
+            appendLine("Vorv wants to apply a self-repair patch:")
+            appendLine("• Class: ${p.targetClass}")
+            appendLine("• Patch: ${p.patchId}")
+            appendLine("• SHA-256: ${p.sha256}")
+            appendLine("• Verified: ${if (p.surfaceVerified) "full public API kept" else "NOT verified"}")
+            appendLine()
+            appendLine(p.description)
+            appendLine()
+            append("APPROVE = the patched class replaces the original at the next app start. ")
+            append("DENY = nothing changes. A crash in the patched class within 72h rolls it back automatically.")
+        }
     }
 }
 

@@ -14,3 +14,4 @@ local.properties
 
 # Module build output (audit hygiene — was missing; build/ artifacts must never be committed)
 /app/build/
+.kotlin/

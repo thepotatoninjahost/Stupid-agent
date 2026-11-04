@@ -1,3 +1,33 @@
+# Changelog — v0.6.12 "Show Me Everything, Part 2"
+
+One more truncation was hiding in a place the v0.6.11 sweep missed:
+the crash-repair patch dialog. It is now gone. Every approval surface in
+the app — all five — now shows the complete, exact content, and the rule
+is pinned by tests.
+
+## The crash-repair patch dialog now shows everything
+
+- The "Apply self-repair patch?" dialog (shown when you tap Self-repair
+  after a crash) used to cut the SHA-256 to a 16-character prefix and the
+  patch description to 400 characters. It now shows the COMPLETE
+  64-character SHA-256 and the COMPLETE description — no prefix, no cap,
+  no ellipsis. (`MainActivity.kt`)
+- The dialog body now SCROLLS, so any length is fully readable, and the
+  text is SELECTABLE — you can long-press, copy the hash, and verify it
+  yourself outside the app. Length is never a reason to cut anything.
+- The exact consequences of APPROVE and DENY (apply at next start /
+  nothing changes / 72h auto-rollback) are stated in the dialog itself.
+- **Pinned by tests**: `ConsentPromptTest` now covers all FIVE approval
+  surfaces — shell, python_exec, app_intent (share + view/dial), the
+  in-chat self_fix patch consent, and the crash-repair patch dialog —
+  each asserting the complete content appears and no ellipsis does.
+
+## Version
+
+- `versionCode` 20 → 21, `versionName` 0.6.11 → 0.6.12.
+
+---
+
 # Changelog — v0.6.11 "Show Me Everything"
 
 Resolves the two judgment calls the VRA-2026-1103 audit left to the

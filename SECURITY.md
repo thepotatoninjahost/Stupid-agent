@@ -31,17 +31,20 @@ Therefore every tool treats its input as hostile data. The defense is layered:
    effects routes through the Allow/Deny consent bridge. That is `app_intent`
    (all four actions), `shell` (the complete command text is shown in the
    dialog), `python_exec` (first execution per task; the complete program is
-   shown), and every `self_fix` patch (patch id, target class, the full
-   SHA-256 and verification status are shown before anything is
-   registered). A denied confirmation is reported back to the model as a
+   shown), and every self-repair patch — on BOTH approval surfaces: the
+   in-chat `self_fix` consent and the crash-repair dialog (patch id, target
+   class, the full SHA-256 and verification status are shown before anything
+   is registered). A denied confirmation is reported back to the model as a
    failure — the model cannot retry its way around the user.
 
-   **A consent prompt is never truncated.** The complete, exact content the
-   model wants to run is always shown in full — every line of a shell
-   command, the whole Python program, the whole share text, the whole
-   64-character patch hash. The dialog scrolls, so length is never a
-   reason to cut anything off. If a prompt ever shows you less than
-   everything, treat that as a bug and report it.
+   **A consent prompt is never truncated — on any of the five approval
+   surfaces.** The complete, exact content the model wants to run is always
+   shown in full — every line of a shell command, the whole Python program,
+   the whole share text, the whole 64-character patch hash, the whole patch
+   description. The dialogs scroll (and the patch dialog's text is
+   selectable, so the hash can be copied and verified outside the app), so
+   length is never a reason to cut anything off. If a prompt ever shows you
+   less than everything, treat that as a bug and report it.
 
 4. **Egress control (network tools):** `web_fetch` resolves through an OkHttp
    `Dns` implementation that refuses loopback, link-local, site-local,

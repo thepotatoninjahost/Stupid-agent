@@ -1,6 +1,8 @@
 package host.vorv.tools
 
 import com.google.gson.JsonObject
+import host.vorv.MainActivity
+import host.vorv.healer.PatchProposal
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -134,5 +136,45 @@ class ConsentPromptTest {
         )
         assertFalse(rView.ok)
         assertTrue(rView.error!!.contains("DENIED"))
+    }
+
+    // --------------------------- crash-repair patch dialog (MainActivity path)
+
+    /**
+     * The FIFTH approval surface: the crash-repair "Apply self-repair
+     * patch?" dialog in MainActivity (v0.6.12). The old dialog cut the
+     * SHA-256 to a 16-char prefix and the description to 400 chars — the
+     * last truncation left in any approval path. Now the complete hash,
+     * the complete description, and the exact APPROVE/DENY consequences
+     * are shown, and the dialog itself scrolls with selectable text.
+     */
+    @Test
+    fun `crash-repair patch consent shows the full SHA-256 and complete description`() {
+        val sha = "a1b2c3d4".repeat(8) // 64 hex chars — the old code showed only the first 16
+        val longDescription = (1..80).joinToString(" ") {
+            "Sentence $it of a deliberately long patch description with a tail marker TAIL-$it."
+        } // ~4.5k chars — far beyond the old 400-char cap
+        val proposal = PatchProposal(
+            patchId = "fix_20260101_000000_deadbeef",
+            targetClass = "host.vorv.tools.ShellTool",
+            description = longDescription,
+            sha256 = sha,
+            signature = "test-signature",
+            surfaceVerified = false,
+            attempts = 3,
+        )
+        val msg = MainActivity.buildPatchConsentMessage(proposal)
+        // The COMPLETE 64-char hash — never a 16-char prefix with an ellipsis.
+        assertTrue("the complete 64-char SHA-256 must be shown", msg.contains(sha))
+        // The COMPLETE description — never capped at 400 chars.
+        assertTrue("the complete description must be shown verbatim", msg.contains(longDescription))
+        assertTrue("the description tail must survive the old 400-char cap", msg.contains("TAIL-80."))
+        // No truncation notices anywhere.
+        assertFalse("no ellipsis character", msg.contains("…"))
+        // The honest verification status is part of what the user sees.
+        assertTrue("verification status must be stated", msg.contains("NOT verified"))
+        // What APPROVE and DENY actually do must be stated in full.
+        assertTrue("consequences of APPROVE must be stated", msg.contains("APPROVE ="))
+        assertTrue("consequences of DENY must be stated", msg.contains("DENY ="))
     }
 }
