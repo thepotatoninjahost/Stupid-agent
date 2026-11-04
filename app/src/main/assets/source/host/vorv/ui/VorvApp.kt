@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -27,8 +28,17 @@ import host.vorv.ui.screen.ToolsScreen
 import host.vorv.ui.screen.FilesScreen
 import host.vorv.ui.screen.SettingsScreen
 
+/**
+ * [onRequestPermission] launches Android's runtime permission dialog for a
+ * tool-driven request (v0.6.14) — provided by MainActivity, which owns the
+ * ActivityResultLauncher; the result returns through
+ * [AgentViewModel.respondPermissionRequest].
+ */
 @Composable
-fun VorvApp(vm: AgentViewModel) {
+fun VorvApp(
+    vm: AgentViewModel,
+    onRequestPermission: (String) -> Unit = {},
+) {
     val state by vm.state.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
@@ -41,7 +51,20 @@ fun VorvApp(vm: AgentViewModel) {
                     "memory" -> MemoryScreen(state, vm::teach)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
-                    "settings" -> SettingsScreen(state, vm::setApiKey, vm::setLlmMode, vm::setLocalModel, vm::downloadLocalModel, vm::deleteLocalModel, vm::clearSetupError, vm::clearAllData)
+                    "settings" -> SettingsScreen(
+                        state,
+                        vm::setApiKey,
+                        vm::setLlmMode,
+                        vm::setLocalModel,
+                        vm::downloadLocalModel,
+                        vm::deleteLocalModel,
+                        vm::clearSetupError,
+                        vm::clearAllData,
+                        onGrantTermuxPermission = vm::grantTermuxPermission,
+                        onOpenAppSettings = vm::openAppSettings,
+                        onTestTermuxConnection = vm::testTermuxConnection,
+                        onRefreshTermuxStatus = vm::refreshTermuxStatus,
+                    )
                 }
             }
             BottomNav(
@@ -79,6 +102,15 @@ fun VorvApp(vm: AgentViewModel) {
                 }
             },
         )
+    }
+
+    // ---- Tool-driven runtime permission dialog (v0.6.14): when a tool
+    //      hits the Termux RUN_COMMAND wall, ask Android for the grant with
+    //      the standard one-tap system dialog. ----
+    state.pendingPermissionRequest?.let { pending ->
+        LaunchedEffect(pending.id) {
+            onRequestPermission(pending.permission)
+        }
     }
 
     // ---- Full-output viewer (audit M-7) ----

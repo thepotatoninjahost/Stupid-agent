@@ -161,6 +161,37 @@ class SelfFixTool(
             )
         }
 
+        // v0.6.14: Termux readiness BEFORE the expensive pipeline. The
+        // compile round-trips through Termux; discovering a missing
+        // permission 10 minutes into a 15-minute heal (after the model
+        // already wrote the patch) wasted the whole budget. Check now,
+        // offer the one-tap grant (Termux declares RUN_COMMAND
+        // protectionLevel="dangerous" — runtime-requestable), and fail
+        // fast and honestly when it still isn't there.
+        val readiness = TermuxProbe.readinessError(
+            termuxInstalled = TermuxProbe.termuxInstalled(appContext),
+            permissionGranted = TermuxProbe.runCommandGranted(appContext),
+        )
+        if (readiness != null) {
+            // The permission is the only wall with a one-tap door — try it.
+            if (!TermuxProbe.runCommandGranted(appContext) &&
+                TermuxProbe.termuxInstalled(appContext)
+            ) {
+                PermissionBridge.request(TermuxProbe.RUN_COMMAND_PERMISSION)
+                val retry = TermuxProbe.readinessError(
+                    termuxInstalled = true,
+                    permissionGranted = TermuxProbe.runCommandGranted(appContext),
+                )
+                if (retry == null) {
+                    // Granted — fall through to the pipeline.
+                } else {
+                    return ToolResult(ok = false, output = "", durationMs = elapsed(t0), error = retry)
+                }
+            } else {
+                return ToolResult(ok = false, output = "", durationMs = elapsed(t0), error = readiness)
+            }
+        }
+
         val llm = LocalLlm(
             appContext,
             repairModel,

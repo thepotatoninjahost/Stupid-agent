@@ -383,6 +383,11 @@ class CognitiveKernelTest {
         assertTrue(systemMsg.content.contains("confirmation"))
         // v0.6.13: the act-don't-advise rule is part of the standing prompt.
         assertTrue(systemMsg.content.contains("code block is NOT doing it"))
+        // v0.6.14: raw tool output/JSON must never be pasted into the
+        // user-facing answer (field finding: the model quoted
+        // {"ok":true,"output":"No memories matched..."} verbatim in chat).
+        assertTrue(systemMsg.content.contains("Never paste raw tool"))
+        assertTrue(systemMsg.content.contains("plain English"))
     }
 
     // ------------------------------------------------ nudge (v0.6.13):

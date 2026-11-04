@@ -26,6 +26,10 @@ fun SettingsScreen(
     onDeleteModel: (ModelChoice) -> Unit,
     onClearSetupError: () -> Unit = {},
     onClearAllData: () -> Unit = {},
+    onGrantTermuxPermission: () -> Unit = {},
+    onOpenAppSettings: () -> Unit = {},
+    onTestTermuxConnection: () -> Unit = {},
+    onRefreshTermuxStatus: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -222,6 +226,94 @@ fun SettingsScreen(
         if (state.hasApiKey) {
             Surface(shape = RoundedCornerShape(10.dp), color = Success.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
                 Text("✓ API key set — cloud mode available", color = Success, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
+            }
+        }
+
+        // ------------------------------------------ Termux integration (v0.6.14)
+        Text("Termux Integration (shell tool + self-repair)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "The shell tool and on-device self-repair compile run real commands in Termux. " +
+                "Three gates must open, and this card shows their live state. Vorv asks Android " +
+                "for the permission with a one-tap dialog when a task needs it — or grant it here now.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+
+        Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    if (state.termuxInstalled) "✓ Termux installed" else "✗ Termux NOT installed — get it from F-Droid or github.com/termux/termux-app/releases (Play Store build is deprecated)",
+                    color = if (state.termuxInstalled) Success else Error,
+                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (state.runCommandGranted)
+                        "✓ 'Run commands in Termux environment' permission granted"
+                    else
+                        "✗ 'Run commands in Termux environment' permission NOT granted — needed for every shell command and every self-repair compile",
+                    color = if (state.runCommandGranted) Success else Warning,
+                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                )
+
+                Spacer(Modifier.height(2.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onGrantTermuxPermission,
+                        enabled = state.termuxInstalled && !state.runCommandGranted,
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Grant (one tap)", fontSize = 11.sp) }
+                    OutlinedButton(
+                        onClick = onOpenAppSettings,
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Android Settings…", fontSize = 11.sp) }
+                }
+
+                OutlinedButton(
+                    onClick = onTestTermuxConnection,
+                    enabled = state.termuxInstalled && state.runCommandGranted && !state.termuxTesting,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text(
+                        if (state.termuxTesting) "Testing…"
+                        else "Test connection — runs `echo vorv-termux-ok` in Termux",
+                        fontSize = 11.sp,
+                    )
+                }
+
+                if (state.termuxTestResult != null) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (state.termuxTestResult!!.startsWith("ALL GOOD"))
+                            Success.copy(alpha = 0.12f) else Warning.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            state.termuxTestResult!!,
+                            color = if (state.termuxTestResult!!.startsWith("ALL GOOD")) Success else OnBackground,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
+
+                Text(
+                    "The two Termux-side steps Vorv cannot do for you (they live inside " +
+                        "Termux's private storage, which Android blocks every other app from " +
+                        "touching):\n" +
+                        "1. In Termux: mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties — then restart Termux.\n" +
+                        "2. In Termux: termux-setup-storage (accept the Android prompt).\n" +
+                        "Also install the compilers self-repair needs: pkg install kotlin\n" +
+                        "After any change, RECHECK — or just tap Test.",
+                    color = OnSurfaceVariant, fontSize = 10.sp,
+                )
+
+                TextButton(
+                    onClick = onRefreshTermuxStatus,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                ) { Text("RECHECK", color = Primary, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
             }
         }
 

@@ -78,6 +78,24 @@ class MainActivity : ComponentActivity() {
         }
 
     /**
+     * v0.6.14: the tool-driven runtime permission dialog. When a tool hits
+     * the Termux RUN_COMMAND wall, AgentViewModel raises
+     * pendingPermissionRequest, VorvApp calls [requestPermission] (below),
+     * Android shows the one-tap system dialog, and the result flows back to
+     * the suspended tool via respondPermissionRequest. Termux declares the
+     * permission protectionLevel="dangerous", so the standard runtime
+     * dialog works — no Settings walk required.
+     */
+    private val toolPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            Log.i(TAG, "tool permission dialog result: granted=$granted")
+            agentViewModel?.respondPermissionRequest(granted)
+        }
+
+    /** Set in setContent; the permission launcher callback needs it. */
+    private var agentViewModel: AgentViewModel? = null
+
+    /**
      * AUDIT H-1: MainActivity BINDS to the watchdog service and registers a
      * death token. When THIS process dies — crash, kill, native SIGSEGV — the
      * watchdog's linkToDeath recipient fires immediately. The audited code
@@ -201,6 +219,7 @@ class MainActivity : ComponentActivity() {
                 val vm: AgentViewModel = viewModel(factory = AgentViewModel.factory(
                     app.db, app.prefs, app.secrets, app.modelRepository, applicationContext
                 ))
+                agentViewModel = vm
 
                 // Load crash log text for the dialog.
                 var crashLogText by remember { mutableStateOf<String?>(null) }
@@ -239,7 +258,11 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 } else {
-                    VorvApp(vm = vm)
+                    // v0.6.14: the tool-driven permission dialog is launched
+                    // from the composable when a tool requests a grant.
+                    VorvApp(vm = vm, onRequestPermission = { permission ->
+                        toolPermissionLauncher.launch(permission)
+                    })
 
                     // Show crash dialog if we have a crash log from last time,
                     // or report a probation rollback.

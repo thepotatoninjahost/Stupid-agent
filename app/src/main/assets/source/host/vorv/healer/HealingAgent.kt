@@ -534,7 +534,10 @@ class HealingAgent(
         if (!ok) {
             return@withContext CompiledPatch(
                 null, "Termux dispatch failed — is Termux installed with RUN_COMMAND " +
-                    "permission and allow-external-apps=true?", null, emptyList())
+                    "permission and allow-external-apps=true? Grant the permission in " +
+                    "Setup → Termux integration (one tap) or Android Settings → Apps → " +
+                    "Vorv → Permissions → Additional permissions; the allow-external-apps " +
+                    "step is documented in the same Setup section.", null, emptyList())
         }
 
         // Poll for the code file.

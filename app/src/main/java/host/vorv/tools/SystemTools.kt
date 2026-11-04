@@ -202,9 +202,19 @@ class AppIntentTool(private val appContext: Context) : Tool {
  * line, never truncated. The user approves exactly what they see, and
  * they see all of it.
  *
+ * v0.6.14: the RUN_COMMAND wall gets a DOOR. Termux declares that
+ * permission protectionLevel="dangerous" — runtime-requestable — so when
+ * it is missing, the tool now pops Android's own one-tap permission
+ * dialog (after the command consent, so the user knows WHAT the grant is
+ * for). Denial or an unavailable dialog falls back to the honest manual
+ * error. The tool budget grows 125s → 300s because two serial dialogs
+ * (consent up to 60s + permission up to 60s) plus the command timeout
+ * must fit inside the kernel-enforced wall clock.
+ *
  * Setup requirements, all surfaced as honest errors:
  *  - Termux installed (F-Droid/GitHub build)
- *  - RUN_COMMAND permission granted in Android Settings
+ *  - RUN_COMMAND permission granted (one-tap when Vorv asks, or Setup →
+ *    Termux integration, or Android Settings)
  *  - Termux storage access enabled (run `termux-setup-storage` once)
  *  - Workspace on primary local storage
  */
@@ -216,7 +226,7 @@ class ShellTool(private val appContext: Context) : Tool {
         "(termux-setup-storage), and a workspace folder on local storage (Files tab). " +
         "If setup is incomplete the tool returns an honest error — it never fakes output."
 
-    override val timeoutMs: Long get() = 125_000L
+    override val timeoutMs: Long get() = 300_000L
     override val maxCallsPerTask: Int get() = 10
 
     override fun schema() = JsonObject().apply {
@@ -290,11 +300,19 @@ class ShellTool(private val appContext: Context) : Tool {
         val hasPermission = pm.checkPermission("com.termux.permission.RUN_COMMAND", appContext.packageName) ==
             PackageManager.PERMISSION_GRANTED
         if (!hasPermission) {
-            return@withContext ToolResult(ok = false, output = "",
-                error = "RUN_COMMAND permission not granted. Android Settings → Apps → Vorv → " +
-                    "Permissions → Additional permissions → Run commands in Termux environment. " +
-                    "Also ensure ~/.termux/termux.properties has allow-external-apps=true.",
-                durationMs = System.currentTimeMillis() - t0)
+            // v0.6.14: offer the one-tap system grant instead of only the
+            // manual Settings walk. The command consent already happened,
+            // so the user knows exactly what this grant is for. Denial,
+            // dismissal, timeout or no-UI all fall through to the honest
+            // manual error below — fail closed either way.
+            val grantedNow = PermissionBridge.request("com.termux.permission.RUN_COMMAND")
+            val stillGranted = pm.checkPermission("com.termux.permission.RUN_COMMAND", appContext.packageName) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!grantedNow || !stillGranted) {
+                return@withContext ToolResult(ok = false, output = "",
+                    error = missingPermissionError(),
+                    durationMs = System.currentTimeMillis() - t0)
+            }
         }
 
         // ---- prepare the .vorv-shell directory via SAF ----
@@ -406,11 +424,23 @@ class ShellTool(private val appContext: Context) : Tool {
         null
     }
 
-    private companion object {
-        const val SHELL_DIR = ".vorv-shell"
-        const val POLL_INTERVAL_MS = 250L
-        const val MAX_OUTPUT_CHARS = 100_000
-        const val MAX_ERR_CHARS = 20_000
+    companion object {
+        private const val SHELL_DIR = ".vorv-shell"
+        private const val POLL_INTERVAL_MS = 250L
+        private const val MAX_OUTPUT_CHARS = 100_000
+        private const val MAX_ERR_CHARS = 20_000
+
+        /** v0.6.14 fallback when the one-tap grant was denied, dismissed,
+         *  timed out, or no UI was available to ask on. Pinned by
+         *  TermuxSetupTest — every wall names its price. */
+        internal fun missingPermissionError(): String =
+            "RUN_COMMAND permission not granted — the one-tap grant was denied, " +
+                "dismissed, or Vorv could not show it (no UI / app in background). " +
+                "Grant it instead via: Setup → Termux integration → Grant (one tap), " +
+                "or Android Settings → Apps → Vorv → Permissions → Additional " +
+                "permissions → Run commands in Termux environment. Also ensure " +
+                "~/.termux/termux.properties has allow-external-apps=true (see the " +
+                "Termux integration section in Setup)."
     }
 }
 

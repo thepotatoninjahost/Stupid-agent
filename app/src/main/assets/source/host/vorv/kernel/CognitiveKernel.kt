@@ -432,6 +432,10 @@ class CognitiveKernel(
         appendLine("   create, change), you MUST call a tool to actually do it. Writing commands in a")
         appendLine("   code block is NOT doing it — the user cannot run your code block; only a tool")
         appendLine("   call performs the action.")
+        appendLine("10. Tool results are for YOU, not for the user's screen. Never paste raw tool")
+        appendLine("   output, JSON, or error strings into your reply — explain in plain English")
+        appendLine("   what happened, and if a tool failed, say plainly what failed and what the")
+        appendLine("   user can do about it.")
         appendLine()
         appendLine("Available tools:")
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }

@@ -27,12 +27,14 @@ import host.vorv.tools.JsExecTool
 import host.vorv.tools.MemoryRecallTool
 import host.vorv.tools.MemoryWriteTool
 import host.vorv.tools.NotifyTool
+import host.vorv.tools.PermissionBridge
 import host.vorv.tools.PythonExecTool
 import host.vorv.tools.ReminderRegistry
 import host.vorv.tools.ScheduleCancelTool
 import host.vorv.tools.ScheduleTool
 import host.vorv.tools.SelfFixTool
 import host.vorv.tools.ShellTool
+import host.vorv.tools.TermuxProbe
 import host.vorv.tools.WebFetchTool
 import host.vorv.tools.WebSearchTool
 import kotlinx.coroutines.CompletableDeferred
@@ -62,6 +64,19 @@ data class ChatMessage(
 data class PendingConfirmation(
     val id: String,
     val message: String,
+    val response: CompletableDeferred<Boolean>,
+)
+
+/**
+ * A pending ANDROID runtime-permission dialog (v0.6.14). The UI observes
+ * this, calls Activity.requestPermissions(), and reports back through
+ * [AgentViewModel.respondPermissionRequest]. Used for Termux's
+ * RUN_COMMAND permission — declared protectionLevel="dangerous" by the
+ * Termux app, hence runtime-requestable with the standard one-tap dialog.
+ */
+data class PendingPermissionRequest(
+    val id: String,
+    val permission: String,
     val response: CompletableDeferred<Boolean>,
 )
 
@@ -99,6 +114,15 @@ data class AgentState(
     val setupError: String? = null,
     /** Active consent dialog (one at a time; concurrent requests queue via the mutex). */
     val pendingConfirmation: PendingConfirmation? = null,
+    /** Active Android runtime-permission request (v0.6.14; one at a time). */
+    val pendingPermissionRequest: PendingPermissionRequest? = null,
+    /** Termux integration status (Setup tab, v0.6.14) — live pm lookups. */
+    val termuxInstalled: Boolean = false,
+    val runCommandGranted: Boolean = false,
+    /** A Termux connection test is running (Setup tab). */
+    val termuxTesting: Boolean = false,
+    /** Verbatim result of the last Termux connection test (Setup tab). */
+    val termuxTestResult: String? = null,
     /** Full-output dialog (audit M-7). */
     val fullOutputView: FullOutputView? = null,
     /** Tasks screen: which task's tool calls are expanded. */
@@ -157,6 +181,16 @@ class AgentViewModel(
     private val confirmMutex = Mutex()
 
     init {
+        // v0.6.14: install the runtime-permission bridge BEFORE any tool can
+        // run. Tools call PermissionBridge.request() when they hit the
+        // RUN_COMMAND wall; the handler shows Android's one-tap dialog and
+        // reports back. See PermissionBridge.kt for why this is a
+        // process-level reference rather than a ToolContext field
+        // (binary compatibility with registered patches).
+        @Suppress("LeakingThis")
+        PermissionBridge.handler = ::permissionBridge
+        refreshTermuxStatus()
+
         modelRepository.onTelemetry = { tps, ms ->
             viewModelScope.launch { kernel.emitTelemetry(tps.toFloat(), ms.toLong(), "local") }
         }
@@ -399,6 +433,103 @@ class AgentViewModel(
         _state.update { s ->
             s.pendingConfirmation?.let { if (it.id == id) it.response.complete(allowed) }
             if (s.pendingConfirmation?.id == id) s.copy(pendingConfirmation = null) else s
+        }
+    }
+
+    // --------------------------------------- runtime permissions (v0.6.14)
+
+    /**
+     * The PermissionBridge handler: asks Android for [permission] with the
+     * standard one-tap dialog and returns whether the grant actually
+     * happened. Fast path when already granted; 60s timeout = denied
+     * (fail closed — callers keep their honest manual fallbacks).
+     */
+    private suspend fun permissionBridge(permission: String): Boolean {
+        val pm = appContext.packageManager
+        val alreadyGranted = pm.checkPermission(
+            permission, appContext.packageName
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (alreadyGranted) return true
+
+        val deferred = CompletableDeferred<Boolean>()
+        val request = PendingPermissionRequest(
+            id = java.util.UUID.randomUUID().toString(),
+            permission = permission,
+            response = deferred,
+        )
+        _state.update { it.copy(pendingPermissionRequest = request) }
+        return try {
+            withTimeout(60_000) { deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            false
+        } finally {
+            _state.update {
+                if (it.pendingPermissionRequest?.id == request.id)
+                    it.copy(pendingPermissionRequest = null) else it
+            }
+        }
+    }
+
+    /** The UI reports the system dialog's result back to the waiting tool. */
+    fun respondPermissionRequest(granted: Boolean) {
+        _state.update { s ->
+            s.pendingPermissionRequest?.response?.complete(granted)
+            if (s.pendingPermissionRequest != null) s.copy(pendingPermissionRequest = null) else s
+        }
+    }
+
+    // ------------------------------------------ Termux setup (v0.6.14)
+
+    /** Live pm lookups for the Setup card — call after any external change. */
+    fun refreshTermuxStatus() {
+        _state.update {
+            it.copy(
+                termuxInstalled = TermuxProbe.termuxInstalled(appContext),
+                runCommandGranted = TermuxProbe.runCommandGranted(appContext),
+            )
+        }
+    }
+
+    /** Setup → Termux integration → GRANT: the one-tap system dialog. */
+    fun grantTermuxPermission() {
+        viewModelScope.launch {
+            permissionBridge(TermuxProbe.RUN_COMMAND_PERMISSION)
+            refreshTermuxStatus()
+        }
+    }
+
+    /** Setup → Termux integration → manual fallback: open Vorv's Settings page. */
+    fun openAppSettings() {
+        runCatching {
+            appContext.startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:${appContext.packageName}"),
+                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+
+    /**
+     * Setup → Termux integration → TEST. Runs exactly `echo vorv-termux-ok`
+     * in Termux (the button label states the command — that label is the
+     * consent surface) and puts the complete honest verdict in state.
+     */
+    fun testTermuxConnection() {
+        if (_state.value.termuxTesting) return
+        _state.update { it.copy(termuxTesting = true, termuxTestResult = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = TermuxProbe.runProbe(appContext, _state.value.workspaceUri.takeIf { it.isNotBlank() })
+            _state.update {
+                it.copy(
+                    termuxTesting = false,
+                    termuxTestResult = result,
+                    // The probe may have been the first real dispatch — refresh
+                    // the status readout too.
+                    termuxInstalled = TermuxProbe.termuxInstalled(appContext),
+                    runCommandGranted = TermuxProbe.runCommandGranted(appContext),
+                )
+            }
         }
     }
 

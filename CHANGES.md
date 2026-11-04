@@ -1,3 +1,63 @@
+# Changelog — v0.6.14 "The Wall Gets a Door"
+
+Second real-world test finding, from a field recording: after v0.6.13
+made the model ACT, the very next shell call hit the RUN_COMMAND
+permission wall — and the honest error, while true, could only recite a
+five-step Android Settings walk. The user's standing rule: never just
+show the wall — show the cheapest real way through it. It turns out
+Android HAS one: Termux declares com.termux.permission.RUN_COMMAND with
+protectionLevel="dangerous", which in Android terms means
+RUNTIME-REQUESTABLE. One tap. It was never being offered.
+
+## One-tap grant where the model hits the wall
+
+- New PermissionBridge: when the shell tool (or self_fix) finds the
+  permission missing, it now pops Android's OWN system dialog —
+  "Allow Vorv to run commands in Termux environment?" — after the
+  command consent, so the user always knows what the grant is FOR.
+  Grant → the command proceeds. Deny/dismiss/timeout/no-UI → the honest
+  manual fallback error, naming every remaining path (unchanged law:
+  fail closed).
+- Why a process-level bridge and not a ToolContext field: binary
+  compatibility with registered patches. Changing ToolContext's or
+  KernelApi.run's signature would crash every previously-approved patch
+  with NoSuchMethodError. The bridge adds zero signatures; old patches
+  keep working exactly as before.
+- self_fix now checks Termux readiness BEFORE the expensive pipeline —
+  previously a missing permission was discovered 10 minutes into a
+  15-minute heal, after the model had already written the patch.
+- The shell tool's kernel budget grows 125s → 300s: two serial dialogs
+  (consent up to 60s + permission up to 60s) plus the command timeout
+  must fit inside the wall clock.
+
+## Setup → Termux integration
+
+- New Setup card with the live state of every gate: Termux installed?
+  permission granted? — plus GRANT (the one-tap dialog on demand),
+  Android Settings (manual fallback), and RECHECK.
+- TEST CONNECTION runs exactly `echo vorv-termux-ok` through the same
+  base64-transport round-trip the shell tool uses, then reports the
+  REAL result — including the two Termux-side gates Vorv cannot reach
+  (allow-external-apps, termux-setup-storage) with the exact commands
+  to type, and an honest statement of WHY Vorv can't automate them
+  (they live inside Termux's private data directory, blocked from every
+  other app by Android design).
+
+## No raw JSON in the chat
+
+- Field finding from the same recording: when a memory lookup returned
+  {"ok":true,"output":"No memories matched..."}, the model pasted the
+  raw JSON into its reply and the user had no idea what it meant. New
+  HARD RULE 10 in the system prompt: tool results are for the model,
+  not the user's screen — explain in plain English, and when a tool
+  fails, say what failed and what the user can do.
+
+## Version
+
+- `versionCode` 22 → 23, `versionName` 0.6.13 → 0.6.14.
+
+---
+
 # Changelog — v0.6.13 "Act, Don't Advise"
 
 Found in real-world testing: asked to "use termux to install all the
