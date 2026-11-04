@@ -86,14 +86,13 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
                     error = "User confirmation bridge unavailable — refusing to run " +
                         "python_exec (fail closed).",
                 )
-            val codeLines = code.lines()
-            val preview = codeLines.take(6).joinToString("\n") +
-                (if (codeLines.size > 6) "\n… (+${codeLines.size - 6} more lines)" else "")
+            // N-I4: the COMPLETE program is shown — never truncated, no
+            // matter how long. The user approves exactly what they see.
             val allowed = confirm(
                 "Vorv wants to run PYTHON CODE in-app (first run for this task; later " +
                     "runs in the same task won't re-prompt). The sandbox blocks files, " +
                     "network and processes — but an in-process sandbox is hardening, " +
-                    "not a security barrier.\n\n$preview\n\nAllow?")
+                    "not a security barrier.\n\n$code\n\nAllow?")
             if (!allowed) {
                 consentedTasks.remove(ctx.taskId)
                 return@withContext ToolResult(

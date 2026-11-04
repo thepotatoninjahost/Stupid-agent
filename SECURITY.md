@@ -29,11 +29,19 @@ Therefore every tool treats its input as hostile data. The defense is layered:
 
 3. **User consent (side-effecting tools):** every tool with device-visible
    effects routes through the Allow/Deny consent bridge. That is `app_intent`
-   (all four actions), `shell` (the command text is shown in the dialog),
-   `python_exec` (first execution per task), and every `self_fix` patch
-   (patch id, target class, SHA-256 and verification status are shown before
-   anything is registered). A denied confirmation is reported back to the
-   model as a failure — the model cannot retry its way around the user.
+   (all four actions), `shell` (the complete command text is shown in the
+   dialog), `python_exec` (first execution per task; the complete program is
+   shown), and every `self_fix` patch (patch id, target class, the full
+   SHA-256 and verification status are shown before anything is
+   registered). A denied confirmation is reported back to the model as a
+   failure — the model cannot retry its way around the user.
+
+   **A consent prompt is never truncated.** The complete, exact content the
+   model wants to run is always shown in full — every line of a shell
+   command, the whole Python program, the whole share text, the whole
+   64-character patch hash. The dialog scrolls, so length is never a
+   reason to cut anything off. If a prompt ever shows you less than
+   everything, treat that as a bug and report it.
 
 4. **Egress control (network tools):** `web_fetch` resolves through an OkHttp
    `Dns` implementation that refuses loopback, link-local, site-local,
@@ -170,3 +178,13 @@ any patch followed by a crash in the class it overrides.
 Please include a PoC; for sandbox escapes, the sandbox self-test files
 (`app/src/main/python/test_vorv_sandbox.py`, `JsExecToolTest.kt`) are the
 place to add a regression case.
+
+## Reserved code (explicitly dormant)
+
+Nothing in this codebase is silently dead. `HotPatcher.fetchManifest`
+(HTTPS-only URL, host allow-list, DNS pinned through `NetworkGuard`)
+currently has **no caller**: it exists for the planned remote-patch
+feature and is reachable from no code path, so it can never fire on its
+own. Making it live is a deliberate maintainer decision that will be
+recorded here — never an accident. Until then it is inert code kept
+honest on purpose, not a hidden feature.

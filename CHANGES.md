@@ -1,3 +1,40 @@
+# Changelog — v0.6.11 "Show Me Everything"
+
+Resolves the two judgment calls the VRA-2026-1103 audit left to the
+maintainer (N-I1, N-I4) under one rule: nothing is ever hidden or cut off
+from the user. Nothing is disabled; every change strengthens an existing
+guarantee.
+
+## Consent prompts now show everything (N-I4)
+
+- **shell** — the consent dialog shows the COMPLETE command, every line.
+  The old 8-line preview with "+N more lines" is gone. (`SystemTools.kt`)
+- **python_exec** — the first-run consent shows the complete program; the
+  old 6-line preview is gone. (`PythonExecTool.kt`)
+- **app_intent (share)** — the full text is shown; the old 120-character
+  cut is gone. (`SystemTools.kt`)
+- **self_fix** — the full 64-character SHA-256 is shown; the old
+  16-character prefix with an ellipsis is gone. (`SelfFixTool.kt`)
+- **The consent dialog itself now scrolls** (`VorvApp.kt`), so even a very
+  long command is fully displayable. Length is never a reason to
+  truncate anything.
+- **Pinned by tests**: `ConsentPromptTest` (all four prompts contain the
+  complete content and no truncation notice) and a new
+  `SelfFixToolTest` case (full SHA-256, no ellipsis).
+
+## Reserved code documented (N-I1)
+
+- **`HotPatcher.fetchManifest`** is now formally reserved in SECURITY.md:
+  reachable from no code path, kept for the planned remote-patch feature,
+  HTTPS allow-list and pinned DNS intact. Making it live remains a
+  deliberate decision, never an accident.
+
+## Version
+
+- `versionCode` 19 → 20, `versionName` 0.6.10 → 0.6.11.
+
+---
+
 # Changelog — v0.6.10 "Audit Follow-ups"
 
 Every finding from the VRA-2026-1103 full-project line-by-line audit (158

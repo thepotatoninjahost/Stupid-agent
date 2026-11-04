@@ -63,7 +63,8 @@ object NotificationIds {
  * app_intent — send real Android intents (audit findings H-1, L-2, L-3).
  *
  * EVERY action requires explicit user confirmation through the consent
- * bridge (ctx.confirm). The dialog shows exactly what will happen. If the
+ * bridge (ctx.confirm). The dialog shows exactly what will happen, in
+ * full — nothing is ever cut off (v0.6.11, audit N-I4). If the
  * bridge is unavailable the tool DENIES — fail closed, never open.
  *
  * "view" additionally restricts to http/https URLs (no file://, no app deep
@@ -148,7 +149,7 @@ class AppIntentTool(private val appContext: Context) : Tool {
             val summary = when (action.lowercase()) {
                 "view" -> "open $data in your browser"
                 "dial" -> "open the dialer with $data"
-                "share" -> "share the text: \"${data.take(120)}\""
+                "share" -> "share the text: \"$data\""
                 else -> "launch the app '$data'"
             }
             val allowed = confirm("Vorv wants to $summary")
@@ -197,6 +198,10 @@ class AppIntentTool(private val appContext: Context) : Tool {
  * was the ONLY powerful action without a gate. Fail-closed when the
  * bridge is unavailable.
  *
+ * v0.6.11 (audit N-I4): the dialog shows the COMPLETE command — every
+ * line, never truncated. The user approves exactly what they see, and
+ * they see all of it.
+ *
  * Setup requirements, all surfaced as honest errors:
  *  - Termux installed (F-Droid/GitHub build)
  *  - RUN_COMMAND permission granted in Android Settings
@@ -242,15 +247,16 @@ class ShellTool(private val appContext: Context) : Tool {
             .coerceIn(1_000, 120_000)
         val cwd = input.get("cwd")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
 
-        // ---- audit H-2: user-consent gate (fail closed) ----
+        // ---- audit H-2: user-consent gate (fail closed). N-I4: the dialog
+        //      shows the COMPLETE command — nothing is ever truncated, no
+        //      matter how long. A cut-off preview would ask the user to
+        //      approve something they cannot fully see. ----
         val confirm = ctx.confirm
             ?: return@withContext ToolResult(ok = false, output = "",
                 error = "User confirmation bridge unavailable — refusing to run shell " +
                     "commands (fail closed).",
                 durationMs = System.currentTimeMillis() - t0)
-        val preview = command.lines().take(8).joinToString("\n")
-            .let { if (command.lines().size > 8) "$it\n… (+${command.lines().size - 8} more lines)" else it }
-        val allowed = confirm("Vorv wants to run a SHELL COMMAND in Termux:\n\n$preview\n\nAllow?")
+        val allowed = confirm("Vorv wants to run a SHELL COMMAND in Termux:\n\n$command\n\nAllow?")
         if (!allowed) {
             return@withContext ToolResult(ok = false, output = "",
                 error = "User DENIED the shell command. Do not claim it ran.",

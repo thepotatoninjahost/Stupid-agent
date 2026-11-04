@@ -56,7 +56,18 @@ fun VorvApp(vm: AgentViewModel) {
         AlertDialog(
             onDismissRequest = { vm.respondConfirmation(pending.id, false) },
             title = { Text("Allow this action?", fontWeight = FontWeight.Bold) },
-            text = { Text(pending.message) },
+            // N-I4: the complete message is always shown. It scrolls, however
+            // long, so nothing the user is asked to approve is ever cut off.
+            text = {
+                Text(
+                    pending.message,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { vm.respondConfirmation(pending.id, true) }) {
                     Text("Allow", color = Primary, fontWeight = FontWeight.Bold)

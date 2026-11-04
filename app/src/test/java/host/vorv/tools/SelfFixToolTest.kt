@@ -69,4 +69,29 @@ class SelfFixToolTest {
         assertTrue(schema.get("required").asJsonArray.toString().contains("problem"))
         assertTrue(schema.toString().contains("target_class"))
     }
+
+    /**
+     * v0.6.11 (audit N-I4): the approval dialog shows the FULL 64-char
+     * SHA-256 — never a truncated prefix with an ellipsis. The user
+     * approves exactly what they see, and they see all of it.
+     */
+    @Test
+    fun `approval message shows the full SHA-256 and never truncates`() {
+        val sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        val msg = tool.approvalMessage(
+            host.vorv.healer.PatchProposal(
+                patchId = "fix-001",
+                targetClass = "host.vorv.tools.NotifyTool",
+                description = "Guard the title against empty strings.",
+                sha256 = sha,
+                signature = "sig",
+                surfaceVerified = true,
+                attempts = 1,
+            )
+        )
+        assertTrue("the full 64-char hash must appear", msg.contains(sha))
+        assertTrue("must be labeled SHA-256", msg.contains("SHA-256"))
+        assertFalse("no ellipsis anywhere", msg.contains("…"))
+        assertFalse("no take() leftovers", msg.contains("take("))
+    }
 }

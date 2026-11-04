@@ -195,12 +195,13 @@ class SelfFixTool(
 
     private fun elapsed(t0: Long): Long = System.currentTimeMillis() - t0
 
-    /** The consent dialog text for a patch proposal (audit C-2). */
+    /** The consent dialog text for a patch proposal (audit C-2; N-I4: the
+     *  full 64-char SHA-256 is shown, never a truncated prefix). */
     internal fun approvalMessage(p: PatchProposal): String = buildString {
         appendLine("Vorv wants to apply a SELF-FIX patch:")
         appendLine("• Class: ${p.targetClass}")
         appendLine("• Patch: ${p.patchId}")
-        appendLine("• SHA-256: ${p.sha256.take(16)}…")
+        appendLine("• SHA-256: ${p.sha256}")
         appendLine("• Verified: ${if (p.surfaceVerified) "full public API kept" else "NOT verified"}")
         appendLine("• Attempts: ${p.attempts}")
         appendLine()
