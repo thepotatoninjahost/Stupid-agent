@@ -441,5 +441,14 @@ class CognitiveKernel(
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }
         appendLine()
         appendLine("Workspace: ${if (workspaceUri.isNullOrBlank()) "(none granted — file tools will fail until user picks a folder in Files tab)" else "granted"}")
+        // v0.6.15 (field finding #3): live Termux status. The model used to
+        // GUESS availability from the shell tool's description and answered
+        // "I don't have access to Termux" without ever calling it. Now the
+        // prompt states the session's verified truth — and when nothing is
+        // verified yet, it explicitly forbids the false denial. Read from
+        // the process-level SessionGrants singleton (same binary-compat
+        // pattern as PermissionBridge: zero signature changes, so old
+        // registered patches keep working — they simply don't emit the line).
+        appendLine(host.vorv.tools.SessionGrants.statusLine())
     }
 }

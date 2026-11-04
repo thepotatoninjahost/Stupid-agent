@@ -64,6 +64,7 @@ fun VorvApp(
                         onOpenAppSettings = vm::openAppSettings,
                         onTestTermuxConnection = vm::testTermuxConnection,
                         onRefreshTermuxStatus = vm::refreshTermuxStatus,
+                        onRevokeShellSessionGrant = vm::revokeShellSessionGrant,
                     )
                 }
             }
@@ -82,14 +83,29 @@ fun VorvApp(
             // N-I4: the complete message is always shown. It scrolls, however
             // long, so nothing the user is asked to approve is ever cut off.
             text = {
-                Text(
-                    pending.message,
-                    fontSize = 12.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
+                Column {
+                    Text(
+                        pending.message,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                    // v0.6.15: shell consents offer the session grant. The
+                    // scope of what is being granted is stated IN the dialog —
+                    // informed consent for the batch, not just this command.
+                    if (pending.offerSessionGrant) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Choose 'Allow all this session' to also skip this dialog for " +
+                                "shell commands for the rest of this session. Every command " +
+                                "is still logged in full and revocable in Setup.",
+                            fontSize = 10.sp,
+                            color = OnSurfaceVariant,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = { vm.respondConfirmation(pending.id, true) }) {
@@ -97,8 +113,15 @@ fun VorvApp(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { vm.respondConfirmation(pending.id, false) }) {
-                    Text("Deny", color = Error)
+                Row {
+                    if (pending.offerSessionGrant) {
+                        TextButton(onClick = { vm.respondConfirmationWithSessionGrant(pending.id) }) {
+                            Text("Allow all this session", color = Primary, fontSize = 12.sp)
+                        }
+                    }
+                    TextButton(onClick = { vm.respondConfirmation(pending.id, false) }) {
+                        Text("Deny", color = Error)
+                    }
                 }
             },
         )

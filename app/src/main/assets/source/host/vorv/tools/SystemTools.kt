@@ -211,6 +211,24 @@ class AppIntentTool(private val appContext: Context) : Tool {
  * (consent up to 60s + permission up to 60s) plus the command timeout
  * must fit inside the kernel-enforced wall clock.
  *
+ * v0.6.15 (field finding #3 — "Vorv says it doesn't have access to
+ * Termux"): the model DENIED having the tool instead of calling it. The
+ * old description led with "Requires: Termux installed, RUN_COMMAND
+ * permission granted, ..." — four prerequisites read as a disclaimer of
+ * unavailability, so the model answered from that belief and the honest
+ * errors never fired. The description now leads with what to DO (call it
+ * whenever the user asks for shell work) and explicitly forbids claiming
+ * no access without calling. Live status lives in the system prompt via
+ * SessionGrants.statusLine().
+ *
+ * v0.6.15 (session grants): when the user has chosen "Allow all shell
+ * commands this session", the per-command dialog is replaced by an audit
+ * record (SessionGrants.auditAutoRun — the COMPLETE command into the
+ * episode log) plus a counter visible in Setup. The grant is the user's
+ * explicit, session-scoped, revocable choice — not a default, never
+ * silent. A verified round-trip (exit-code file appeared) marks the
+ * session verified so the prompt line can state the truth.
+ *
  * Setup requirements, all surfaced as honest errors:
  *  - Termux installed (F-Droid/GitHub build)
  *  - RUN_COMMAND permission granted (one-tap when Vorv asks, or Setup →
@@ -220,11 +238,21 @@ class AppIntentTool(private val appContext: Context) : Tool {
  */
 class ShellTool(private val appContext: Context) : Tool {
     override val name = "shell"
+
+    /**
+     * v0.6.15 (field finding #3): rewritten to lead with what to DO. The
+     * old "Requires: ..." opener read as a disclaimer of unavailability —
+     * the model answered "I don't have access to Termux" without ever
+     * calling. Now it orders the call and forbids the false denial; the
+     * prerequisites live in the honest errors that fire only when
+     * something is actually missing.
+     */
     override val description =
         "Run a bash command in Termux and return the REAL stdout, stderr and exit code. " +
-        "Requires: Termux installed, RUN_COMMAND permission granted, Termux storage access " +
-        "(termux-setup-storage), and a workspace folder on local storage (Files tab). " +
-        "If setup is incomplete the tool returns an honest error — it never fakes output."
+        "ALWAYS call this tool whenever the user asks for anything involving Termux, the " +
+        "shell, or running commands on this device. NEVER claim you cannot access Termux " +
+        "without calling this tool first — if setup is incomplete it returns an honest " +
+        "error naming the exact fix, and it never fakes output."
 
     override val timeoutMs: Long get() = 300_000L
     override val maxCallsPerTask: Int get() = 10
@@ -261,16 +289,25 @@ class ShellTool(private val appContext: Context) : Tool {
         //      shows the COMPLETE command — nothing is ever truncated, no
         //      matter how long. A cut-off preview would ask the user to
         //      approve something they cannot fully see. ----
-        val confirm = ctx.confirm
-            ?: return@withContext ToolResult(ok = false, output = "",
-                error = "User confirmation bridge unavailable — refusing to run shell " +
-                    "commands (fail closed).",
-                durationMs = System.currentTimeMillis() - t0)
-        val allowed = confirm("Vorv wants to run a SHELL COMMAND in Termux:\n\n$command\n\nAllow?")
-        if (!allowed) {
-            return@withContext ToolResult(ok = false, output = "",
-                error = "User DENIED the shell command. Do not claim it ran.",
-                durationMs = System.currentTimeMillis() - t0)
+        // v0.6.15 session grant: the user's explicit "Allow all shell
+        // commands this session" choice replaces the per-command dialog.
+        // The consent surface moves to the audit trail — the COMPLETE
+        // command is logged and counted, revocable in Setup, dead with the
+        // process. Every other gate below still runs.
+        if (SessionGrants.shellAllCommands) {
+            SessionGrants.auditAutoRun(command)
+        } else {
+            val confirm = ctx.confirm
+                ?: return@withContext ToolResult(ok = false, output = "",
+                    error = "User confirmation bridge unavailable — refusing to run shell " +
+                        "commands (fail closed).",
+                    durationMs = System.currentTimeMillis() - t0)
+            val allowed = confirm("${CONSENT_PREFIX}\n\n$command\n\nAllow?")
+            if (!allowed) {
+                return@withContext ToolResult(ok = false, output = "",
+                    error = "User DENIED the shell command. Do not claim it ran.",
+                    durationMs = System.currentTimeMillis() - t0)
+            }
         }
 
         // ---- prerequisite checks (each with an honest, actionable error) ----
@@ -376,6 +413,12 @@ class ShellTool(private val appContext: Context) : Tool {
                 )
             }
 
+            // v0.6.15: the chain just verifiably round-tripped (the exit-code
+            // file appeared in the shared workspace). Record it — the system
+            // prompt can now tell the model the shell WORKS instead of letting
+            // it guess "no access" (field finding #3).
+            SessionGrants.markShellVerified()
+
             val exitCode = readFile(codeFile)?.trim()?.toIntOrNull() ?: -1
             val stdoutText = readFile(out)?.take(MAX_OUTPUT_CHARS) ?: ""
             val stderrText = readFile(err)?.take(MAX_ERR_CHARS) ?: ""
@@ -425,6 +468,15 @@ class ShellTool(private val appContext: Context) : Tool {
     }
 
     companion object {
+        /**
+         * Single source of truth for the consent heading (v0.6.15).
+         * AgentViewModel matches this prefix to offer the "Allow all this
+         * session" button on exactly the shell consent — never any other
+         * tool's dialog. The consent message is pinned to start with it
+         * (TermuxSmokeTest); ConsentPromptTest pins the wording.
+         */
+        const val CONSENT_PREFIX = "Vorv wants to run a SHELL COMMAND in Termux:"
+
         private const val SHELL_DIR = ".vorv-shell"
         private const val POLL_INTERVAL_MS = 250L
         private const val MAX_OUTPUT_CHARS = 100_000

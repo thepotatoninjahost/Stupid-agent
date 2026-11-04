@@ -33,6 +33,7 @@ import host.vorv.tools.ReminderRegistry
 import host.vorv.tools.ScheduleCancelTool
 import host.vorv.tools.ScheduleTool
 import host.vorv.tools.SelfFixTool
+import host.vorv.tools.SessionGrants
 import host.vorv.tools.ShellTool
 import host.vorv.tools.TermuxProbe
 import host.vorv.tools.WebFetchTool
@@ -65,6 +66,13 @@ data class PendingConfirmation(
     val id: String,
     val message: String,
     val response: CompletableDeferred<Boolean>,
+    /**
+     * v0.6.15: true only for SHELL consents — the dialog then offers the
+     * third button "Allow all this session" (SessionGrants). Set by
+     * [AgentViewModel.requestConfirmation] from ShellTool.CONSENT_PREFIX,
+     * the single source of truth — no other tool's dialog ever gets it.
+     */
+    val offerSessionGrant: Boolean = false,
 )
 
 /**
@@ -123,6 +131,12 @@ data class AgentState(
     val termuxTesting: Boolean = false,
     /** Verbatim result of the last Termux connection test (Setup tab). */
     val termuxTestResult: String? = null,
+    /** v0.6.15: a real Termux round-trip completed this session (knowledge). */
+    val shellVerifiedThisSession: Boolean = false,
+    /** v0.6.15: the user granted all shell commands for this session. */
+    val shellSessionGrant: Boolean = false,
+    /** v0.6.15: commands run under the session grant (audit counter). */
+    val shellAutoRunCount: Int = 0,
     /** Full-output dialog (audit M-7). */
     val fullOutputView: FullOutputView? = null,
     /** Tasks screen: which task's tool calls are expanded. */
@@ -190,6 +204,17 @@ class AgentViewModel(
         @Suppress("LeakingThis")
         PermissionBridge.handler = ::permissionBridge
         refreshTermuxStatus()
+
+        // v0.6.15: the session-grant audit channel — every command executed
+        // under "Allow all shell commands this session" lands in the episode
+        // log with its COMPLETE text. The grant replaces the per-command
+        // dialog, never the record of what ran. Boot state starts clean: a
+        // grant is a live user choice, not something a previous process
+        // decided for this one.
+        @Suppress("LeakingThis")
+        SessionGrants.auditSink = { kind, summary, detailsJson ->
+            runCatching { db.episodeDao().insert(Episode(kind = kind, summary = summary, detailsJson = detailsJson)) }
+        }
 
         modelRepository.onTelemetry = { tps, ms ->
             viewModelScope.launch { kernel.emitTelemetry(tps.toFloat(), ms.toLong(), "local") }
@@ -417,6 +442,12 @@ class AgentViewModel(
             id = java.util.UUID.randomUUID().toString(),
             message = message,
             response = deferred,
+            // v0.6.15: only the shell consent offers the session grant, and
+            // only when no grant is active yet (an active grant means
+            // ShellTool never reaches this dialog). CONSENT_PREFIX is the
+            // single source of truth shared with the tool — pinned by test.
+            offerSessionGrant = !SessionGrants.shellAllCommands &&
+                message.startsWith(ShellTool.CONSENT_PREFIX),
         )
         _state.update { it.copy(pendingConfirmation = pending) }
         val allowed = try {
@@ -433,6 +464,58 @@ class AgentViewModel(
         _state.update { s ->
             s.pendingConfirmation?.let { if (it.id == id) it.response.complete(allowed) }
             if (s.pendingConfirmation?.id == id) s.copy(pendingConfirmation = null) else s
+        }
+    }
+
+    /**
+     * v0.6.15: the consent dialog's third answer — "Allow all this session".
+     * Approves the CURRENT command like Allow, and additionally records the
+     * user's session grant: subsequent shell commands skip the dialog but
+     * are each audited (complete command → episode log) and counted. The
+     * grant dies with the process and is revocable in Setup anytime. Only
+     * ever reachable on a shell consent — the dialog only shows the button
+     * when [PendingConfirmation.offerSessionGrant] is true.
+     */
+    fun respondConfirmationWithSessionGrant(id: String) {
+        val pending = _state.value.pendingConfirmation ?: return
+        if (pending.id != id || !pending.offerSessionGrant) return
+        SessionGrants.grantShellForSession()
+        viewModelScope.launch {
+            runCatching {
+                db.episodeDao().insert(Episode(
+                    kind = "session_grant",
+                    summary = "User granted all shell commands for this session",
+                    detailsJson = "{}",
+                ))
+            }
+        }
+        respondConfirmation(id, true)
+        refreshSessionGrants()
+    }
+
+    /** Setup → session grants → REVOKE: the next shell command asks again. */
+    fun revokeShellSessionGrant() {
+        SessionGrants.revokeShellGrant()
+        viewModelScope.launch {
+            runCatching {
+                db.episodeDao().insert(Episode(
+                    kind = "session_grant_revoked",
+                    summary = "User revoked the shell session grant",
+                    detailsJson = "{}",
+                ))
+            }
+        }
+        refreshSessionGrants()
+    }
+
+    /** Mirror the SessionGrants singleton into UI state (Setup card). */
+    fun refreshSessionGrants() {
+        _state.update {
+            it.copy(
+                shellVerifiedThisSession = SessionGrants.shellVerified,
+                shellSessionGrant = SessionGrants.shellAllCommands,
+                shellAutoRunCount = SessionGrants.autoRunCount,
+            )
         }
     }
 
@@ -520,6 +603,10 @@ class AgentViewModel(
         _state.update { it.copy(termuxTesting = true, termuxTestResult = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val result = TermuxProbe.runProbe(appContext, _state.value.workspaceUri.takeIf { it.isNotBlank() })
+            // v0.6.15: a passing probe is a VERIFIED round-trip — the system
+            // prompt can now tell the model the shell genuinely works this
+            // session, instead of letting it guess "no access".
+            if (result.startsWith("ALL GOOD")) SessionGrants.markShellVerified()
             _state.update {
                 it.copy(
                     termuxTesting = false,
@@ -528,6 +615,7 @@ class AgentViewModel(
                     // the status readout too.
                     termuxInstalled = TermuxProbe.termuxInstalled(appContext),
                     runCommandGranted = TermuxProbe.runCommandGranted(appContext),
+                    shellVerifiedThisSession = SessionGrants.shellVerified,
                 )
             }
         }

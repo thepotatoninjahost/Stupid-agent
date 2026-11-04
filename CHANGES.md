@@ -1,3 +1,70 @@
+# Changelog — v0.6.15 "Stop Guessing, Start Asking"
+
+Third real-world test finding: asked to use Termux, Vorv answered "I
+don't have access to Termux" — WITHOUT EVER CALLING the shell tool. The
+tool was registered, reachable and one consent dialog away. But its
+description opened with "Requires: Termux installed, RUN_COMMAND
+permission granted, ..." — four prerequisites that a small local model
+reads as a disclaimer of unavailability — and the system prompt carried
+live status only for the workspace, never for Termux. The model guessed,
+guessed "no", and the honest-error machinery never even fired. Two
+fixes: tell the model the LIVE truth, and make repeated consent honest
+instead of nagging.
+
+## The model is told the truth, not a guess
+
+- New SessionGrants singleton (process-level, same binary-compat pattern
+  as PermissionBridge — zero signature changes, registered patches keep
+  working) tracks two things a session can KNOW or CHOOSE:
+  - VERIFIED: a real Termux round-trip completed — the Setup probe
+    passed, or a shell command's exit-code file actually appeared in the
+    shared workspace. Knowledge, not consent.
+  - GRANTED: the user chose "Allow all this session" on a shell consent
+    dialog. Consent, explicitly batched.
+- The kernel's system prompt now ends with a live Termux status line
+  (SessionGrants.statusLine()) in one of three wordings: verified +
+  granted (run freely, everything is logged and revocable); verified
+  (it works; per-command dialogs are normal, not a failure); not yet
+  verified (do NOT claim you cannot access Termux — call the tool and
+  report its honest error). The prompt already did this for the
+  workspace; Termux was the missing row.
+- The shell tool's description is rewritten to lead with what to DO:
+  "ALWAYS call this tool whenever the user asks for anything involving
+  Termux, the shell, or running commands... NEVER claim you cannot
+  access Termux without calling this tool first." The prerequisite
+  disclaimer moved to where it belongs — the honest errors that fire
+  only when something is actually missing.
+
+## Session grants — consent that doesn't train you to click blindly
+
+- Once shell works, every command popped a full dialog; a ten-command
+  task became ten dialogs, training the user to hit Allow without
+  reading. The shell consent dialog now offers a third answer: "Allow
+  all this session". It approves the current command AND records a
+  session-scoped grant.
+- While the grant holds: no more dialogs, but every command is audited
+  — the COMPLETE command goes to the episode log (kind
+  shell_session_auto) and a counter the user can see in Setup. The
+  grant replaces the dialog, never the record.
+- The grant is never the default button, never silent, never persisted
+  — it dies with the process. Revoke anytime: Setup → Termux
+  integration → REVOKE. Grant and revoke are themselves logged as
+  episodes. Shell-only: python_exec, app_intent and every other
+  consented tool are untouched.
+- Setup's Termux card now shows both live rows: "Shell VERIFIED this
+  session — the assistant is told the shell works" and the grant state
+  with its run counter.
+
+## Smoke tests — the wiring, not just the units
+
+- New TermuxSmokeTest drives the REAL CognitiveKernel with a scripted
+  LLM and pins the system prompt's Termux line in all three session
+  states; pins the rewritten description (and that the "Requires:"
+  disclaimer opener is gone); and pins the consent mechanics end-to-end:
+  the grant skips dialogs but not the workspace/permission gates, the
+  audit record carries the complete command, revoke restores dialogs,
+  fail-closed survives, and python_exec is unaffected by a shell grant.
+
 # Changelog — v0.6.14 "The Wall Gets a Door"
 
 Second real-world test finding, from a field recording: after v0.6.13

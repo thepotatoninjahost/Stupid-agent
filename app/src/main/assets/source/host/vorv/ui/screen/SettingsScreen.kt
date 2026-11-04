@@ -30,6 +30,7 @@ fun SettingsScreen(
     onOpenAppSettings: () -> Unit = {},
     onTestTermuxConnection: () -> Unit = {},
     onRefreshTermuxStatus: () -> Unit = {},
+    onRevokeShellSessionGrant: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -314,6 +315,47 @@ fun SettingsScreen(
                     onClick = onRefreshTermuxStatus,
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                 ) { Text("RECHECK", color = Primary, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+
+                // ------------------------------------- session grants (v0.6.15)
+                // Live view of what the model is TOLD (verification) and what
+                // the user has granted (consent batching) — both reset when
+                // the app process dies, by design.
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (state.shellVerifiedThisSession)
+                        "✓ Shell VERIFIED this session — a real command round-tripped; the assistant is told the shell works"
+                    else
+                        "○ Shell not verified yet this session — the assistant is told to try the shell tool rather than assume no access",
+                    color = if (state.shellVerifiedThisSession) Success else OnSurfaceVariant,
+                    fontSize = 11.sp,
+                )
+                if (state.shellSessionGrant) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Warning.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                "Session grant ACTIVE — shell commands run without further prompts " +
+                                    "(${state.shellAutoRunCount} so far, each logged in full).",
+                                color = Warning, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                            )
+                            TextButton(
+                                onClick = onRevokeShellSessionGrant,
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                            ) { Text("REVOKE — ask before every command again", color = Error, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                        }
+                    }
+                } else {
+                    Text(
+                        "No session grant — every shell command asks first. Tap 'Allow all this " +
+                            "session' on a shell approval dialog to batch them (logged, revocable, " +
+                            "expires when Vorv closes).",
+                        color = OnSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                }
             }
         }
 
