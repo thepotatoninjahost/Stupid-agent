@@ -50,6 +50,20 @@ origin/main, verified: lecture-breaker rule 11, one-line setup instructions
 and Termux probe gates all still present). Recorded here because "the tree
 moved under me" is exactly the kind of thing this project writes down.
 
+## Field finding #9 — the dying build machine takes the app's identity with it
+
+The recycle also destroyed ~/.android/debug.keystore — the key that signed
+every APK on the phone. Android refuses to update an app whose signature
+changed, so ANY next build would force a full uninstall (wiping every memory,
+task log and setting) before it could install. Root-cause fix: a debug
+keystore is now COMMITTED at app/vorv-debug.keystore and pinned for the debug
+build type, so every future build — CI, sandbox, fork — signs identically and
+installs over the installed base. This deliberately overturns the debug-key
+half of audit H-7 (that finding was right about RELEASE keys; a debug key has
+no security value to protect, and the field just proved the alternative costs
+a phone-only user their data). One-time cost: the transition TO this keystore
+requires one final uninstall. Never again after.
+
 ---
 
 # Changelog — v0.6.19 "The Lecture Breaker"

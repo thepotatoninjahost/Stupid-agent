@@ -39,15 +39,35 @@ android {
                 keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
             }
         }
-        // NOTE: the debug build intentionally uses the standard Android debug
-        // keystore (~/.android/debug.keystore, auto-generated). The previously
-        // committed vorv-debug.keystore was removed from the repository — see
-        // CHANGES.md (audit finding H-7 / supply-chain hygiene).
+        // v0.7.0 field finding #9 — the debug key is now COMMITTED on purpose.
+        //
+        // History: audit H-7 removed a previously committed keystore as
+        // supply-chain hygiene. That was right for RELEASE keys. But the
+        // default debug key is machine-local (~/.android/debug.keystore,
+        // auto-generated), and Vorv is sideload-only — every APK must install
+        // over the previous one. When the build machine dies (it did: the
+        // v0.6.x sandbox was recycled on 2026-11-05), the new machine's key
+        // mismatches the installed app, Android refuses the update, and a
+        // phone-only user must uninstall — losing every memory, task log and
+        // setting — just to accept an update. A committed DEBUG key has no
+        // security value to lose (anyone can generate one; it never
+        // authenticates anything), and it makes every future build — CI,
+        // sandbox, fork — signature-compatible with the installed base.
+        // One-time cost of the switch: ONE final uninstall (from the
+        // dead-machine key to this one). Never again after that.
+        create("debug") {
+            storeFile = file("vorv-debug.keystore")
+            storePassword = "android"
+            keyAlias = "vorvdebug"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
         debug {
-            // Nothing custom — standard debug keystore, debuggable as expected.
+            // v0.7.0: pinned to the committed debug keystore (see
+            // signingConfigs above) — stable signature across machines.
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = true
