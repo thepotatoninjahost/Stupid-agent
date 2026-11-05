@@ -55,7 +55,9 @@ android {
         // sandbox, fork — signature-compatible with the installed base.
         // One-time cost of the switch: ONE final uninstall (from the
         // dead-machine key to this one). Never again after that.
-        create("debug") {
+        // (getByName, not create — AGP pre-creates the "debug" config; we
+        // override its key material with the committed keystore.)
+        getByName("debug") {
             storeFile = file("vorv-debug.keystore")
             storePassword = "android"
             keyAlias = "vorvdebug"
