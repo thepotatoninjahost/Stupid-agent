@@ -196,7 +196,7 @@ class FallbackLlmTest {
     }
 
     @Test
-    fun `auth error classifier matches Z.ai error shapes`() {
+    fun `auth error classifier matches the Z ai error shapes`() {
         assertTrue(FallbackLlm.isAuthError(RuntimeException("LLM HTTP 401: unauthorized")))
         assertTrue(FallbackLlm.isAuthError(RuntimeException("LLM HTTP 403: Forbidden")))
         assertTrue(FallbackLlm.isAuthError(RuntimeException("Authorization Token invalid, please check")))
