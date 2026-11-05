@@ -69,6 +69,9 @@ fun VorvApp(
                         onTestTermuxConnection = vm::testTermuxConnection,
                         onRefreshTermuxStatus = vm::refreshTermuxStatus,
                         onRevokeShellSessionGrant = vm::revokeShellSessionGrant,
+                        // v0.6.17: gate 1 of the Setup checklist (workspace
+                        // folder) is fixed in the Files tab — one tap away.
+                        onOpenFilesTab = { vm.setScreen("files") },
                     )
                 }
             }

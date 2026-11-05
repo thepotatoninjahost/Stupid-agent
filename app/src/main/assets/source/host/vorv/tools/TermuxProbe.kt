@@ -24,13 +24,31 @@ import java.util.UUID
  *       directory, unreachable from any other app by Android design)
  *   3b. termux-setup-storage run once         (same — Termux-side)
  *
+ * Plus the shell tool's own gate zero — a workspace folder granted on
+ * primary local storage — the probe round-trips its output through it.
+ *
+ * v0.6.17 (field findings #4/#5 aftermath — "keeps coming up with new
+ * bullshit"): the gates used to surface ONE PER ERROR, mid-task, so a
+ * user who had granted every permission still hit fresh walls minutes
+ * later. [setupChecklist] enumerates ALL of them with a live status each,
+ * and [nextStepMessage] names exactly ONE action — the first gate still
+ * closed. Nothing is held back, nothing floods: the whole wall at once,
+ * one brick to fix at a time.
+ *
  * This object centralizes the checks, the messages, and a "test the whole
  * chain" probe (echo one marker string through the same base64-transport
  * wrapper ShellTool uses, and see the real result). The Setup tab shows
- * the live status, a one-tap GRANT for gate 2, and this probe; the probe's
- * timeout message names gates 3a/3b with the exact commands to type in
- * Termux — honestly stating the app cannot tell those two apart from its
- * side (no result file appears in either case).
+ * the live checklist, a one-tap GRANT for the permission gate, and this
+ * probe; the probe's timeout message names the Termux-side gates with the
+ * exact commands to type in Termux — honestly stating the app cannot tell
+ * those two apart from its side (no result file appears in either case).
+ *
+ * The probe returns a TYPED [ProbeResult]: READY (the chain verifiably
+ * round-tripped — recorded via SessionGrants.markShellVerified, which
+ * also lifts any dead-shell block) or TIMED_OUT (the one-time setup wall
+ * — recorded via SessionGrants.blockShell, the SAME breaker the shell
+ * tool trips, so the Setup test and real shell calls can never disagree
+ * about the wall's state). The ViewModel never string-sniffs the verdict.
  *
  * Consent model: the probe is launched by the user tapping a button whose
  * label shows the exact command ("Test connection — runs
@@ -46,6 +64,47 @@ object TermuxProbe {
     private const val PROBE_TIMEOUT_MS = 20_000L
     private const val POLL_INTERVAL_MS = 250L
     private const val SHELL_DIR = ".vorv-shell"
+
+    /**
+     * The reason recorded in SessionGrants when the probe times out — the
+     * same dead-shell wall the shell tool's dispatch timeout records.
+     * Wording feeds ShellTool's blockedShellMessage prose verbatim.
+     */
+    const val PROBE_BLOCK_REASON =
+        "the connection test never came back — Termux's one-time setup is " +
+            "missing on this device"
+
+    // ------------------------------------------- typed probe result (v0.6.17)
+
+    /** What a probe run proved about the Termux chain. */
+    enum class ProbeKind {
+        /** The marker round-tripped — the whole chain verifiably works. */
+        READY,
+        /** Dispatched, nothing came back — the Termux-side setup wall. */
+        TIMED_OUT,
+        /** Some other honest verdict (missing gates, bad workspace, ...). */
+        OTHER,
+    }
+
+    /**
+     * The probe's complete answer: the verbatim human-readable verdict for
+     * the Setup card, plus the typed kind so callers act on MEANING, never
+     * on string prefixes.
+     */
+    data class ProbeResult(val verdict: String, val kind: ProbeKind)
+
+    // ------------------------------------ consolidated checklist (v0.6.17)
+
+    /** Live status of one gate row in the Setup checklist. */
+    enum class GateStatus { PASS, FAIL, UNKNOWN }
+
+    /** One gate row: number, title, live status, and the exact price of opening it. */
+    data class SetupGate(
+        val n: Int,
+        val title: String,
+        val status: GateStatus,
+        val detail: String,
+    )
 
     // ---------------------------------------------------------- status
 
@@ -76,34 +135,141 @@ object TermuxProbe {
         else -> null
     }
 
+    // ------------------------------------------------- checklist (v0.6.17)
+    // Pure: the caller does the lookups, TermuxSetupTest pins every wording.
+    // The order IS the setup order — the user fixes gate 1 before gate 4 can
+    // even be tested. Every gate is visible at once; nothing is held back
+    // for a mid-task surprise. The two Termux-side steps cannot be probed
+    // individually (private storage) — their state is inferred honestly:
+    // verified round-trip = done, breaker tripped = pending, else untested.
+
+    /**
+     * Is the SAF tree URI a folder on primary local storage — the only
+     * volume Termux can write that Vorv can read back? Pure string parsing
+     * (no android.net.Uri) so unit tests pin it; mirrors the mapping
+     * ShellTool and the probe enforce at dispatch time.
+     */
+    fun workspaceOnPrimaryStorage(uriStr: String?): Boolean {
+        if (uriStr.isNullOrBlank()) return false
+        val prefix = "content://com.android.externalstorage.documents/tree/"
+        if (!uriStr.startsWith(prefix)) return false
+        val docId = runCatching {
+            java.net.URLDecoder.decode(uriStr.removePrefix(prefix).substringBefore('/'), "UTF-8")
+        }.getOrNull() ?: return false
+        return docId == "primary" || docId.startsWith("primary:")
+    }
+
+    /** The exact two manual steps, as one copy-pasteable string. */
+    private fun termuxSideSteps(): String =
+        "1) mkdir -p ~/.termux && echo 'allow-external-apps=true' >> " +
+            "~/.termux/termux.properties, then fully restart Termux; " +
+            "2) termux-setup-storage (accept the Android prompt)"
+
+    /**
+     * EVERY gate between the user and a working shell, in setup order, with
+     * a live status and the exact price of each. [shellBlocked] outranks
+     * [shellVerified] for gate 4 (fail-closed, same order as
+     * SessionGrants.statusLine) — the two cannot co-occur through the API.
+     */
+    fun setupChecklist(
+        workspaceUri: String?,
+        termuxInstalled: Boolean,
+        runCommandGranted: Boolean,
+        shellVerified: Boolean,
+        shellBlocked: Boolean,
+    ): List<SetupGate> {
+        val wsGranted = !workspaceUri.isNullOrBlank()
+        val wsPrimary = workspaceOnPrimaryStorage(workspaceUri)
+        val gate1 = when {
+            !wsGranted -> SetupGate(1, "Workspace folder", GateStatus.FAIL,
+                "Not granted yet. Open the Files tab and grant a folder on primary " +
+                    "local storage (under /storage/emulated/0) — shell output capture " +
+                    "and the connection test round-trip through it.")
+            !wsPrimary -> SetupGate(1, "Workspace folder", GateStatus.FAIL,
+                "Granted, but not on primary local storage — Termux cannot write " +
+                    "anything Vorv can read back. Re-grant from a folder under " +
+                    "/storage/emulated/0 in the Files tab.")
+            else -> SetupGate(1, "Workspace folder", GateStatus.PASS,
+                "Granted, on primary local storage.")
+        }
+        val gate2 = if (termuxInstalled) SetupGate(2, "Termux installed", GateStatus.PASS, "Installed.")
+        else SetupGate(2, "Termux installed", GateStatus.FAIL,
+            "Not installed — get it from F-Droid or " +
+                "github.com/termux/termux-app/releases (the Play Store build is " +
+                "deprecated and lacks RUN_COMMAND).")
+        val gate3 = if (runCommandGranted) SetupGate(3, "'Run commands in Termux' permission", GateStatus.PASS, "Granted.")
+        else SetupGate(3, "'Run commands in Termux' permission", GateStatus.FAIL,
+            "Not granted — tap GRANT below (one tap), or Android Settings → Apps → " +
+                "Vorv → Permissions → Additional permissions.")
+        val gate4 = when {
+            shellBlocked -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.FAIL,
+                "PENDING — a dispatched command never came back, which means these " +
+                    "are missing. In Termux run: ${termuxSideSteps()}. Then tap TEST " +
+                    "CONNECTION below — a pass lifts the block automatically.")
+            shellVerified -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.PASS,
+                "Verified this session — a real command round-tripped; both steps are done.")
+            else -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.UNKNOWN,
+                "Not tested this session. The two steps, in Termux: ${termuxSideSteps()}. " +
+                    "Tap TEST CONNECTION to verify both at once.")
+        }
+        return listOf(gate1, gate2, gate3, gate4)
+    }
+
+    /**
+     * The ONE action to take now: the first gate still not green. Null when
+     * every gate is open — the caller shows the all-clear instead.
+     */
+    fun nextStepMessage(gates: List<SetupGate>): String? {
+        val first = gates.firstOrNull { it.status != GateStatus.PASS } ?: return null
+        return "NEXT STEP ${first.n}/4 — ${first.title}: ${first.detail}"
+    }
+
+    /**
+     * The red banner while the dead-shell circuit breaker is active. The
+     * model's status line points the user here — this is what they find.
+     */
+    fun blockedBannerMessage(): String =
+        "SHELL BLOCKED — the last dispatched command never came back " +
+            "(Termux one-time setup missing). Every shell call now fails " +
+            "instantly instead of waiting 30 seconds, and the assistant knows " +
+            "to tell you the exact steps instead of retrying. Fix gate 4 " +
+            "below, then tap TEST CONNECTION — a pass lifts the block " +
+            "automatically."
+
     // ---------------------------------------------------------- probe
 
     /**
      * Runs [PROBE_COMMAND] in Termux through the proven ShellTool wrapper
      * pattern (base64 transport, output files in the workspace, exit-code
-     * poll) and returns a COMPLETE human-readable verdict for the Setup
-     * card. Never throws; every failure becomes honest text.
+     * poll) and returns a COMPLETE typed verdict for the Setup card. Never
+     * throws; every failure becomes honest text.
+     *
+     * Session-state side effects (symmetric with ShellTool's own dispatch
+     * sites, so the probe and the tool can never disagree): a full
+     * round-trip calls [SessionGrants.markShellVerified] (lifting any
+     * dead-shell block); a timeout calls [SessionGrants.blockShell] with
+     * [PROBE_BLOCK_REASON] — the same breaker the shell tool trips.
      */
-    suspend fun runProbe(appContext: Context, workspaceUri: String?): String = withContext(Dispatchers.IO) {
+    suspend fun runProbe(appContext: Context, workspaceUri: String?): ProbeResult = withContext(Dispatchers.IO) {
         val wsUri = workspaceUri?.takeIf { it.isNotBlank() }
-            ?: return@withContext noWorkspaceMessage()
+            ?: return@withContext ProbeResult(noWorkspaceMessage(), ProbeKind.OTHER)
 
-        if (!termuxInstalled(appContext)) return@withContext readinessError(
-            termuxInstalled = false, permissionGranted = false
-        )!!
+        if (!termuxInstalled(appContext)) return@withContext ProbeResult(
+            readinessError(termuxInstalled = false, permissionGranted = false)!!, ProbeKind.OTHER)
 
-        if (!runCommandGranted(appContext)) return@withContext readinessError(
-            termuxInstalled = true, permissionGranted = false
-        )!!
+        if (!runCommandGranted(appContext)) return@withContext ProbeResult(
+            readinessError(termuxInstalled = true, permissionGranted = false)!!, ProbeKind.OTHER)
 
         val rawDir = rawWorkspacePath(wsUri)
-            ?: return@withContext notPrimaryStorageMessage()
+            ?: return@withContext ProbeResult(notPrimaryStorageMessage(), ProbeKind.OTHER)
 
         val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(appContext, Uri.parse(wsUri))
-            ?: return@withContext "Workspace folder could not be opened — re-grant it in the Files tab."
+            ?: return@withContext ProbeResult(
+                "Workspace folder could not be opened — re-grant it in the Files tab.", ProbeKind.OTHER)
         val shellDir = root.findFile(SHELL_DIR)?.takeIf { it.isDirectory }
             ?: root.createDirectory(SHELL_DIR)
-            ?: return@withContext "Could not create .$SHELL_DIR in the workspace — re-grant it in the Files tab."
+            ?: return@withContext ProbeResult(
+                "Could not create .$SHELL_DIR in the workspace — re-grant it in the Files tab.", ProbeKind.OTHER)
 
         val id = UUID.randomUUID().toString().replace("-", "").take(16)
         val outName = "$id.out"; val errName = "$id.err"; val codeName = "$id.code"
@@ -123,7 +289,7 @@ object TermuxProbe {
             }
             appContext.startService(intent); true
         }.getOrDefault(false)
-        if (!dispatched) return@withContext dispatchFailedMessage()
+        if (!dispatched) return@withContext ProbeResult(dispatchFailedMessage(), ProbeKind.OTHER)
 
         val deadline = System.currentTimeMillis() + PROBE_TIMEOUT_MS
         var codeDoc: androidx.documentfile.provider.DocumentFile? = null
@@ -143,14 +309,31 @@ object TermuxProbe {
         listOf(outName, errName, codeName).forEach { n -> runCatching { shellDir.findFile(n)?.delete() } }
 
         when {
-            codeDoc == null -> probeTimeoutMessage(PROBE_TIMEOUT_MS)
-            code == "0" && out.contains("vorv-termux-ok") ->
-                "ALL GOOD — Vorv can run commands in Termux and read their real " +
-                    "output back. The shell tool is fully operational."
-            else ->
+            codeDoc == null -> {
+                // v0.6.17: the SAME dead-shell wall the shell tool's dispatch
+                // timeout records. Trip the shared breaker here too — then the
+                // Setup test and real shell calls can never disagree about
+                // the wall's state, and every shell call after this fails
+                // fast with the manual fix instead of burning 30 seconds.
+                SessionGrants.blockShell(PROBE_BLOCK_REASON)
+                ProbeResult(probeTimeoutMessage(PROBE_TIMEOUT_MS), ProbeKind.TIMED_OUT)
+            }
+            code == "0" && out.contains("vorv-termux-ok") -> {
+                // The chain verifiably round-tripped. Record it (v0.6.15
+                // invariant, now owned by the probe itself) — the system
+                // prompt tells the model the shell WORKS, and any dead-shell
+                // block lifts: proof, not a guess.
+                SessionGrants.markShellVerified()
+                ProbeResult(
+                    "ALL GOOD — Vorv can run commands in Termux and read their real " +
+                        "output back. The shell tool is fully operational.",
+                    ProbeKind.READY)
+            }
+            else -> ProbeResult(
                 "The command ran in Termux but did not produce the expected " +
                     "marker (exit code: ${code ?: "?"}). Real stdout: \"${out.take(500)}\". " +
-                    "Real stderr: \"${err.take(500)}\"."
+                    "Real stderr: \"${err.take(500)}\".",
+                ProbeKind.OTHER)
         }
     }
 

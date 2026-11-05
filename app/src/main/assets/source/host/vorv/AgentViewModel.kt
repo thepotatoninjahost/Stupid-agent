@@ -133,6 +133,8 @@ data class AgentState(
     val termuxTestResult: String? = null,
     /** v0.6.15: a real Termux round-trip completed this session (knowledge). */
     val shellVerifiedThisSession: Boolean = false,
+    /** v0.6.17: the dead-shell circuit breaker is active (live in Setup). */
+    val shellBlockedThisSession: Boolean = false,
     /** v0.6.15: the user granted all shell commands for this session. */
     val shellSessionGrant: Boolean = false,
     /** v0.6.15: commands run under the session grant (audit counter). */
@@ -524,6 +526,7 @@ class AgentViewModel(
         _state.update {
             it.copy(
                 shellVerifiedThisSession = SessionGrants.shellVerified,
+                shellBlockedThisSession = SessionGrants.shellBlocked,
                 shellSessionGrant = SessionGrants.shellAllCommands,
                 shellAutoRunCount = SessionGrants.autoRunCount,
             )
@@ -608,25 +611,27 @@ class AgentViewModel(
      * Setup → Termux integration → TEST. Runs exactly `echo vorv-termux-ok`
      * in Termux (the button label states the command — that label is the
      * consent surface) and puts the complete honest verdict in state.
+     *
+     * v0.6.17: the probe owns its session-state side effects — a pass marks
+     * the chain VERIFIED (lifting any dead-shell block), a timeout trips the
+     * SAME breaker the shell tool trips. The ViewModel acts on the typed
+     * kind, never on string prefixes; the Setup checklist reflects both.
      */
     fun testTermuxConnection() {
         if (_state.value.termuxTesting) return
         _state.update { it.copy(termuxTesting = true, termuxTestResult = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val result = TermuxProbe.runProbe(appContext, _state.value.workspaceUri.takeIf { it.isNotBlank() })
-            // v0.6.15: a passing probe is a VERIFIED round-trip — the system
-            // prompt can now tell the model the shell genuinely works this
-            // session, instead of letting it guess "no access".
-            if (result.startsWith("ALL GOOD")) SessionGrants.markShellVerified()
             _state.update {
                 it.copy(
                     termuxTesting = false,
-                    termuxTestResult = result,
+                    termuxTestResult = result.verdict,
                     // The probe may have been the first real dispatch — refresh
-                    // the status readout too.
+                    // every status readout it could have changed.
                     termuxInstalled = TermuxProbe.termuxInstalled(appContext),
                     runCommandGranted = TermuxProbe.runCommandGranted(appContext),
                     shellVerifiedThisSession = SessionGrants.shellVerified,
+                    shellBlockedThisSession = SessionGrants.shellBlocked,
                 )
             }
         }
@@ -769,6 +774,11 @@ class AgentViewModel(
                 currentTaskJob = null
                 modelRepository.markBusy(false)
                 host.vorv.service.AgentService.stop(appContext)
+                // v0.6.17: the task may have tripped the dead-shell breaker
+                // or completed the first verified round-trip — the Setup
+                // checklist must show the truth the moment the task ends,
+                // not stay stale until the user taps something.
+                refreshSessionGrants()
             }
         }
     }

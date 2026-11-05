@@ -1,3 +1,54 @@
+# Changelog — v0.6.17 "The Whole Wall at Once"
+
+The aftermath of findings #4/#5: "keeps coming up with new bullshit." The
+user granted every permission both apps offered — and still hit fresh
+walls, one per error, minutes apart. Not one wall was fake: the workspace
+grant, Termux installed, RUN_COMMAND, allow-external-apps,
+termux-setup-storage. The UX sin was the REVEAL ORDER: each gate surfaced
+only when the previous one opened, mid-task, exactly when the user thought
+they were done. v0.6.16 stopped the bleeding (fail fast, no retry loop, a
+STOP button); this version removes the surprise itself.
+
+## The consolidated checklist — every gate, live, all at once
+
+- Setup → Termux integration is now a four-gate checklist, each gate with
+  a live status and the exact price of opening it, in the order they must
+  open: 1) workspace folder (Files tab, primary local storage), 2) Termux
+  installed, 3) 'Run commands in Termux' permission, 4) the two one-time
+  Termux-side steps. Nothing is held back for a mid-task surprise.
+- ONE next step is highlighted — the first gate still not green — instead
+  of a flood of warnings. When everything opens: "ALL 4 GATES OPEN."
+- Gate 1's fix lives in the Files tab, so the card carries an "Open the
+  Files tab" button when the workspace is missing or off primary storage.
+- The dead-shell circuit breaker is now VISIBLE in Setup: a red banner
+  while active (the model's status line already points the user here —
+  this is what they find when they arrive), and gate 4 shows FAIL with
+  the exact two commands plus the lift path while it holds.
+
+## The probe and the breaker share one truth
+
+- TermuxProbe.runProbe now returns a TYPED result (READY / TIMED_OUT /
+  OTHER); the ViewModel acts on meaning, never on string prefixes.
+- A probe timeout trips the SAME breaker the shell tool trips — the Setup
+  test and real shell calls can never disagree about the wall's state.
+  Every shell call after a timed-out test fails instantly with the manual
+  fix, instead of burning its own 30-second timeout first.
+- A passing probe still marks the chain verified (which lifts the block);
+  that invariant moved into the probe itself, next to the dispatch it
+  proves, instead of living in the ViewModel's string check.
+- Session state (verified / blocked / grant / counter) refreshes the
+  moment a task ends — the checklist can no longer show a stale breaker
+  or a stale "not verified" after the task that changed them.
+
+## Tests
+
+- TermuxSetupTest grows to 19: every checklist state pinned (all-green,
+  each single-gate failure, off-primary workspace, UNKNOWN vs FAIL for
+  the Termux-side steps, blocked-outranks-verified fail-closed order),
+  the next-step ordering (first closed gate first), the SAF tree-URI
+  parsing (primary / SD volume / other providers / null), and the
+  blocked banner's instant-fail + lift-path wording. 199 tests total.
+
 # Changelog — v0.6.16 "The Exit and the Circuit Breaker"
 
 Fourth and fifth real-world findings, from the field recording: the user

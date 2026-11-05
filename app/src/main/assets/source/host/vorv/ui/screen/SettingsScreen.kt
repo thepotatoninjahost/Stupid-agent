@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
 import host.vorv.llm.ModelChoice
+import host.vorv.tools.TermuxProbe
 import host.vorv.ui.theme.*
 
 @Composable
@@ -31,6 +32,7 @@ fun SettingsScreen(
     onTestTermuxConnection: () -> Unit = {},
     onRefreshTermuxStatus: () -> Unit = {},
     onRevokeShellSessionGrant: () -> Unit = {},
+    onOpenFilesTab: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -230,32 +232,85 @@ fun SettingsScreen(
             }
         }
 
-        // ------------------------------------------ Termux integration (v0.6.14)
+        // ------------------------------- Termux integration (v0.6.14; checklist v0.6.17)
+        // Field aftermath ("keeps coming up with new bullshit"): the gates
+        // used to surface one per error, mid-task. This card now shows
+        // EVERY gate with its live status at once, and names exactly ONE
+        // next action — the whole wall at once, one brick to fix at a time.
         Text("Termux Integration (shell tool + self-repair)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "The shell tool and on-device self-repair compile run real commands in Termux. " +
-                "Three gates must open, and this card shows their live state. Vorv asks Android " +
-                "for the permission with a one-tap dialog when a task needs it — or grant it here now.",
+            "Every gate between Vorv and a working shell — all of them, live, " +
+                "in the order they must open. Fix them top to bottom; each names " +
+                "its exact price. Nothing is held back for a mid-task surprise.",
             color = OnSurfaceVariant, fontSize = 11.sp,
         )
 
+        // The dead-shell circuit breaker, visible: the model's status line
+        // points the user here ("Setup → Termux integration → Test
+        // connection") — this banner is what they find when they arrive.
+        if (state.shellBlockedThisSession) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Error.copy(alpha = 0.12f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    TermuxProbe.blockedBannerMessage(),
+                    color = Error, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(10.dp),
+                )
+            }
+        }
+
+        // Pure, pinned by TermuxSetupTest — recomputed from live state.
+        val gates = TermuxProbe.setupChecklist(
+            state.workspaceUri.takeIf { it.isNotBlank() },
+            state.termuxInstalled,
+            state.runCommandGranted,
+            state.shellVerifiedThisSession,
+            state.shellBlockedThisSession,
+        )
+        val nextStep = TermuxProbe.nextStepMessage(gates)
+
         Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    if (state.termuxInstalled) "✓ Termux installed" else "✗ Termux NOT installed — get it from F-Droid or github.com/termux/termux-app/releases (Play Store build is deprecated)",
-                    color = if (state.termuxInstalled) Success else Error,
-                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    if (state.runCommandGranted)
-                        "✓ 'Run commands in Termux environment' permission granted"
-                    else
-                        "✗ 'Run commands in Termux environment' permission NOT granted — needed for every shell command and every self-repair compile",
-                    color = if (state.runCommandGranted) Success else Warning,
-                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                )
+                // Exactly ONE action at a time — or the honest all-clear.
+                if (nextStep != null) {
+                    Text(nextStep, color = Warning, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                } else {
+                    Text(
+                        "ALL 4 GATES OPEN — the shell tool is fully operational.",
+                        color = Success, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                    )
+                }
 
                 Spacer(Modifier.height(2.dp))
+
+                gates.forEach { gate ->
+                    val (symbol, color) = when (gate.status) {
+                        TermuxProbe.GateStatus.PASS -> "✓" to Success
+                        TermuxProbe.GateStatus.FAIL -> "✗" to Error
+                        TermuxProbe.GateStatus.UNKNOWN -> "?" to OnSurfaceVariant
+                    }
+                    Column {
+                        Text(
+                            "${gate.n}. ${gate.title}  $symbol",
+                            color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(gate.detail, color = OnSurfaceVariant, fontSize = 10.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(2.dp))
+
+                // Gate 1's fix lives in the Files tab — one tap away.
+                if (gates.first().status != TermuxProbe.GateStatus.PASS) {
+                    Button(
+                        onClick = onOpenFilesTab,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(50),
+                    ) { Text("Open the Files tab to grant the workspace", fontSize = 11.sp) }
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -301,13 +356,11 @@ fun SettingsScreen(
                 }
 
                 Text(
-                    "The two Termux-side steps Vorv cannot do for you (they live inside " +
-                        "Termux's private storage, which Android blocks every other app from " +
-                        "touching):\n" +
-                        "1. In Termux: mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties — then restart Termux.\n" +
-                        "2. In Termux: termux-setup-storage (accept the Android prompt).\n" +
-                        "Also install the compilers self-repair needs: pkg install kotlin\n" +
-                        "After any change, RECHECK — or just tap Test.",
+                    "Why Vorv cannot do the Termux-side steps for you: both files " +
+                        "live inside Termux's private data directory, which Android " +
+                        "blocks every other app from touching. One manual setup, then " +
+                        "the shell works forever. Also install the compilers " +
+                        "self-repair needs: pkg install kotlin",
                     color = OnSurfaceVariant, fontSize = 10.sp,
                 )
 
