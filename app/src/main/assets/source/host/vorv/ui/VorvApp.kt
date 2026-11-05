@@ -43,7 +43,11 @@ fun VorvApp(
 
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
-            AppHeader(busy = state.busy, llmLabel = state.currentLlmLabel)
+            AppHeader(
+                busy = state.busy,
+                llmLabel = state.currentLlmLabel,
+                onStop = vm::stopCurrentTask,
+            )
             Box(modifier = Modifier.weight(1f)) {
                 when (state.screen) {
                     "chat" -> ChatScreen(state, vm::send)
@@ -159,7 +163,7 @@ fun VorvApp(
 }
 
 @Composable
-private fun AppHeader(busy: Boolean, llmLabel: String) {
+private fun AppHeader(busy: Boolean, llmLabel: String, onStop: () -> Unit = {}) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -184,13 +188,34 @@ private fun AppHeader(busy: Boolean, llmLabel: String) {
             )
         }
         Spacer(Modifier.width(8.dp))
-        Surface(shape = RoundedCornerShape(50), color = if (busy) Warning.copy(alpha = 0.15f) else Success.copy(alpha = 0.15f)) {
-            Text(
-                if (busy) "Live" else "Idle",
-                color = if (busy) Warning else Success,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-            )
+        // v0.6.16 (field finding #5 — the missing stop button): while a
+        // task runs, the status pill becomes the STOP button — the user's
+        // always-visible exit from any loop. Before this, a running task
+        // could not be cancelled at all: the send button was disabled while
+        // busy and typed "stop" was silently dropped.
+        if (busy) {
+            Surface(
+                onClick = onStop,
+                shape = RoundedCornerShape(50),
+                color = Error.copy(alpha = 0.15f),
+            ) {
+                Text(
+                    "■ STOP",
+                    color = Error,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        } else {
+            Surface(shape = RoundedCornerShape(50), color = Success.copy(alpha = 0.15f)) {
+                Text(
+                    "Idle",
+                    color = Success,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }

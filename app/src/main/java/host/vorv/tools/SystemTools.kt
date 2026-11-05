@@ -281,6 +281,21 @@ class ShellTool(private val appContext: Context) : Tool {
         val command = input.get("command")?.asString
             ?: return@withContext ToolResult(ok = false, output = "", error = "missing command",
                 durationMs = System.currentTimeMillis() - t0)
+
+        // ---- v0.6.16 dead-shell circuit breaker (field finding #4): if a
+        //      previous dispatch never came back, the Termux one-time setup
+        //      wall is up and retrying CANNOT fix it. Fail fast — no consent
+        //      dialog, no dispatch, no 30-second wait — with the exact
+        //      manual fix. The block lifts only on a verified round-trip
+        //      (Setup probe pass or a real command completing). This is
+        //      what turns "endless 30s-timeout retry loop" into "one 30s
+        //      timeout, then instant honest errors". ----
+        SessionGrants.shellBlockedReason?.let { reason ->
+            return@withContext ToolResult(ok = false, output = "",
+                error = blockedShellMessage(reason),
+                durationMs = System.currentTimeMillis() - t0)
+        }
+
         val timeoutMs = (input.get("timeout_ms")?.takeIf { !it.isJsonNull }?.asInt ?: 30_000)
             .coerceIn(1_000, 120_000)
         val cwd = input.get("cwd")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
@@ -401,14 +416,17 @@ class ShellTool(private val appContext: Context) : Tool {
             if (codeFile == null) {
                 // Honest failure — do NOT fabricate output (audit C-3).
                 out?.delete(); err?.delete()
+                // v0.6.16 (field finding #4): record the dead-shell wall.
+                // Every retry after this fails instantly with the exact
+                // manual fix — the model can no longer burn 30 seconds per
+                // retry on a wall only the user can open.
+                SessionGrants.blockShell(
+                    "the command never came back within ${timeoutMs}ms — Termux's " +
+                        "one-time setup is missing on this device")
                 return@withContext ToolResult(
                     ok = false,
                     output = "",
-                    error = "Command was dispatched but produced no result within ${timeoutMs}ms. " +
-                        "Most likely causes: (a) Termux lacks storage access — run " +
-                        "termux-setup-storage inside Termux once; (b) allow-external-apps=true " +
-                        "missing in ~/.termux/termux.properties; (c) the command is still running. " +
-                        "The command's actual result is UNKNOWN — do not claim it succeeded.",
+                    error = dispatchTimeoutMessage(timeoutMs.toLong()),
                     durationMs = System.currentTimeMillis() - t0,
                 )
             }
@@ -493,6 +511,49 @@ class ShellTool(private val appContext: Context) : Tool {
                 "permissions → Run commands in Termux environment. Also ensure " +
                 "~/.termux/termux.properties has allow-external-apps=true (see the " +
                 "Termux integration section in Setup)."
+
+        /**
+         * v0.6.16 (field finding #4): the dispatch-timeout error, REBUILT.
+         * The old text named three likely causes but not one exact command;
+         * the user read "allow-external-apps=true missing" and had no idea
+         * what to type where — the recording shows the loop outliving their
+         * patience. The new text carries the exact commands, the restart
+         * step, the honest cannot-do-it-for-you reason, the verification
+         * path, and an explicit do-not-retry order. Pinned by
+         * TermuxSmokeTest.
+         */
+        internal fun dispatchTimeoutMessage(timeoutMs: Long): String = buildString {
+            appendLine("The command was sent to Termux but produced no result within ${timeoutMs / 1000}s.")
+            appendLine("This is almost always Termux's ONE-TIME setup missing — Vorv cannot")
+            appendLine("fix it for you (the files live inside Termux's private storage, which")
+            appendLine("Android blocks every other app from touching). The user must run")
+            appendLine("these steps IN TERMUX:")
+            appendLine()
+            appendLine("1. mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties")
+            appendLine("2. Fully restart Termux (swipe it from Recents, reopen)")
+            appendLine("3. termux-setup-storage   (accept the Android prompt)")
+            appendLine()
+            appendLine("Then verify: Setup → Termux integration → Test connection — until it")
+            appendLine("reports ALL GOOD, further shell commands will fail instantly.")
+            appendLine("Do NOT retry this command. Tell the user the three steps above in plain")
+            appendLine("English and wait. This command's actual result is UNKNOWN — do not")
+            appendLine("claim it succeeded.")
+        }
+
+        /**
+         * v0.6.16: the fail-fast error while the dead-shell block is active.
+         * The wall, the fix, and the do-not-retry order — short, because the
+         * full steps were already delivered with the timeout that set it.
+         */
+        internal fun blockedShellMessage(reason: String): String =
+            "Shell is disabled for the rest of this session ($reason). A previous " +
+                "command never came back, which means Termux's one-time manual setup " +
+                "is missing — retrying cannot fix it. Do NOT call shell again; instead " +
+                "tell the user: in Termux run (1) mkdir -p ~/.termux && echo " +
+                "'allow-external-apps=true' >> ~/.termux/termux.properties, (2) fully " +
+                "restart Termux, (3) termux-setup-storage — then Setup → Termux " +
+                "integration → Test connection. It re-enables automatically when " +
+                "that test passes."
     }
 }
 

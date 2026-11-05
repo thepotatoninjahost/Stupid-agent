@@ -1,3 +1,69 @@
+# Changelog — v0.6.16 "The Exit and the Circuit Breaker"
+
+Fourth and fifth real-world findings, from the field recording: the user
+granted every permission both apps offered, and shell STILL failed — while
+Termux's own notifications told the real story ("RunCommandService requires
+allow-external-apps property to be set to true in ~/.termux/
+termux.properties") four times in three minutes. Meanwhile Vorv re-called
+the dead shell every 30 seconds at iteration 5, 6, 7... and the user
+discovered there was NO WAY TO STOP IT: the send button is disabled while
+busy, and typed "stop" was silently dropped. Three laws were broken at
+once: the wall's price wasn't named exactly, the loop had no backstop, and
+the user had no exit. All three get fixed.
+
+## The STOP button — no task is ever uncancellable again
+
+- The header's "Live" pill becomes a red ■ STOP button while any task
+  runs. One tap cancels the kernel loop at its next suspension point —
+  mid-generation, mid-tool, mid-consent.
+- Cancellation now PROPAGATES: the kernel rethrows CancellationException
+  (previously its catch-all would have swallowed it into a fake
+  TaskResult), and the ViewModel answers honestly: "Stopped — you
+  cancelled this task," with partial work preserved in the Tasks tab
+  (DB writes wrapped in NonCancellable so the log lands).
+- The chat input is usable while busy again: "stop"/"cancel"/"abort"
+  cancels; any other message gets an honest "I'm still working — tap
+  STOP or send stop" instead of the old silent drop that locked the
+  user out.
+
+## The dead-shell circuit breaker — one timeout, then instant answers
+
+- When a dispatched command never comes back (the one-time Termux setup
+  wall), ShellTool records the wall in SessionGrants. Every subsequent
+  shell call fails FAST — no consent dialog, no dispatch, no 30-second
+  wait — with the exact three manual steps and the re-enable path.
+- The block lifts only on a VERIFIED round-trip: the Setup probe passing
+  or a real command completing. A session grant does NOT lift it —
+  consent is not proof the wall is gone.
+- The dispatch-timeout error is rebuilt: the exact commands to type in
+  Termux, the full-restart step, the honest "I cannot do this for you"
+  reason (the files live inside Termux's private storage), the Setup →
+  Test connection verification path, and an explicit do-not-retry order.
+  The old text named three causes but not one exact command.
+
+## The retry-loop backstop — the kernel ends what the model won't
+
+- Three consecutive failures of the same tool inject ONE corrective
+  order: stop calling it, explain the wall to the user in plain English.
+- Three more consecutive failures after the corrective → the kernel
+  force-finalizes with the honest last error (error=retry_loop, logged
+  as an episode). The recording's endless loop is now impossible: with
+  the circuit breaker, retries fail instantly, so the whole backstop
+  resolves in seconds rather than minutes.
+- A single success resets the streak counter — legitimate retry-then-
+  succeed flows are untouched.
+
+## Tests
+
+- TermuxSmokeTest grows to 17: the blocked shell fails fast with the
+  manual fix and no dialog, blocked outranks verified in the prompt
+  line, only a verified round-trip lifts the block, and the timeout
+  message carries the exact commands.
+- CognitiveKernelTest grows to 23: the 3-strikes corrective, the
+  3-more force-final, the success-reset, and user-stop cancellation
+  propagating out of the kernel un-swallowed (the v0.6.15 bug, pinned).
+- 189 tests total, all green.
+
 # Changelog — v0.6.15 "Stop Guessing, Start Asking"
 
 Third real-world test finding: asked to use Termux, Vorv answered "I

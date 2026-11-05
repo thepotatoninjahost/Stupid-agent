@@ -194,6 +194,17 @@ class AgentViewModel(
     /** Serializes consent dialogs so only one is visible at a time. */
     private val confirmMutex = Mutex()
 
+    /**
+     * v0.6.16 (field finding #5 — the missing stop button): the running
+     * task's Job, kept so the user can CANCEL it. Before this, a task
+     * could only run to its iteration cap or its multi-minute timeout —
+     * the field recording shows a dead-shell retry loop the user could
+     * not stop (the chat send button is disabled while busy, and typed
+     * "stop" was silently dropped). Null when idle.
+     */
+    @Volatile
+    private var currentTaskJob: kotlinx.coroutines.Job? = null
+
     init {
         // v0.6.14: install the runtime-permission bridge BEFORE any tool can
         // run. Tools call PermissionBridge.request() when they hit the
@@ -624,13 +635,46 @@ class AgentViewModel(
     // ------------------------------------------------------- send / tasks
 
     /**
+     * v0.6.16: STOP — the user's exit from any running task. Cancels the
+     * kernel loop at its next suspension point; the honest stopped-by-user
+     * message comes from send()'s CancellationException handler. Safe to
+     * call anytime (no-op when idle). The consent dialog, if one is up,
+     // is cleared by requestConfirmation's own finally.
+     */
+    fun stopCurrentTask() {
+        currentTaskJob?.cancel(kotlinx.coroutines.CancellationException("stopped by user"))
+    }
+
+    /**
      * Send a chat message — kicks off the ReAct kernel.
      * Gating is honest: local mode needs the downloaded model; cloud mode needs an API key.
      * Overall task timeout is mode-aware (audit M-3).
+     *
+     * v0.6.16: a busy task no longer locks the user out. "stop"/"cancel"/
+     * "abort" cancels the running task; anything else gets an honest
+     * local reply instead of the old silent drop (the send button is
+     * enabled while busy for exactly this).
      */
     fun send(message: String) {
         val trimmed = message.trim()
-        if (trimmed.isEmpty() || _state.value.busy) return
+        if (trimmed.isEmpty()) return
+
+        // ---- v0.6.16: honest busy-send (was: silent drop — the user was
+        //      locked in with no way to even say "stop") ----
+        if (_state.value.busy) {
+            val lower = trimmed.lowercase().trimEnd('.', '!', '?')
+            _state.update { it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed)) }
+            if (lower == "stop" || lower == "cancel" || lower == "abort" || lower == "stop it") {
+                stopCurrentTask()
+            } else {
+                _state.update {
+                    it.copy(messages = it.messages + ChatMessage(role = "assistant",
+                        content = "I'm still working on the previous task. To cancel it, tap ■ STOP " +
+                            "in the header (or send \"stop\"), then resend your message."))
+                }
+            }
+            return
+        }
 
         val s = _state.value
         val engineAvailable = when (s.llmMode) {
@@ -658,7 +702,7 @@ class AgentViewModel(
             )
         }
 
-        viewModelScope.launch(Dispatchers.IO) {
+        currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
             db.taskDao().insert(task)
 
@@ -697,11 +741,32 @@ class AgentViewModel(
                     )
                 }
                 db.taskDao().complete(task.id, result.answer.take(500), if (result.ok) "completed" else "failed")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // v0.6.16: the user pressed STOP (header button or "stop" in
+                // chat). Honest, immediate, final. DB write needs
+                // NonCancellable — suspend calls in a cancelled coroutine
+                // throw on entry.
+                _state.update {
+                    it.copy(
+                        messages = it.messages + ChatMessage(
+                            role = "assistant",
+                            content = "Stopped — you cancelled this task. Work already done is " +
+                                "preserved in the Tasks tab; partial tool history is intact.",
+                        ),
+                        busy = false,
+                        liveTrace = emptyList(),
+                    )
+                }
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    runCatching { db.taskDao().fail(task.id, "stopped by user") }
+                }
+                throw e
             } catch (e: Exception) {
                 val errMsg = ChatMessage(role = "assistant", content = "Error: ${e.message}")
                 _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
                 db.taskDao().fail(task.id, e.message ?: "unknown")
             } finally {
+                currentTaskJob = null
                 modelRepository.markBusy(false)
                 host.vorv.service.AgentService.stop(appContext)
             }

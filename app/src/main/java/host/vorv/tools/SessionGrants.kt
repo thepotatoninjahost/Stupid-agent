@@ -19,17 +19,26 @@ package host.vorv.tools
  *      guess. When nothing is verified yet, the line explicitly forbids
  *      the false-denial move: call the tool, report its honest error.
  *
- *   2. CONSENT ERGONOMICS — once shell DOES work, every single command
- *      popped a full consent dialog; a ten-command task became ten dialogs,
- *      training the user to click Allow without reading. [shellAllCommands]
- *      is the user's explicit, session-scoped answer: "Allow all shell
- *      commands this session", chosen on the consent dialog itself (never
- *      the default, never silent). While it holds, ShellTool skips the
- *      per-command dialog but (a) counts every auto-run and (b) audits the
- *      COMPLETE command through [auditSink] into the episode log — the
- *      consent surface moves from per-command dialogs to a per-session
- *      grant plus a permanent, reviewable trail. Revocable anytime from
- *      Setup; dies with the process; never persisted to disk.
+ *   2. CONSENT ERGONOMICS — [shellAllCommands] is the user's explicit,
+ *      session-scoped answer: "Allow all shell commands this session",
+ *      chosen on the consent dialog itself (never the default, never
+ *      silent). While it holds, ShellTool skips the per-command dialog but
+ *      (a) counts every auto-run and (b) audits the COMPLETE command
+ *      through [auditSink] into the episode log — the consent surface moves
+ *      from per-command dialogs to a per-session grant plus a permanent,
+ *      reviewable trail. Revocable anytime from Setup; dies with the
+ *      process; never persisted to disk.
+ *
+ *   3. THE DEAD-SHELL CIRCUIT BREAKER (v0.6.16, field finding #4) — when a
+ *      dispatched command never comes back (the allow-external-apps /
+ *      termux-setup-storage wall), the model used to retry the SAME call
+ *      and burn its 30s timeout again and again while the user watched a
+ *      task that could not be stopped. [blockShell] records the wall;
+ *      ShellTool then fails FAST — no consent, no dispatch, no 30s wait —
+ *      with the exact manual fix, until a verified round-trip (Setup probe
+ *      passing, or a real command completing) calls [markShellVerified],
+ *      which clears the block. Fail-closed in the other direction too:
+ *      the block never silently lifts.
  *
  * WHY A PROCESS-LEVEL SINGLETON (same argument as PermissionBridge): binary
  * compatibility with REGISTERED PATCHES. Changing ToolContext's or
@@ -57,6 +66,14 @@ object SessionGrants {
     private var autoRunCountValue: Int = 0
 
     /**
+     * v0.6.16: why shell is currently dead (dispatch never came back), or
+     * null when it isn't. First wall wins — it is the one the user needs to
+     * fix; later identical walls don't replace the original diagnosis.
+     */
+    @Volatile
+    private var shellBlockedReasonFlag: String? = null
+
+    /**
      * Audit channel installed by AgentViewModel → Room episode log. Every
      * command run under the session grant passes through here with its
      * COMPLETE text — the grant replaces the per-command dialog, not the
@@ -72,6 +89,8 @@ object SessionGrants {
     val shellVerified: Boolean get() = shellVerifiedAtFlag != null
     val shellVerifiedAt: Long? get() = shellVerifiedAtFlag
     val autoRunCount: Int get() = autoRunCountValue
+    val shellBlocked: Boolean get() = shellBlockedReasonFlag != null
+    val shellBlockedReason: String? get() = shellBlockedReasonFlag
 
     /** The user chose "Allow all shell commands this session" on a consent dialog. */
     fun grantShellForSession() {
@@ -87,9 +106,21 @@ object SessionGrants {
      * The Termux chain verifiably round-tripped this session — Setup probe
      * passed or a real shell command completed. Knowledge, not a grant:
      * per-command dialogs continue unless the user separately granted.
+     * v0.6.16: a verified round-trip is also the ONLY thing that lifts a
+     * dead-shell block — proof the wall is gone, not a guess.
      */
     fun markShellVerified() {
         if (shellVerifiedAtFlag == null) shellVerifiedAtFlag = System.currentTimeMillis()
+        shellBlockedReasonFlag = null
+    }
+
+    /**
+     * v0.6.16: a dispatched command never came back — the Termux one-time
+     * setup wall. Shell fails fast with the manual fix until a verified
+     * round-trip lifts it. First reason wins.
+     */
+    fun blockShell(reason: String) {
+        if (shellBlockedReasonFlag == null) shellBlockedReasonFlag = reason
     }
 
     /**
@@ -115,6 +146,12 @@ object SessionGrants {
      * state; wording pinned by TermuxSmokeTest.
      */
     fun statusLine(): String = when {
+        shellBlockedReasonFlag != null ->
+            "Termux shell: BLOCKED — a dispatched command never came back; a manual " +
+                "Termux-side step is pending. Do NOT call the shell tool again this " +
+                "session — it will fail instantly. Explain the fix to the user and " +
+                "wait; it re-enables after Setup → Termux integration → Test " +
+                "connection passes."
         shellVerified && shellAllCommands ->
             "Termux shell: VERIFIED this session (a real command round-tripped). " +
                 "The user granted ALL shell commands for this session — run them " +
@@ -137,6 +174,7 @@ object SessionGrants {
         shellAllCommandsFlag = false
         shellVerifiedAtFlag = null
         autoRunCountValue = 0
+        shellBlockedReasonFlag = null
         auditSink = null
     }
 }

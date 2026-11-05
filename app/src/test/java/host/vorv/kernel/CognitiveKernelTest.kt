@@ -7,6 +7,10 @@ import host.vorv.tools.Citation
 import host.vorv.tools.Tool
 import host.vorv.tools.ToolContext
 import host.vorv.tools.ToolResult
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -480,5 +484,123 @@ class CognitiveKernelTest {
         assertEquals(2, llm.steps.size)
         assertEquals(1, sink.episodes.count { it.first == "nudge" })
         assertTrue(result.ok)
+    }
+
+    // ========================= v0.6.16 retry-loop backstop (field finding #4)
+
+    /** A tool with a programmable per-call result — fail N times, then pass. */
+    private class ScriptedTool(
+        override val name: String,
+        private val results: List<ToolResult>,
+    ) : Tool {
+        override val description = "scripted $name"
+        private var i = 0
+        override fun schema() = JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", JsonObject().apply {
+                add("x", JsonObject().apply { addProperty("type", "string") })
+            })
+            add("required", com.google.gson.JsonArray().apply { add("x") })
+        }
+        override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult =
+            results[i++ % results.size]
+    }
+
+    private fun wallResult() = ToolResult(false, "", 1, error = "the wall: manual setup needed")
+
+    @Test
+    fun `three consecutive failures inject one corrective - three more after it force-finalize`() = runTest {
+        val sink = FakeSink()
+        // The model ignores the corrective and keeps calling the dead tool —
+        // the recording's exact behavior, minus the 30s-per-retry cost (the
+        // shell circuit breaker makes retries instant in production).
+        val llm = FakeLlm(listOf(
+            toolUse("shell", """{"x":"a"}"""),
+            toolUse("shell", """{"x":"b"}"""),
+            toolUse("shell", """{"x":"c"}"""),
+            toolUse("shell", """{"x":"d"}"""),
+            toolUse("shell", """{"x":"e"}"""),
+            toolUse("shell", """{"x":"f"}"""),
+            Llm.LlmResponse.Text("never reached", done = true),
+        ))
+        val tool = ScriptedTool("shell", List(6) { wallResult() })
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        // Six LLM calls: a,b,c fail (streak 3 → corrective, counters reset);
+        // d,e,f fail (streak 3 again, corrective already used → force-final).
+        assertEquals(6, llm.steps.size)
+        // The first call AFTER the corrective must see the order in history.
+        val fourthStepMessages = llm.steps[3]
+        assertTrue(
+            "the corrective must be in the 4th step's history",
+            fourthStepMessages.any { m -> m.role == "user" && m.content.contains("STOP calling shell") },
+        )
+        assertEquals("retry_corrective episode logged once", 1, sink.episodes.count { it.first == "retry_corrective" })
+
+        // The 6th failure (after the corrective) force-finalizes.
+        assertFalse(result.ok)
+        assertEquals("retry_loop", result.error)
+        assertTrue("answer names the tool and the honest last error",
+            result.answer.contains("shell") && result.answer.contains("the wall"))
+    }
+
+    @Test
+    fun `a success in between resets the consecutive-failure counter`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(
+            toolUse("shell", """{"x":"1"}"""),
+            toolUse("shell", """{"x":"2"}"""),
+            toolUse("shell", """{"x":"3"}"""),
+            toolUse("shell", """{"x":"4"}"""),
+            toolUse("shell", """{"x":"5"}"""),
+            Llm.LlmResponse.Text("done", done = true),
+        ))
+        // fail, fail, SUCCESS (resets), fail, fail — never 3 in a row.
+        val tool = ScriptedTool("shell", listOf(
+            wallResult(), wallResult(),
+            ToolResult(true, "ok", 1),
+            wallResult(), wallResult(),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertEquals("all 5 calls + final answer", 6, llm.steps.size)
+        assertTrue("no corrective — no 3-in-a-row streak", sink.episodes.none { it.first == "retry_corrective" })
+        assertTrue(result.ok)
+    }
+
+    // ========================= v0.6.16 stop-button cancellation propagation
+
+    /** A tool that suspends forever — the user presses STOP mid-tool. */
+    private class StuckTool : Tool {
+        override val name = "stuck"
+        override val description = "never returns"
+        override fun schema() = JsonObject().apply { addProperty("type", "object") }
+        override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult {
+            delay(Long.MAX_VALUE)
+            return ToolResult(true, "late", 1)
+        }
+    }
+
+    @Test
+    fun `user stop propagates out of the kernel instead of being swallowed`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(toolUse("stuck", """{"x":"1"}""")))
+        val kernel = kernel(sink, listOf(StuckTool()))
+
+        var rethrown = false
+        val job = launch {
+            try {
+                kernel.run("t1", "q", llm, null)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                rethrown = true // the ONLY acceptable outcome
+            }
+        }
+        runCurrent()          // advance to the tool's suspension point
+        job.cancel()          // the user presses STOP
+        joinAll(job)          // wait for the cancellation to settle
+
+        assertTrue("cancellation must PROPAGATE — a swallowed stop is the v0.6.15 bug", rethrown)
+        assertTrue("stopped task is logged",
+            sink.episodes.any { it.first == "task_stopped" && it.second.contains("cancelled by user") })
     }
 }

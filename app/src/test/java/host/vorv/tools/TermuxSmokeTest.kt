@@ -240,5 +240,76 @@ class TermuxSmokeTest {
         assertTrue("but it changes what the model is told", statusLine().contains("VERIFIED"))
     }
 
+    // =============================== E. the dead-shell circuit breaker (v0.6.16)
+
+    /**
+     * Field finding #4: the recording shows the model re-calling a dead
+     * shell every 30 seconds with nothing able to stop it. After ONE
+     * dispatch timeout, every subsequent call must fail FAST — no consent
+     * dialog, no dispatch, no wait — carrying the exact manual fix.
+     */
+    @Test
+    fun `E1 blocked shell fails fast with the manual fix and no dialog`() = runBlocking {
+        SessionGrants.blockShell("test wall")
+        // A bridge that FAILS the test if any dialog is raised: a blocked
+        // shell must not ask for anything — it answers, it doesn't request.
+        val failIfAsked: suspend (String) -> Boolean = { fail("dialog raised while blocked"); true }
+        val r = ShellTool(appContext).run(
+            JsonObject().apply { addProperty("command", "echo blocked-test") },
+            ToolContext("smoke", 1, workspaceUri = null, confirm = failIfAsked),
+        )
+        assertFalse(r.ok)
+        val err = r.error!!
+        assertTrue("names the wall", err.contains("Shell is disabled"))
+        assertTrue("carries the exact fix command", err.contains("allow-external-apps=true"))
+        assertTrue("carries termux-setup-storage", err.contains("termux-setup-storage"))
+        assertTrue("orders no retry", err.contains("Do NOT call shell again"))
+        assertTrue("names the re-enable path", err.contains("Test connection"))
+        assertEquals("nothing auto-ran while blocked", 0, SessionGrants.autoRunCount)
+    }
+
+    @Test
+    fun `E2 blocked state outranks verified in the prompt line`() {
+        SessionGrants.markShellVerified()
+        SessionGrants.blockShell("test wall")
+        val line = statusLine()
+        assertTrue("blocked wording first", line.contains("BLOCKED"))
+        assertTrue("forbids calling the tool", line.contains("Do NOT call the shell tool"))
+        assertFalse("no verified-only wording while blocked", line.contains("not a failure"))
+    }
+
+    @Test
+    fun `E3 a verified round-trip lifts the block - nothing else does`() {
+        SessionGrants.blockShell("test wall")
+        assertTrue(SessionGrants.shellBlocked)
+        // The user granting everything does NOT lift a block — only a real
+        // round-trip does (proof the wall is gone, not a guess).
+        SessionGrants.grantShellForSession()
+        assertTrue("a consent grant must not lift the block", SessionGrants.shellBlocked)
+        SessionGrants.markShellVerified()
+        assertFalse("verified round-trip lifts it", SessionGrants.shellBlocked)
+    }
+
+    @Test
+    fun `E4 dispatch timeout message carries the exact Termux fix commands`() {
+        val msg = ShellTool.dispatchTimeoutMessage(30_000)
+        assertTrue("exact allow-external-apps command", msg.contains("echo 'allow-external-apps=true' >> ~/.termux/termux.properties"))
+        assertTrue("restart step", msg.contains("restart Termux"))
+        assertTrue("storage step", msg.contains("termux-setup-storage"))
+        assertTrue("verification path", msg.contains("Test connection"))
+        assertTrue("do-not-retry order", msg.contains("Do NOT retry"))
+        assertTrue("honest unknown-result statement", msg.contains("UNKNOWN"))
+        assertFalse("no ellipsis — nothing cut off", msg.contains("…"))
+    }
+
+    @Test
+    fun `E5 statusLine blocked wording tells the model to explain and wait`() {
+        SessionGrants.blockShell("test wall")
+        val prompt = systemPromptFor()
+        assertTrue("the kernel prompt carries the blocked line", prompt.contains("Termux shell: BLOCKED"))
+        assertTrue("forbids retrying", prompt.contains("Do NOT call the shell tool"))
+        assertTrue("re-enable path stated", prompt.contains("Test connection"))
+    }
+
     private fun fail(msg: String): Nothing = throw AssertionError(msg)
 }

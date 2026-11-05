@@ -7,6 +7,7 @@ import host.vorv.tools.Citation
 import host.vorv.tools.Tool
 import host.vorv.tools.ToolContext
 import host.vorv.tools.ToolResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -112,6 +113,18 @@ class CognitiveKernel(
         var nudgesUsed = 0
         val rateCounts = HashMap<String, Int>()
 
+        // v0.6.16 retry-loop backstop (field finding #4): the same tool
+        // failing over and over used to spin the loop until the iteration
+        // cap — the field recording shows a model re-calling a dead shell
+        // every 30 seconds with nothing able to stop it. Now: 3 consecutive
+        // failures of the same tool → ONE corrective message ordering the
+        // model to stop and explain; a 3rd failure AFTER that → the kernel
+        // force-finalizes with the honest last error.
+        var consecutiveFailTool: String? = null
+        var consecutiveFailCount = 0
+        var retryCorrectiveUsed = false
+        var lastToolError: String? = null
+
         try {
             while (iterations < MAX_ITERATIONS) {
                 iterations++
@@ -124,6 +137,9 @@ class CognitiveKernel(
                     // the 4096-token context opaquely.
                     compactHistoryIfNeeded(messages, llm.contextTokenBudget)
                     llm.step(messages, toolSpecs)
+                } catch (e: CancellationException) {
+                    // v0.6.16: user pressed STOP mid-generation — propagate.
+                    throw e
                 } catch (e: Exception) {
                     // Preserve the REAL cause — previously this fell through to
                     // the "reached max iterations" summary, mis-reporting an LLM
@@ -251,6 +267,12 @@ class CognitiveKernel(
                                             "(kernel-enforced wall-clock budget).",
                                         durationMs = System.currentTimeMillis() - t0,
                                     )
+                            } catch (e: CancellationException) {
+                                // v0.6.16: user pressed STOP mid-tool — propagate.
+                                // (withTimeoutOrNull only eats its OWN timeout;
+                                // job cancellation must not become a ToolResult,
+                                // or the loop would keep spinning after cancel.)
+                                throw e
                             } catch (e: Exception) {
                                 ToolResult(ok = false, output = "", stderr = "", error = e.message,
                                     durationMs = System.currentTimeMillis() - t0)
@@ -302,6 +324,54 @@ class CognitiveKernel(
                                 })
                             }
                             messages.add(Llm.Message("tool", toolResultJson.toString(), toolCallId = tc.id))
+
+                            // ---- v0.6.16: consecutive-failure bookkeeping ----
+                            if (result.error != null) lastToolError = result.error
+                            when {
+                                result.ok -> { consecutiveFailTool = null; consecutiveFailCount = 0 }
+                                consecutiveFailTool == tc.name -> consecutiveFailCount++
+                                else -> { consecutiveFailTool = tc.name; consecutiveFailCount = 1 }
+                            }
+                        }
+
+                        // ---- v0.6.16 retry-loop backstop: same tool, same wall,
+                        //      three strikes. The first strike batch gets ONE
+                        //      corrective order to stop and explain; if the model
+                        //      ignores it and stacks three MORE consecutive
+                        //      failures of the same tool, force-finalize with the
+                        //      honest last error. No more endless loops. ----
+                        if (consecutiveFailCount >= 3) {
+                        val stuckTool = consecutiveFailTool ?: "?"
+                        if (!retryCorrectiveUsed) {
+                            retryCorrectiveUsed = true
+                            consecutiveFailTool = null
+                            consecutiveFailCount = 0
+                            messages.add(Llm.Message("user", buildString {
+                                appendLine("CORRECTION: the $stuckTool tool just failed 3 times in a row ")
+                                appendLine("with the same wall. Retrying will not change the outcome — ")
+                                appendLine("some walls need the USER to act (permissions, external apps, ")
+                                appendLine("manual setup). STOP calling $stuckTool. Reply now with a ")
+                                appendLine("text-only answer that explains in plain English what failed ")
+                                appendLine("and exactly what the user can do about it.")
+                            }))
+                            eventSink.logEpisode(
+                                "retry_corrective", "$stuckTool failed 3x consecutively",
+                                "{\"iteration\":$iterations,\"taskId\":\"$taskId\"}",
+                            )
+                            _trace.emit(TraceStep.Error("$stuckTool failed 3x in a row — told the model to stop"))
+                            continue
+                        } else {
+                            val answer = "Stopped the task: the $stuckTool tool kept failing with the " +
+                                "same error after being told to stop. Last error: " +
+                                "${lastToolError ?: "unknown"}"
+                            _trace.emit(TraceStep.Done(answer.take(200), iterations))
+                            eventSink.logEpisode(
+                                "task_completed", "retry-loop force-final",
+                                "{\"iterations\":$iterations,\"toolCalls\":$toolCallCount,\"tool\":\"$stuckTool\"}",
+                            )
+                            return KernelApi.TaskResult(false, answer, iterations, toolCitations, toolCallCount,
+                                error = "retry_loop")
+                        }
                         }
                     }
                 }
@@ -321,6 +391,14 @@ class CognitiveKernel(
             eventSink.logEpisode("task_completed", "stuck", "{\"iterations\":$iterations,\"toolCalls\":$toolCallCount}")
             return KernelApi.TaskResult(false, summary, iterations, toolCitations, toolCallCount, error = "max_iterations")
 
+        } catch (e: CancellationException) {
+            // v0.6.16 (field finding #5 — the missing stop button): the user
+            // pressed STOP. Cancellation must PROPAGATE — swallowing it into
+            // a TaskResult would complete the coroutine "normally" and
+            // defeat the ViewModel's stopped-by-user handling.
+            eventSink.logEpisode("task_stopped", "cancelled by user",
+                "{\"iterations\":$iterations,\"taskId\":\"$taskId\"}")
+            throw e
         } catch (e: Exception) {
             _trace.emit(TraceStep.Error("Kernel exception: ${e.message}"))
             eventSink.logEpisode("error", e.message ?: "unknown", "{\"taskId\":\"$taskId\"}")

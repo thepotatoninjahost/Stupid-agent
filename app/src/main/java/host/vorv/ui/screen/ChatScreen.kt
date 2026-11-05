@@ -56,7 +56,11 @@ fun ChatScreen(state: AgentState, onSend: (String) -> Unit) {
             Spacer(Modifier.width(8.dp))
             FilledIconButton(
                 onClick = { if (input.isNotBlank()) { onSend(input); input = "" } },
-                enabled = input.isNotBlank() && !state.busy,
+                // v0.6.16: enabled while busy too — the ViewModel answers
+                // honestly ("stop"/"cancel" aborts the task, anything else
+                // gets a hint) instead of the old silent drop that locked
+                // the user out of a running loop (field finding #5).
+                enabled = input.isNotBlank(),
                 modifier = Modifier.size(48.dp),
                 shape = RoundedCornerShape(50),
             ) { Icon(Icons.Default.ArrowUpward, contentDescription = "Send") }
