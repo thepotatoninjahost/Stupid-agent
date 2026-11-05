@@ -265,6 +265,9 @@ class TermuxSmokeTest {
         assertTrue("carries termux-setup-storage", err.contains("termux-setup-storage"))
         assertTrue("orders no retry", err.contains("Do NOT call shell again"))
         assertTrue("names the re-enable path", err.contains("Test connection"))
+        // v0.6.18 (finding #6): single-step commands only — the user types
+        // these by hand on a phone keyboard; `&&` chains get mangled.
+        assertFalse("no && one-liner for a phone keyboard", err.contains("&&"))
         assertEquals("nothing auto-ran while blocked", 0, SessionGrants.autoRunCount)
     }
 
@@ -294,12 +297,15 @@ class TermuxSmokeTest {
     fun `E4 dispatch timeout message carries the exact Termux fix commands`() {
         val msg = ShellTool.dispatchTimeoutMessage(30_000)
         assertTrue("exact allow-external-apps command", msg.contains("echo 'allow-external-apps=true' >> ~/.termux/termux.properties"))
+        assertTrue("mkdir on its own line", msg.contains("\n1. mkdir -p ~/.termux\n"))
         assertTrue("restart step", msg.contains("restart Termux"))
         assertTrue("storage step", msg.contains("termux-setup-storage"))
         assertTrue("verification path", msg.contains("Test connection"))
         assertTrue("do-not-retry order", msg.contains("Do NOT retry"))
         assertTrue("honest unknown-result statement", msg.contains("UNKNOWN"))
         assertFalse("no ellipsis — nothing cut off", msg.contains("…"))
+        // v0.6.18 (finding #6): single-step commands only — no `&&` chains.
+        assertFalse("no && one-liner for a phone keyboard", msg.contains("&&"))
     }
 
     @Test

@@ -465,7 +465,14 @@ class ShellTool(private val appContext: Context) : Tool {
         val segments = uri.pathSegments
         if (segments.size < 2 || segments[0] != "tree") return null
         val docId = Uri.decode(segments[1])
-        val volume = docId.substringBefore(":", "")
+        // Deliberate asymmetry in the missing-delimiter values: a docId
+        // WITHOUT a colon ("primary" = the storage root) means the volume
+        // IS the whole docId and the subfolder is empty. Passing "" to
+        // BOTH (the v0.6.14–v0.6.17 code) made a root grant's volume ""
+        // and wrongly rejected every root-of-primary-storage workspace —
+        // latent bug caught by TermuxSetupTest's SAF-parsing cases and
+        // fixed in lockstep with TermuxProbe.rawWorkspacePath.
+        val volume = docId.substringBefore(":")
         val rest = docId.substringAfter(":", "")
         if (volume != "primary") return null
         return if (rest.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$rest"
@@ -521,21 +528,28 @@ class ShellTool(private val appContext: Context) : Tool {
          * step, the honest cannot-do-it-for-you reason, the verification
          * path, and an explicit do-not-retry order. Pinned by
          * TermuxSmokeTest.
+         *
+         * v0.6.18 (field findings #6/#7): the commands are now SINGLE-STEP
+         * lines. The field user had to type them by hand on a phone
+         * keyboard (Vorv's chat was not copyable) and the `&&` one-liner
+         * came out as `mkdir-p~/.termux` — bash treated it as one word and
+         * failed. Short lines, one command each, numbered.
          */
         internal fun dispatchTimeoutMessage(timeoutMs: Long): String = buildString {
             appendLine("The command was sent to Termux but produced no result within ${timeoutMs / 1000}s.")
             appendLine("This is almost always Termux's ONE-TIME setup missing — Vorv cannot")
             appendLine("fix it for you (the files live inside Termux's private storage, which")
             appendLine("Android blocks every other app from touching). The user must run")
-            appendLine("these steps IN TERMUX:")
+            appendLine("these steps IN TERMUX, one line at a time:")
             appendLine()
-            appendLine("1. mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties")
-            appendLine("2. Fully restart Termux (swipe it from Recents, reopen)")
-            appendLine("3. termux-setup-storage   (accept the Android prompt)")
+            appendLine("1. mkdir -p ~/.termux")
+            appendLine("2. echo 'allow-external-apps=true' >> ~/.termux/termux.properties")
+            appendLine("3. Fully restart Termux (swipe it from Recents, reopen)")
+            appendLine("4. termux-setup-storage   (accept the Android prompt)")
             appendLine()
             appendLine("Then verify: Setup → Termux integration → Test connection — until it")
             appendLine("reports ALL GOOD, further shell commands will fail instantly.")
-            appendLine("Do NOT retry this command. Tell the user the three steps above in plain")
+            appendLine("Do NOT retry this command. Tell the user the four steps above in plain")
             appendLine("English and wait. This command's actual result is UNKNOWN — do not")
             appendLine("claim it succeeded.")
         }
@@ -544,16 +558,18 @@ class ShellTool(private val appContext: Context) : Tool {
          * v0.6.16: the fail-fast error while the dead-shell block is active.
          * The wall, the fix, and the do-not-retry order — short, because the
          * full steps were already delivered with the timeout that set it.
+         * v0.6.18: single-step commands (field findings #6/#7) — no `&&`
+         * chains for a phone keyboard.
          */
         internal fun blockedShellMessage(reason: String): String =
             "Shell is disabled for the rest of this session ($reason). A previous " +
                 "command never came back, which means Termux's one-time manual setup " +
                 "is missing — retrying cannot fix it. Do NOT call shell again; instead " +
-                "tell the user: in Termux run (1) mkdir -p ~/.termux && echo " +
-                "'allow-external-apps=true' >> ~/.termux/termux.properties, (2) fully " +
-                "restart Termux, (3) termux-setup-storage — then Setup → Termux " +
-                "integration → Test connection. It re-enables automatically when " +
-                "that test passes."
+                "tell the user to run IN TERMUX, one line at a time: (1) mkdir -p " +
+                "~/.termux, (2) echo 'allow-external-apps=true' >> ~/.termux/" +
+                "termux.properties, (3) fully restart Termux, (4) termux-setup-storage " +
+                "— then Setup → Termux integration → Test connection. It re-enables " +
+                "automatically when that test passes."
     }
 }
 

@@ -1,3 +1,55 @@
+# Changelog — v0.6.18 "One Line at a Time, Copyable at Last"
+
+Sixth and seventh real-world findings, live from the device this time. The
+user cleared the remaining Termux walls BY HAND — and hit two new walls
+that Vorv itself created:
+
+- Finding #6: every fix instruction arrived as a `mkdir -p ~/.termux &&
+  echo 'allow-external-apps=true' >> …` ONE-LINER. Typed by hand on a
+  phone keyboard it became `mkdir-p~/.termux` — one word to bash, instant
+  failure, user confused through no fault of their own.
+- Finding #7: Vorv's chat text was not selectable. The user could not
+  copy the commands OUT of Vorv into Termux — retyping was the only way,
+  which is exactly how finding #6 happened.
+
+## One line at a time — every command a human must type is short
+
+- Every fix instruction in the app — the Setup checklist's gate 4 (both
+  the untested and the blocked variant), the probe timeout message, the
+  shell dispatch-timeout error, the blocked-shell error — now shows
+  SINGLE-STEP commands, numbered, one per line: `mkdir -p ~/.termux`,
+  then `echo 'allow-external-apps=true' >> ~/.termux/termux.properties`,
+  then restart Termux, then `termux-setup-storage`. No `&&` chains
+  anywhere a human is asked to type — pinned by tests
+  (`no && one-liner for a phone keyboard`).
+
+## Copyable at last — chat, consents and full outputs are selectable
+
+- Chat message bubbles are wrapped in SelectionContainer: long-press →
+  select → copy works. The user can now copy Vorv's commands straight
+  into Termux instead of retyping them (finding #7).
+- The consent dialog and the full-output viewer are selectable too —
+  they carry exact commands and long tool results.
+
+## Bonus: root-of-storage workspaces were wrongly rejected (since v0.6.14)
+
+- New SAF-parsing tests exposed a latent bug in BOTH rawWorkspacePath
+  copies (ShellTool and TermuxProbe): `docId.substringBefore(":", "")`
+  returns "" (the missing-delimiter value) when a docId has no colon —
+  so granting the ROOT of primary storage ("tree/primary", no colon)
+  produced volume "" and dispatch rejected the workspace as
+  "not primary storage"… while workspaceOnPrimaryStorage (correct)
+  showed gate 1 PASS. The checklist said green, the shell said no —
+  exactly the contradiction that burns a field user. Fixed in both
+  copies, in lockstep, with the asymmetry documented.
+
+Tests: TermuxSetupTest 21 (checklist states, next-step ordering, SAF
+tree-URI parsing including the storage root, single-step commands,
+blocked banner), TermuxSmokeTest 17 with single-step assertions on both
+shell error messages.
+
+---
+
 # Changelog — v0.6.17 "The Whole Wall at Once"
 
 The aftermath of findings #4/#5: "keeps coming up with new bullshit." The

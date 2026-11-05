@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -91,14 +92,20 @@ fun VorvApp(
             // long, so nothing the user is asked to approve is ever cut off.
             text = {
                 Column {
-                    Text(
-                        pending.message,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 420.dp)
-                            .verticalScroll(rememberScrollState()),
-                    )
+                    // v0.6.18 (field finding #7): consent messages are
+                    // SELECTABLE — the shell consent carries the exact
+                    // command, and the user must be able to copy it out
+                    // instead of hand-typing it into Termux.
+                    SelectionContainer {
+                        Text(
+                            pending.message,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    }
                     // v0.6.15: shell consents offer the session grant. The
                     // scope of what is being granted is stated IN the dialog —
                     // informed consent for the batch, not just this command.
@@ -149,14 +156,19 @@ fun VorvApp(
             onDismissRequest = { vm.dismissFullOutput() },
             title = { Text(view.title, fontWeight = FontWeight.Bold, fontSize = 14.sp) },
             text = {
-                Text(
-                    view.content,
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
+                // v0.6.18 (field finding #7): full outputs are SELECTABLE —
+                // long tool results are exactly what the user needs to copy
+                // out (commands, paths, log lines).
+                SelectionContainer {
+                    Text(
+                        view.content,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = { vm.dismissFullOutput() }) { Text("Close") }

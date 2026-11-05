@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.*
@@ -80,7 +81,15 @@ private fun MessageBubble(msg: ChatMessage) {
             color = if (isUser) Primary else if (uncited) Warning.copy(alpha = 0.10f) else SurfaceVariant,
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(body, color = if (isUser) OnPrimary else OnBackground, fontSize = 14.sp)
+                // v0.6.18 (field finding #7 — "vorv doesn't allow me to copy
+                // and paste"): chat text is SELECTABLE. The user had to
+                // hand-type setup commands from Vorv's answers into Termux
+                // on a phone keyboard; now long-press → select → copy works.
+                // Per-message container (not one around the whole list) so
+                // selection can't bleed across bubbles.
+                SelectionContainer {
+                    Text(body, color = if (isUser) OnPrimary else OnBackground, fontSize = 14.sp)
+                }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (uncited) {

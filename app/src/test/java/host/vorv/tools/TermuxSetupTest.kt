@@ -112,6 +112,34 @@ class TermuxSetupTest {
         assertFalse("no ellipsis — nothing cut off", msg.contains("…"))
     }
 
+    // ------------------------------ v0.6.18: single-step commands (#6)
+    // The field user hand-typed the old `mkdir -p ~/.termux && echo …`
+    // one-liner on a phone keyboard (the chat was not copyable) and bash
+    // saw `mkdir-p~/.termux` — one word, instant failure. Every command
+    // Vorv shows a human must now be ONE short line. No `&&` anywhere.
+
+    @Test
+    fun `probe timeout commands are single-step lines - no ampersand chains`() {
+        val msg = TermuxProbe.probeTimeoutMessage(20_000)
+        assertTrue("mkdir on its own line", msg.contains("\n   mkdir -p ~/.termux\n"))
+        assertTrue("echo command intact on its own line",
+            msg.contains("\n   echo 'allow-external-apps=true' >> ~/.termux/termux.properties\n"))
+        assertFalse("no && one-liner for a phone keyboard", msg.contains("&&"))
+    }
+
+    @Test
+    fun `gate 4 detail commands are single-step lines - no ampersand chains`() {
+        // Both the UNKNOWN (untested) and FAIL (blocked) variants carry the
+        // steps; pin them both to single-step lines.
+        val untested = TermuxProbe.setupChecklist(primaryWs, true, true, false, false)[3].detail
+        val blocked = TermuxProbe.setupChecklist(primaryWs, true, true, false, true)[3].detail
+        listOf(untested, blocked).forEach { d ->
+            assertTrue(d.contains("mkdir -p ~/.termux"))
+            assertTrue(d.contains("echo 'allow-external-apps=true' >> ~/.termux/termux.properties"))
+            assertFalse("no && one-liner for a phone keyboard", d.contains("&&"))
+        }
+    }
+
     @Test
     fun `probe messages for missing workspace and wrong storage are actionable`() {
         assertTrue(TermuxProbe.noWorkspaceMessage().contains("Files tab"))
@@ -217,5 +245,6 @@ class TermuxSetupTest {
         assertTrue(msg.contains("TEST CONNECTION"))
         assertTrue(msg.contains("lifts the block"))
         assertFalse("no ellipsis — nothing cut off", msg.contains("…"))
+        assertFalse("no && one-liner for a phone keyboard", msg.contains("&&"))
     }
 }

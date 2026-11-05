@@ -159,11 +159,18 @@ object TermuxProbe {
         return docId == "primary" || docId.startsWith("primary:")
     }
 
-    /** The exact two manual steps, as one copy-pasteable string. */
+    /**
+     * v0.6.18 (field finding #6): the exact Termux-side steps, ONE SHORT
+     * COMMAND PER LINE. The old `mkdir -p ~/.termux && echo …` one-liner
+     * had to be hand-typed on a phone keyboard (finding #7: the chat was
+     * not copyable) and came out as `mkdir-p~/.termux` — one word to bash,
+     * instant failure, user confused through no fault of their own.
+     */
     private fun termuxSideSteps(): String =
-        "1) mkdir -p ~/.termux && echo 'allow-external-apps=true' >> " +
-            "~/.termux/termux.properties, then fully restart Termux; " +
-            "2) termux-setup-storage (accept the Android prompt)"
+        "1) mkdir -p ~/.termux\n" +
+            "2) echo 'allow-external-apps=true' >> ~/.termux/termux.properties\n" +
+            "3) restart Termux (swipe it from Recents, reopen)\n" +
+            "4) termux-setup-storage (accept the Android prompt)"
 
     /**
      * EVERY gate between the user and a working shell, in setup order, with
@@ -204,12 +211,12 @@ object TermuxProbe {
         val gate4 = when {
             shellBlocked -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.FAIL,
                 "PENDING — a dispatched command never came back, which means these " +
-                    "are missing. In Termux run: ${termuxSideSteps()}. Then tap TEST " +
-                    "CONNECTION below — a pass lifts the block automatically.")
+                    "are missing. In Termux, one line at a time:\n${termuxSideSteps()}\n" +
+                    "Then tap TEST CONNECTION below — a pass lifts the block automatically.")
             shellVerified -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.PASS,
                 "Verified this session — a real command round-tripped; both steps are done.")
             else -> SetupGate(4, "Termux one-time setup (2 steps, inside Termux)", GateStatus.UNKNOWN,
-                "Not tested this session. The two steps, in Termux: ${termuxSideSteps()}. " +
+                "Not tested this session. In Termux, one line at a time:\n${termuxSideSteps()}\n" +
                     "Tap TEST CONNECTION to verify both at once.")
         }
         return listOf(gate1, gate2, gate3, gate4)
@@ -363,10 +370,11 @@ object TermuxProbe {
         appendLine("The command was sent but produced no result within ${timeoutMs / 1000}s.")
         appendLine("Two Termux-side gates can cause this, and Vorv honestly cannot")
         appendLine("tell them apart from its side — in both cases no output file")
-        appendLine("ever appears. Check BOTH in Termux:")
+        appendLine("ever appears. Check BOTH in Termux, one line at a time:")
         appendLine()
         appendLine("1. Allow external apps (most common miss). In Termux run:")
-        appendLine("   mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties")
+        appendLine("   mkdir -p ~/.termux")
+        appendLine("   echo 'allow-external-apps=true' >> ~/.termux/termux.properties")
         appendLine("   then fully restart Termux (swipe it from Recents, reopen).")
         appendLine()
         appendLine("2. Storage access. In Termux run once:")
@@ -379,14 +387,24 @@ object TermuxProbe {
 
     // --------------------------------------------------------- shared
 
-    /** Same mapping as ShellTool.rawWorkspacePath — primary storage only. */
+    /**
+     * Same mapping as ShellTool.rawWorkspacePath — primary storage only.
+     * v0.6.18 root-grant fix (latent since v0.6.14, in BOTH copies):
+     * `docId.substringBefore(":", "")` returns "" (the missing-delimiter
+     * value) for a colon-less docId, so granting the ROOT of primary
+     * storage ("tree/primary") made the volume "" and dispatch REJECTED
+     * the workspace as not-primary — while workspaceOnPrimaryStorage
+     * (correct) showed gate 1 PASS. The checklist said green, the shell
+     * said no — exactly the contradiction that burned the field user.
+     * Deliberate asymmetry now: no colon → volume IS the docId, rest "".
+     */
     private fun rawWorkspacePath(uriStr: String): String? {
         val uri = Uri.parse(uriStr)
         if (uri.authority != "com.android.externalstorage.documents") return null
         val segments = uri.pathSegments
         if (segments.size < 2 || segments[0] != "tree") return null
         val docId = Uri.decode(segments[1])
-        val volume = docId.substringBefore(":", "")
+        val volume = docId.substringBefore(":")
         val rest = docId.substringAfter(":", "")
         if (volume != "primary") return null
         return if (rest.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$rest"
