@@ -13,10 +13,55 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * LLM contract. Vorv uses GLM-4.6 via Z.ai with native function calling in
- * cloud mode, and Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU in
- * local mode. Both implement this same interface so the cognitive kernel
- * does not change.
+ * Cloud model catalog for Z.ai. The free tier (GLM-4.7-Flash) is the
+ * DEFAULT so a fresh install with a key costs nothing to run; the paid
+ * models are opt-in, selected explicitly in Setup (v0.7.0).
+ *
+ * Prices shown in [shortDesc] are the published per-million-token rates at
+ * the time of the v0.7.0 build; the billing page at z.ai is the source of
+ * truth if they ever change.
+ */
+enum class CloudModel(
+    val id: String,
+    val displayName: String,
+    val shortDesc: String,
+    val free: Boolean,
+) {
+    GLM_4_7_FLASH(
+        "glm-4.7-flash",
+        "GLM-4.7-Flash",
+        "FREE tier — $0 per token, forever. Fast, 128K context. The default: a fresh key runs at no cost.",
+        true,
+    ),
+    GLM_5_3_FLASH(
+        "glm-5.3-flash",
+        "GLM-5.3-Flash",
+        "Current fast tier, paid per token (roughly a tenth of flagship rates).",
+        false,
+    ),
+    GLM_5_3(
+        "glm-5.3",
+        "GLM-5.3",
+        "Flagship — strongest reasoning, paid per token (published rate: $1.40/M in, $4.40/M out).",
+        false,
+    ),
+    GLM_4_6(
+        "glm-4.6",
+        "GLM-4.6",
+        "Vorv's original cloud engine, paid per token. Kept for compatibility.",
+        false,
+    );
+
+    companion object {
+        fun fromId(id: String?): CloudModel = entries.firstOrNull { it.id == id } ?: GLM_4_7_FLASH
+    }
+}
+
+/**
+ * LLM contract. Vorv uses a Z.ai GLM model (selected in Setup, free tier by
+ * default) with native function calling in cloud mode, and Qwen2.5-Coder via
+ * Qualcomm GenieX on the Hexagon NPU in local mode. Both implement this same
+ * interface so the cognitive kernel does not change.
  */
 interface Llm {
     /** Returns either a final answer or a tool call request. */
@@ -58,8 +103,12 @@ interface Llm {
 }
 
 /**
- * Cloud LLM via Z.ai GLM-4.6. Native OpenAI-style function calling.
+ * Cloud LLM via Z.ai. Native OpenAI-style function calling.
  * Throws if apiKey is blank — caller must check first.
+ *
+ * v0.7.0: the model is a first-class choice ([CloudModel]), defaulting to the
+ * FREE glm-4.7-flash tier — previously glm-4.6 was hardcoded and the user
+ * had no way to change it or avoid paying.
  *
  * v0.6.0 hardening (audit findings M-2, M-3, M-4):
  *  - retry backoff uses non-blocking delay(), not Thread.sleep
@@ -71,16 +120,16 @@ interface Llm {
 class CloudLlm(
     private val apiKey: String,
     private val baseUrl: String = "https://api.z.ai/api/paas/v4",
-    private val model: String = "glm-4.6",
+    private val model: String = CloudModel.GLM_4_7_FLASH.id,
     client: OkHttpClient? = null,
 ) : Llm {
-    override val label = "GLM-4.6"
+    override val label = "$model (cloud)"
 
     private val client: OkHttpClient = client ?: Companion.client
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
-            require(apiKey.isNotBlank()) { "GLM-4.6 requires an API key — add one in Setup tab." }
+            require(apiKey.isNotBlank()) { "$model requires an API key — add one in Setup tab." }
 
             val body = JsonObject().apply {
                 addProperty("model", model)
@@ -204,20 +253,75 @@ class CloudLlm(
             .writeTimeout(30, TimeUnit.SECONDS)
             .dns(NetworkGuard.PublicDns)
             .build()
+
+        /**
+         * v0.7.0 — a REAL one-round-trip verification of key + model, fired
+         * when a key is saved or a cloud model is picked. Verifiable
+         * execution, applied to configuration: the Setup screen shows the
+         * model's actual reply (or the actual error string from Z.ai), never
+         * a guess. Single attempt, no retries — a probe failing IS the answer.
+         *
+         * Cost: ~8 output tokens. On the free default model, $0. On the paid
+         * flagship, ~4 thousandths of a cent.
+         */
+        suspend fun probe(apiKey: String, model: String): Result<String> =
+            withContext(Dispatchers.IO) {
+                if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
+                try {
+                    val body = JsonObject().apply {
+                        addProperty("model", model)
+                        addProperty("temperature", 0f)
+                        addProperty("max_tokens", 8)
+                        add("messages", com.google.gson.JsonArray().apply {
+                            add(JsonObject().apply {
+                                addProperty("role", "user")
+                                addProperty("content", "Reply with exactly: VORV_KEY_OK")
+                            })
+                        })
+                    }.toString()
+                    val req = Request.Builder()
+                        .url("https://api.z.ai/api/paas/v4/chat/completions")
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .build()
+                    client.newCall(req).execute().use { res ->
+                        val text = res.body?.string().orEmpty()
+                        if (!res.isSuccessful) {
+                            return@withContext Result.failure(
+                                RuntimeException("HTTP ${res.code}: ${text.take(200)}")
+                            )
+                        }
+                        val json = JsonParser.parseString(text).asJsonObject
+                        val choices = json.getAsJsonArray("choices")
+                        if (choices == null || choices.size() == 0) {
+                            return@withContext Result.failure(
+                                RuntimeException("No choices in response: ${text.take(200)}")
+                            )
+                        }
+                        val content = choices[0].asJsonObject
+                            .getAsJsonObject("message").get("content")
+                            ?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        Result.success(content.ifBlank { "(empty reply, HTTP 200)" })
+                    }
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+            }
     }
 }
 
 /**
  * Picks the reasoning engine:
  *  - "local"  → llama.cpp on-device via GenieX (requires the model downloaded once, ~1.8–4.4 GB)
- *  - "cloud"  → GLM-4.6 (requires a Z.ai API key)
+ *  - "cloud"  → the selected [CloudModel] on Z.ai (free tier by default; requires a Z.ai API key)
  * If the requested engine isn't available, throws with a REAL, actionable error — never a stub.
  */
 object LlmRouter {
-    fun pick(mode: String, apiKey: String, local: LocalLlm?): Llm = when (mode) {
+    fun pick(mode: String, apiKey: String, local: LocalLlm?, cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH): Llm = when (mode) {
         "cloud" -> {
             require(apiKey.isNotBlank()) { "Cloud mode needs a Z.ai API key — add one in Setup." }
-            CloudLlm(apiKey)
+            CloudLlm(apiKey, model = cloudModel.id)
         }
         else -> {
             requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~1.8–4.4 GB depending on choice)." }

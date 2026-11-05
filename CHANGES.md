@@ -1,3 +1,57 @@
+# Changelog — v0.7.0 "The Free Brain"
+
+The founding complaint, verbatim from the field: "It lies constantly. Literally
+cannot function at all. I expected that Vorv would be able to understand
+things like you do." Root cause: cloud mode was hardwired to a single paid
+model (GLM-4.6) with no key ever entered, so every real task ran on the 7B
+local model crushed into ~1,800 tokens of working memory — a brain that
+forgets its own last step. The fix is not a bigger local model; it is making
+the smart brain free and the switch automatic.
+
+## Free by default — GLM-4.7-Flash, $0/token
+
+- Cloud model becomes a choice in Setup, and the DEFAULT is Z.ai's free tier
+  (GLM-4.7-Flash): 128K context, native function calling, no credit card, no
+  subscription. The paid models (GLM-5.3-Flash, GLM-5.3 flagship, GLM-4.6)
+  are listed with their prices and are strictly opt-in.
+- Saving an API key now runs a REAL probe — one actual round-trip against the
+  selected model (~8 tokens, $0 on the free tier). Setup shows the model's
+  literal reply or Z.ai's literal error, never a guess, and on success
+  switches the engine to cloud automatically: pasting a key is an
+  unambiguous instruction to use cloud.
+- Picking a different model with a key saved re-probes immediately — a
+  typo'd or retired model id is caught at selection time in Setup, not
+  mid-task.
+
+## No task dies when the signal does — automatic offline fallback
+
+- New FallbackLlm engine wrapper: cloud first, offline NPU brain as backup,
+  per kernel step. Signal drop, 5xx, or exhausted retries mid-task → the
+  same step reruns on the local engine with the history compacted to fit
+  its small context. The task degrades; it does not die.
+- Three honesty rules, unit-tested (FallbackLlmTest):
+  1. Every takeover is logged in the episode log with its REAL reason —
+     a fallback is visible, never a silent engine swap.
+  2. AUTH failures (401/403/invalid key) NEVER fall back — a broken key
+     must stay loud until fixed in Setup, not be papered over by offline
+     answers.
+  3. Cancellation (STOP button / timeout) never falls back.
+- Compaction is pairing-safe: the system prompt always survives, the newest
+  turns win, and a tool result is never orphaned from its tool call.
+- Fallback is a Setup switch, armed only when a local model is on disk;
+  the header label states when it is armed ("· offline fallback armed").
+
+## Field note: mid-session sandbox rollback
+
+During the build of this version the dev sandbox was silently recycled to a
+v0.6.16 snapshot while v0.6.17–19 sat safe on GitHub. Detection (versionCode
+disagreement in build.gradle.kts), recovery (rebase of the v0.7.0 work onto
+origin/main, verified: lecture-breaker rule 11, one-line setup instructions
+and Termux probe gates all still present). Recorded here because "the tree
+moved under me" is exactly the kind of thing this project writes down.
+
+---
+
 # Changelog — v0.6.19 "The Lecture Breaker"
 
 Eighth real-world finding, from the field recording: the user typed

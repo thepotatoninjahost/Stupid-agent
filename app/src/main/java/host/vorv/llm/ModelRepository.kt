@@ -32,27 +32,51 @@ class ModelRepository(private val appContext: Context) {
      * Returns the engine to use for a task. In local mode this lazily
      * (re)builds the LocalLlm if the selection changed since last use —
      * under the lock, so it can never race a concurrent swap.
+     *
+     * v0.7.0 cloud mode: builds the SELECTED [CloudModel] (free tier by
+     * default) and, when autoFallback is armed and the local model is on
+     * disk, wraps it in [FallbackLlm] — cloud first, offline backup per
+     * step, so a mid-task signal drop degrades instead of dying. The local
+     * engine is built/reused under the same mutex (H-4 discipline).
      */
-    suspend fun activeEngine(mode: String, apiKey: String, choice: ModelChoice): Llm = mutex.withLock {
+    suspend fun activeEngine(
+        mode: String,
+        apiKey: String,
+        choice: ModelChoice,
+        cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH,
+        autoFallback: Boolean = true,
+    ): Llm = mutex.withLock {
         if (mode != "local") {
             require(apiKey.isNotBlank()) {
                 "Cloud mode needs a Z.ai API key — add one in Setup."
             }
-            return@withLock CloudLlm(apiKey)
+            val cloud = CloudLlm(apiKey, model = cloudModel.id)
+            if (!autoFallback || !ModelManager.isDownloaded(choice)) {
+                return@withLock cloud
+            }
+            val local = localLlm?.takeIf { it.modelId == choice.id }
+                ?: run {
+                    // Different model resident (or none): release the old
+                    // native engine before building the new one — no leak.
+                    localLlm?.release()
+                    buildEngine(choice).also { localLlm = it }
+                }
+            FallbackLlm(cloud, local)
+        } else {
+            val ready = ModelManager.isDownloaded(choice)
+            require(ready) {
+                "Local mode is selected but ${choice.displayName.substringBefore("(").trim()} isn't downloaded. " +
+                    "Open Setup → Download local model, or switch to Cloud."
+            }
+            val existing = localLlm
+            if (existing != null && existing.modelId == choice.id) {
+                return@withLock existing
+            }
+            existing?.release()
+            val created = buildEngine(choice)
+            localLlm = created
+            created
         }
-        val ready = ModelManager.isDownloaded(choice)
-        require(ready) {
-            "Local mode is selected but ${choice.displayName.substringBefore("(").trim()} isn't downloaded. " +
-                "Open Setup → Download local model, or switch to Cloud."
-        }
-        val existing = localLlm
-        if (existing != null && existing.modelId == choice.id) {
-            return@withLock existing
-        }
-        existing?.release()
-        val created = buildEngine(choice)
-        localLlm = created
-        created
     }
 
     /**

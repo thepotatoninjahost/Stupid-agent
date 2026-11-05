@@ -44,7 +44,12 @@ fun ToolsScreen(state: AgentState) {
             val m = host.vorv.llm.ModelChoice.fromId(state.selectedModelId)
             "${m.displayName.substringBefore("(").trim()} via GenieX/llama.cpp — download in Setup (~${"%,.1f".format(m.approxBytes / 1_000_000_000.0)} GB, one time)"
         },
-        "cloud_llm" to "GLM-4.6 with native function calling — needs Z.ai API key",
+        "cloud_llm" to if (state.hasApiKey) {
+            val cm = host.vorv.llm.CloudModel.fromId(state.cloudModelId)
+            "${cm.displayName} on Z.ai with native function calling" + if (cm.free) " — FREE tier, \$0/token" else " — paid per token"
+        } else {
+            "Z.ai GLM with native function calling — FREE tier by default, needs a Z.ai API key"
+        },
     )
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("Tools", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold) }

@@ -22,6 +22,8 @@ fun SettingsScreen(
     state: AgentState,
     onSaveKey: (String) -> Unit,
     onSetMode: (String) -> Unit,
+    onSetCloudModel: (String) -> Unit,
+    onSetAutoFallback: (Boolean) -> Unit,
     onSetLocalModel: (String) -> Unit,
     onDownloadModel: () -> Unit,
     onDeleteModel: (ModelChoice) -> Unit,
@@ -182,10 +184,11 @@ fun SettingsScreen(
             FilterChip(
                 selected = state.llmMode == "cloud",
                 onClick = { onSetMode("cloud") },
-                label = { Text("Cloud (GLM-4.6)", fontSize = 11.sp) },
+                label = { Text("Cloud (GLM)", fontSize = 11.sp) },
             )
         }
         val activeChoice = ModelChoice.fromId(state.selectedModelId)
+        val activeCloud = CloudModel.fromId(state.cloudModelId)
         Text(
             when {
                 state.llmMode == "local" && state.localModelReady ->
@@ -193,17 +196,105 @@ fun SettingsScreen(
                         "No network, no key. Tool calls are parsed from the model's chat template."
                 state.llmMode == "local" ->
                     "Local selected, but ${activeChoice.displayName.substringBefore("(").trim()} isn't downloaded yet."
-                state.hasApiKey -> "Active: GLM-4.6 with native function calling. Needs internet."
+                state.hasApiKey -> "Active: ${activeCloud.displayName} (${if (activeCloud.free) "free tier" else "paid per token"}) with native function calling." +
+                    if (state.autoFallback && state.localModelReady) " If the cloud fails mid-task, the offline engine finishes the job." else ""
                 else -> "Cloud selected, no key set. Add one below or download a local model."
             },
             color = OnSurfaceVariant,
             fontSize = 11.sp,
         )
 
+        // ------------------------------------------------ cloud model picker (v0.7.0)
+        if (state.llmMode == "cloud" || state.hasApiKey) {
+            Text("Cloud Model", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "The free tier costs nothing — every other model is paid per token and strictly optional. " +
+                    "Changing the model with a key saved re-tests it against the new model immediately.",
+                color = OnSurfaceVariant, fontSize = 11.sp,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                CloudModel.entries.forEach { cm ->
+                    val selected = state.cloudModelId == cm.id
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (selected) Primary.copy(alpha = 0.08f) else SurfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = { onSetCloudModel(cm.id) },
+                                colors = RadioButtonDefaults.colors(selectedColor = Primary),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        cm.displayName,
+                                        color = OnBackground,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    if (cm.free) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(50),
+                                            color = Success.copy(alpha = 0.18f),
+                                        ) {
+                                            Text(
+                                                " FREE",
+                                                color = Success,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(cm.shortDesc, color = OnSurfaceVariant, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Offline fallback switch — only meaningful with a local model on disk.
+            Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Offline fallback", color = OnBackground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (state.localModelReady)
+                                "If the cloud engine fails mid-task (no signal, outage), the offline engine finishes the step — the switch and its reason are logged."
+                            else
+                                "Needs a downloaded local model (see Local Models above). Currently unarmed.",
+                            color = OnSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = state.autoFallback && state.localModelReady,
+                        onCheckedChange = { onSetAutoFallback(it) },
+                        enabled = state.localModelReady,
+                        colors = SwitchDefaults.colors(checkedTrackColor = Primary),
+                    )
+                }
+            }
+        }
+
         // ------------------------------------------------ api key
         Text("Z.ai API Key (cloud only)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Stored encrypted at rest (Android Keystore-backed). Never uploaded, never committed to git, never logged. Not needed in local mode.",
+            "Create a free key at z.ai → API Keys. Stored encrypted at rest (Android Keystore-backed). " +
+                "Never uploaded, never committed to git, never logged. Not needed in local mode. " +
+                "Saving runs one real test call against the selected model.",
             color = OnSurfaceVariant, fontSize = 11.sp
         )
         OutlinedTextField(
@@ -221,12 +312,37 @@ fun SettingsScreen(
         )
         Button(
             onClick = { if (key.isNotBlank()) { onSaveKey(key); saved = true } },
-            enabled = key.isNotBlank(),
+            enabled = key.isNotBlank() && !state.keyTesting,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(50),
-        ) { Text(if (saved) "Saved ✓" else "Save Key") }
+        ) {
+            Text(
+                when {
+                    state.keyTesting -> "Testing against ${CloudModel.fromId(state.cloudModelId).displayName}…"
+                    saved -> "Saved ✓ — see test result below"
+                    else -> "Save Key & Test"
+                }
+            )
+        }
 
-        if (state.hasApiKey) {
+        if (state.keyTestResult != null) {
+            val ok = state.keyTestResult!!.startsWith("✓")
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (ok) Success.copy(alpha = 0.12f) else Error.copy(alpha = 0.12f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    state.keyTestResult!!,
+                    color = if (ok) Success else Error,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(10.dp),
+                )
+            }
+        }
+
+        if (state.hasApiKey && state.keyTestResult == null && !state.keyTesting) {
             Surface(shape = RoundedCornerShape(10.dp), color = Success.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
                 Text("✓ API key set — cloud mode available", color = Success, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
             }
@@ -433,7 +549,8 @@ fun SettingsScreen(
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
                 "16 real tools (including self_fix, which lets you ask Vorv in chat to fix " +
                     "or change its own code). Local engine: Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU " +
-                "(offline after one 1.8–4.4 GB download). Cloud engine: GLM-4.6 (optional).\n\n" +
+                "(offline after one 1.8–4.4 GB download). Cloud engine: Z.ai GLM — FREE tier by default " +
+                "(GLM-4.7-Flash), paid models optional, automatic offline fallback.\n\n" +
                 "Honest limits: real measured tok/s appears in the trace after each generation — " +
                 "expected peak ~8-12 tok/s on the 7B model, ~4-6 sustained under thermal load. " +
                 "js_exec and python_exec run in hardened in-process sandboxes; shell and app_intent " +

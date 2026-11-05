@@ -14,6 +14,9 @@ import host.vorv.data.entity.ToolCall
 import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.RoomKernelEventSink
 import host.vorv.kernel.TraceStep
+import host.vorv.llm.CloudLlm
+import host.vorv.llm.CloudModel
+import host.vorv.llm.FallbackLlm
 import host.vorv.llm.Llm
 import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
@@ -106,13 +109,21 @@ data class AgentState(
     val episodes: List<Episode> = emptyList(),
     val llmMode: String = "cloud",       // "local" | "cloud"
     val hasApiKey: Boolean = false,
+    /** v0.7.0 — selected Z.ai cloud model (free glm-4.7-flash by default). */
+    val cloudModelId: String = CloudModel.GLM_4_7_FLASH.id,
+    /** v0.7.0 — cloud→offline fallback armed (needs a downloaded local model). */
+    val autoFallback: Boolean = true,
+    /** v0.7.0 — key+model probe in flight (Setup screen). */
+    val keyTesting: Boolean = false,
+    /** v0.7.0 — verbatim result of the last key/model probe (Setup screen). */
+    val keyTestResult: String? = null,
     val localModelReady: Boolean = false,
     val downloadingModel: Boolean = false,
     val downloadProgress: Int = 0,
     val selectedModelId: String = "qwen7b",
     val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
-    val currentLlmLabel: String = "GLM-4.6 (cloud)",
+    val currentLlmLabel: String = "GLM-4.7-Flash (cloud, free)",
     /**
      * Setup-screen error message — when a download or model operation fails,
      * the error is surfaced here so the SettingsScreen can display it inline
@@ -268,7 +279,27 @@ class AgentViewModel(
                 val id = prefs.localModelId.first()
                 val choice = ModelChoice.fromId(id)
                 val ready = ModelManager.isDownloaded(choice)
-                _state.update { it.copy(llmMode = mode, currentLlmLabel = engineLabel(mode, ready, it.hasApiKey, choice)) }
+                _state.update { prev ->
+                    val next = prev.copy(llmMode = mode, localModelReady = ready)
+                    next.copy(currentLlmLabel = engineLabel(next, choice))
+                }
+            }
+        }
+        viewModelScope.launch {
+            // v0.7.0: cloud model + fallback preference → state + honest label.
+            prefs.cloudModelId.collect { id ->
+                _state.update { prev ->
+                    val next = prev.copy(cloudModelId = id)
+                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                }
+            }
+        }
+        viewModelScope.launch {
+            prefs.autoFallback.collect { enabled ->
+                _state.update { prev ->
+                    val next = prev.copy(autoFallback = enabled)
+                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -287,12 +318,9 @@ class AgentViewModel(
                 // Engine lifecycle is owned by ModelRepository (audit H-4) —
                 // it serializes swaps behind a mutex and refuses to swap mid-task.
                 val ready = ModelManager.isDownloaded(choice)
-                _state.update {
-                    it.copy(
-                        selectedModelId = id,
-                        localModelReady = ready,
-                        currentLlmLabel = engineLabel(it.llmMode, ready, it.hasApiKey, choice),
-                    )
+                _state.update { prev ->
+                    val next = prev.copy(selectedModelId = id, localModelReady = ready)
+                    next.copy(currentLlmLabel = engineLabel(next, choice))
                 }
             }
         }
@@ -335,8 +363,64 @@ class AgentViewModel(
         _state.update { it.copy(screen = screen) }
     }
 
+    /**
+     * v0.7.0: saving a key now VERIFIES it with a real round-trip against
+     * the selected cloud model ([CloudLlm.probe]) before trusting it. Setup
+     * shows the model's actual reply — or Z.ai's actual error — never a
+     * guess. On success the engine switches to cloud automatically: pasting
+     * a key is an unambiguous instruction to use cloud.
+     */
     fun setApiKey(key: String) {
-        viewModelScope.launch(Dispatchers.IO) { secrets.setZaiApiKey(key) }
+        viewModelScope.launch(Dispatchers.IO) {
+            secrets.setZaiApiKey(key)
+            _state.update { it.copy(keyTesting = true, keyTestResult = null) }
+            val modelId = prefs.cloudModelId.first()
+            val probe = CloudLlm.probe(key, modelId)
+            val cm = CloudModel.fromId(modelId)
+            if (probe.isSuccess) {
+                _state.update {
+                    it.copy(
+                        keyTesting = false,
+                        keyTestResult = "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — key works. Cloud mode switched ON.",
+                    )
+                }
+                prefs.setLlmMode("cloud")
+            } else {
+                val reason = probe.exceptionOrNull()?.message ?: "unknown error"
+                _state.update { it.copy(keyTesting = false, keyTestResult = "✗ $reason") }
+            }
+        }
+    }
+
+    /**
+     * v0.7.0: pick the cloud model. When a key exists the choice is verified
+     * immediately with a real probe — an unavailable model id is caught at
+     * selection time in Setup, not mid-task.
+     */
+    fun setCloudModel(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.setCloudModelId(id)
+            val key = secrets.zaiApiKey.first()
+            if (key.isBlank()) return@launch
+            _state.update { it.copy(keyTesting = true, keyTestResult = null) }
+            val probe = CloudLlm.probe(key, id)
+            val cm = CloudModel.fromId(id)
+            _state.update {
+                it.copy(
+                    keyTesting = false,
+                    keyTestResult = if (probe.isSuccess) {
+                        "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — works with your key."
+                    } else {
+                        "✗ ${probe.exceptionOrNull()?.message ?: "unknown error"}"
+                    },
+                )
+            }
+        }
+    }
+
+    /** v0.7.0 — arm/disarm the cloud→offline fallback (cloud mode only). */
+    fun setAutoFallback(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) { prefs.setAutoFallback(enabled) }
     }
 
     fun setLlmMode(mode: String) {
@@ -358,12 +442,9 @@ class AgentViewModel(
                 _state.update { it.copy(setupError = e.message) }
             }
             val ready = ModelManager.isDownloaded(choice)
-            _state.update {
-                it.copy(
-                    selectedModelId = id,
-                    localModelReady = ready,
-                    currentLlmLabel = engineLabel(it.llmMode, ready, it.hasApiKey, choice),
-                )
+            _state.update { prev ->
+                val next = prev.copy(selectedModelId = id, localModelReady = ready)
+                next.copy(currentLlmLabel = engineLabel(next, choice))
             }
         }
     }
@@ -389,14 +470,14 @@ class AgentViewModel(
                 // Engine creation is lazy now — activeEngine() builds it under
                 // the repository lock on first use. No release/create race here.
                 val newDownloaded = _state.value.downloadedModelIds + choice.id
-                _state.update {
-                    it.copy(
+                _state.update { prev ->
+                    val next = prev.copy(
                         localModelReady = true,
                         downloadingModel = false,
                         downloadedModelIds = newDownloaded,
-                        currentLlmLabel = engineLabel(it.llmMode, true, it.hasApiKey, choice),
                         setupError = null,
                     )
+                    next.copy(currentLlmLabel = engineLabel(next, choice))
                 }
                 db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded: ${choice.id} — NPU offline mode available"))
             } catch (e: Exception) {
@@ -428,13 +509,13 @@ class AgentViewModel(
             val activeId = _state.value.selectedModelId
             if (activeId == choice.id) {
                 val newDownloaded = _state.value.downloadedModelIds - choice.id
-                _state.update {
-                    it.copy(
+                _state.update { prev ->
+                    val next = prev.copy(
                         localModelReady = false,
                         llmMode = "cloud",
                         downloadedModelIds = newDownloaded,
-                        currentLlmLabel = engineLabel("cloud", false, it.hasApiKey, choice),
                     )
+                    next.copy(currentLlmLabel = engineLabel(next, choice))
                 }
                 prefs.setLlmMode("cloud")
             } else {
@@ -717,10 +798,31 @@ class AgentViewModel(
                 val mode = prefs.llmMode.first()
                 val key = secrets.zaiApiKey.first()
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
+                val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
+                val autoFallback = prefs.autoFallback.first()
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 modelRepository.markBusy(true)
-                val llm: Llm = modelRepository.activeEngine(mode, key, choice)
+                val llm: Llm = modelRepository.activeEngine(mode, key, choice, cloudModel, autoFallback)
+
+                // v0.7.0: every cloud→offline takeover is recorded with its
+                // REAL reason in the episode log — a fallback is visible,
+                // never a silent engine swap.
+                (llm as? FallbackLlm)?.onEngineSwitch = { from, to, reason ->
+                    viewModelScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            db.episodeDao().insert(
+                                Episode(
+                                    kind = "fallback",
+                                    summary = "Cloud engine failed mid-task — continuing on the offline engine",
+                                    detailsJson = "{\"from\":\"${from.replace("\"", "'")}\"," +
+                                        "\"to\":\"${to.replace("\"", "'")}\"," +
+                                        "\"reason\":\"${reason.replace("\"", "'").take(300)}\"}",
+                                )
+                            )
+                        }
+                    }
+                }
 
                 val timeoutMs = if (mode == "local") LOCAL_TASK_TIMEOUT_MS else CLOUD_TASK_TIMEOUT_MS
                 val result = try {
@@ -901,14 +1003,19 @@ class AgentViewModel(
         super.onCleared()
     }
 
-    private fun engineLabel(mode: String, ready: Boolean, hasApiKey: Boolean, choice: ModelChoice): String {
-        return when (mode) {
-            "local" -> if (ready) {
+    private fun engineLabel(s: AgentState, choice: ModelChoice): String {
+        return when (s.llmMode) {
+            "local" -> if (s.localModelReady) {
                 "${choice.displayName.substringBefore("(").trim()} (NPU, offline)"
             } else {
                 "Local — ${choice.displayName.substringBefore("(").trim()} not pulled"
             }
-            else -> if (hasApiKey) "GLM-4.6 (cloud)" else "Cloud — needs API key"
+            else -> {
+                if (!s.hasApiKey) return "Cloud — needs API key"
+                val cm = CloudModel.fromId(s.cloudModelId)
+                val fb = if (s.autoFallback && s.localModelReady) " · offline fallback armed" else ""
+                "${cm.displayName} (cloud${if (cm.free) ", free" else ""})$fb"
+            }
         }
     }
 

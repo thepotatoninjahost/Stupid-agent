@@ -26,6 +26,21 @@ class VorvPrefs(private val context: Context) {
     /** "local" | "cloud" — which reasoning engine to use. */
     val llmMode: Flow<String> = context.vorvPrefs.data.map { it[LLM_MODE] ?: "cloud" }
 
+    /**
+     * v0.7.0 — which Z.ai cloud model to use in cloud mode.
+     * Defaults to the FREE glm-4.7-flash tier; paid models are opt-in.
+     * See host.vorv.llm.CloudModel for the catalog.
+     */
+    val cloudModelId: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_MODEL_ID] ?: "glm-4.7-flash" }
+
+    /**
+     * v0.7.0 — when true and a local model is downloaded, cloud tasks wrap
+     * their engine in FallbackLlm: if the cloud call fails mid-task (signal
+     * drop, 5xx, exhausted retries), the same step reruns on the offline
+     * engine instead of killing the task. Auth errors never fall back.
+     */
+    val autoFallback: Flow<Boolean> = context.vorvPrefs.data.map { it[AUTO_FALLBACK] ?: true }
+
     /** "qwen7b" | "qwen3b" — which local model to use when llmMode = "local". */
     val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "qwen7b" }
 
@@ -40,6 +55,16 @@ class VorvPrefs(private val context: Context) {
 
     suspend fun setLlmMode(mode: String) {
         context.vorvPrefs.edit { it[LLM_MODE] = if (mode == "local") "local" else "cloud" }
+    }
+
+    /** v0.7.0 — selects the cloud model (id must match a CloudModel entry). */
+    suspend fun setCloudModelId(id: String) {
+        context.vorvPrefs.edit { it[CLOUD_MODEL_ID] = id }
+    }
+
+    /** v0.7.0 — arms/disarms the offline fallback for cloud tasks. */
+    suspend fun setAutoFallback(enabled: Boolean) {
+        context.vorvPrefs.edit { it[AUTO_FALLBACK] = enabled }
     }
 
     suspend fun setLocalModelId(id: String) {
@@ -68,6 +93,8 @@ class VorvPrefs(private val context: Context) {
     companion object {
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
+        private val CLOUD_MODEL_ID = stringPreferencesKey("cloud_model_id")
+        private val AUTO_FALLBACK = booleanPreferencesKey("auto_fallback")
         private val LOCAL_MODEL_ID = stringPreferencesKey("local_model_id")
         private val NOTIF_ASKED = booleanPreferencesKey("notif_permission_asked")
         private val SCHEDULED = stringPreferencesKey("scheduled_reminders")
