@@ -13,6 +13,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
+import host.vorv.llm.CloudModel
 import host.vorv.llm.ModelChoice
 import host.vorv.tools.TermuxProbe
 import host.vorv.ui.theme.*
