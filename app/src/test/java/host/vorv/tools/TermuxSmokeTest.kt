@@ -125,6 +125,20 @@ class TermuxSmokeTest {
         assertFalse("the old prerequisite-disclaimer opener is gone", d.contains("requires:"))
     }
 
+    /**
+     * v0.6.19 (field finding #8): the field recording shows the model
+     * claiming "Termux … doesn't have a direct way to install tools" —
+     * false, and the exact hallucination this knowledge kills. The
+     * description must teach pkg and forbid the claim.
+     */
+    @Test
+    fun `B1b shell description teaches pkg and forbids the cannot-install claim`() {
+        val d = ShellTool(appContext).description.lowercase()
+        assertTrue("must teach the package manager", d.contains("pkg install -y"))
+        assertTrue("must forbid claiming termux cannot install",
+            d.contains("never claim termux cannot install"))
+    }
+
     @Test
     fun `B2 the shell tool is registered under the name the prompt promises`() {
         // The kernel lists tools by name in the prompt; the smoke: the tool

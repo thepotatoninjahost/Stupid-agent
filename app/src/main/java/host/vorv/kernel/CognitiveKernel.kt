@@ -62,6 +62,39 @@ class CognitiveKernel(
          *  slow on-device inference time. */
         const val MAX_NUDGES = 1
 
+        /**
+         * v0.6.19 (field finding #8): field recording — the user typed
+         * "termux works install the tools you need" and the model answered
+         * with a multi-screen lecture about "learning language" (syntax,
+         * grammar, SWOT analysis): no tool call, no code block. The v0.6.13
+         * nudge only catches code-block advice, so prose non-answers to
+         * action requests sailed straight through to the user. This
+         * heuristic recognizes the OTHER half: the user's message reads as
+         * an instruction to DO something on the device. Imperative verbs on
+         * word boundaries, lowercased; a trailing "?" marks a question and
+         * never triggers. A false positive costs one short nudge turn of
+         * NPU time — a missed lecture costs the user's trust in the agent.
+         */
+        fun looksLikeActionRequest(prompt: String): Boolean {
+            val p = prompt.trim().lowercase()
+            if (p.endsWith("?")) return false
+            return ACTION_REQUEST_VERBS.any { Regex("\\b$it\\b").containsMatchIn(p) }
+        }
+
+        /** Verbs that make a user message an ACTION request (see
+         *  [looksLikeActionRequest]). Word-boundary matched: "install" does
+         *  not fire on "installation". Deliberately excludes question-y
+         *  verbs like "show"/"find" — the "?" exemption and the nudge's own
+         * "reply with your final answer" escape hatch absorb the rest. */
+        private val ACTION_REQUEST_VERBS = listOf(
+            "install", "uninstall", "update", "upgrade", "run", "execute",
+            "create", "delete", "remove", "make", "build", "write", "generate",
+            "download", "fetch", "open", "launch", "start", "stop", "restart",
+            "fix", "repair", "copy", "move", "rename", "set up", "setup",
+            "apply", "clean", "clone", "compile", "deploy", "send", "share",
+            "perform",
+        )
+
         /** chars ≈ 4 per token — a conservative estimate for compaction. */
         const val CHARS_PER_TOKEN = 4
 
@@ -170,23 +203,47 @@ class CognitiveKernel(
                         // execution.
                         val proposesCode = resp.content.contains("```bash") ||
                             resp.content.contains("```python")
-                        if (proposesCode && toolCallCount == 0 && nudgesUsed < MAX_NUDGES) {
+                        // v0.6.19 (field finding #8): a PROSE non-answer to an
+                        // action request — the model lectured about "learning
+                        // language" instead of installing anything. No code
+                        // block, so the v0.6.13 trigger above was blind to it.
+                        val actionMiss = !proposesCode && looksLikeActionRequest(prompt)
+                        if ((proposesCode || actionMiss) && toolCallCount == 0 && nudgesUsed < MAX_NUDGES) {
                             nudgesUsed++
                             messages.add(Llm.Message("assistant", resp.content))
-                            messages.add(Llm.Message("user", buildString {
-                                appendLine("CORRECTION: your answer contains commands in a code block, " +
-                                    "but you made no tool call — nothing was executed on the device.")
-                                appendLine("If the user asked you to PERFORM these actions, you MUST " +
-                                    "call the matching tool now: shell for bash commands, " +
-                                    "python_exec for python programs. The user will be asked to " +
-                                    "approve the execution.")
-                                appendLine("If the user only asked for information or advice, reply " +
-                                    "with your final answer and no runnable code blocks.")
-                            }))
-                            eventSink.logEpisode(
-                                "nudge", "code-block-without-tool-call",
-                                "{\"iteration\":$iterations,\"taskId\":\"$taskId\"}",
-                            )
+                            if (proposesCode) {
+                                messages.add(Llm.Message("user", buildString {
+                                    appendLine("CORRECTION: your answer contains commands in a code block, " +
+                                        "but you made no tool call — nothing was executed on the device.")
+                                    appendLine("If the user asked you to PERFORM these actions, you MUST " +
+                                        "call the matching tool now: shell for bash commands, " +
+                                        "python_exec for python programs. The user will be asked to " +
+                                        "approve the execution.")
+                                    appendLine("If the user only asked for information or advice, reply " +
+                                        "with your final answer and no runnable code blocks.")
+                                }))
+                                eventSink.logEpisode(
+                                    "nudge", "code-block-without-tool-call",
+                                    "{\"iteration\":$iterations,\"taskId\":\"$taskId\"}",
+                                )
+                            } else {
+                                messages.add(Llm.Message("user", buildString {
+                                    appendLine("CORRECTION: the user's message asks you to DO something " +
+                                        "on this device, but you made no tool call — nothing was " +
+                                        "installed, run, or changed. A lecture, a curriculum, or an " +
+                                        "essay about how you would learn is NOT an answer to an " +
+                                        "action request.")
+                                    appendLine("Call the matching tool NOW. Termux CAN install " +
+                                        "software: call shell with e.g. pkg install -y git — the " +
+                                        "user will be asked to approve the execution.")
+                                    appendLine("If the user genuinely only asked for information, " +
+                                        "reply with a SHORT final answer — no essay.")
+                                }))
+                                eventSink.logEpisode(
+                                    "nudge", "action-request-without-tool-call",
+                                    "{\"iteration\":$iterations,\"taskId\":\"$taskId\"}",
+                                )
+                            }
                             continue
                         }
 
@@ -514,6 +571,11 @@ class CognitiveKernel(
         appendLine("   output, JSON, or error strings into your reply — explain in plain English")
         appendLine("   what happened, and if a tool failed, say plainly what failed and what the")
         appendLine("   user can do about it.")
+        appendLine("11. Never answer an action request with a lecture, a curriculum, a plan, or")
+        appendLine("   an essay (including essays about \"learning\" or how you would learn) —")
+        appendLine("   that is a non-answer. Either call the tool that does it, or ask ONE short")
+        appendLine("   clarifying question. Termux is a full Linux environment: it CAN install")
+        appendLine("   software with pkg install -y <name>.")
         appendLine()
         appendLine("Available tools:")
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }

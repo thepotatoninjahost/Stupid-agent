@@ -1,3 +1,60 @@
+# Changelog — v0.6.19 "The Lecture Breaker"
+
+Eighth real-world finding, from the field recording: the user typed
+"termux works install the tools you need" and the model answered with a
+multi-screen essay about "learning language" — syntax, grammar, tenses,
+SWOT analysis, the Six Thinking Hats — ending "Let me know if you have
+any specific questions!" No tool call. No code block. The honesty pill
+flagged it "uncited — no tool evidence" and delivered it anyway. It also
+opened with a factual hallucination: "Termux … doesn't have a direct
+way to install tools" (it has pkg). The user asked an agent to act; the
+agent delivered a curriculum.
+
+## Why the guardrails missed it
+
+The v0.6.13 nudge (act, don't advise) fires when the answer contains a
+bash or python code block with no tool call. A prose lecture has no code
+block — the trigger never fired. And nothing in the prompt knew Termux
+has a package manager, so the model's "can't install" claim went
+unchallenged.
+
+## The lecture breaker — prose non-answers get the same one correction
+
+- New kernel heuristic `looksLikeActionRequest`: the user's message
+  reads as an instruction to DO something (imperative verbs — install,
+  run, create, fix, set up… — on word boundaries; a trailing "?"
+  exempts questions). When such a request is answered with ZERO tool
+  calls, the kernel sends the same single nudge, under a new episode
+  name `action-request-without-tool-call`, with a correction that names
+  the non-answer: "A lecture, a curriculum, or an essay about how you
+  would learn is NOT an answer to an action request."
+- The correction carries the fact the model hallucinated around:
+  Termux CAN install software — `pkg install -y git`.
+- Same bounds as v0.6.13: at most ONE nudge per task, and the nudge
+  never executes anything itself — the consent gate still bounds every
+  execution.
+
+## The model now knows Termux has a package manager
+
+- The shell tool's description (what the model actually reads) now
+  states Termux is a full Linux environment with pkg, gives the exact
+  install form (`pkg install -y <name>`; git, python, nodejs, ripgrep
+  as examples), and forbids the "Termux cannot install tools" claim
+  from the recording.
+- System prompt rule 11: never answer an action request with a lecture,
+  a curriculum, a plan, or an essay; call the tool or ask ONE short
+  clarifying question.
+
+## Why this can only mitigate, not cure
+
+The brain is Qwen2.5-Coder-7B on-device. A 7B model will still
+sometimes choose words poorly; these changes make the WRONG choice
+correctable within one turn instead of final, and make the right
+choice (call the shell, use pkg) the explicitly taught one. If the
+lecture behavior persists in the field, the honest next step is a
+bigger model on stronger hardware — no prompt can fully prompt a brain
+past its size.
+
 # Changelog — v0.6.18 "One Line at a Time, Copyable at Last"
 
 Sixth and seventh real-world findings, live from the device this time. The

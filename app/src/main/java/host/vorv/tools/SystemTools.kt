@@ -249,10 +249,13 @@ class ShellTool(private val appContext: Context) : Tool {
      */
     override val description =
         "Run a bash command in Termux and return the REAL stdout, stderr and exit code. " +
-        "ALWAYS call this tool whenever the user asks for anything involving Termux, the " +
-        "shell, or running commands on this device. NEVER claim you cannot access Termux " +
-        "without calling this tool first — if setup is incomplete it returns an honest " +
-        "error naming the exact fix, and it never fakes output."
+        "Termux is a full Linux environment with the pkg package manager: install " +
+        "software with pkg install -y <name> (e.g. pkg install -y git python nodejs " +
+        "ripgrep) — NEVER claim Termux cannot install tools or software. ALWAYS call " +
+        "this tool whenever the user asks for anything involving Termux, the shell, " +
+        "installing software, or running commands on this device. NEVER claim you " +
+        "cannot access Termux without calling this tool first — if setup is incomplete " +
+        "it returns an honest error naming the exact fix, and it never fakes output."
 
     override val timeoutMs: Long get() = 300_000L
     override val maxCallsPerTask: Int get() = 10

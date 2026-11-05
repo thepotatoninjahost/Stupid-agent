@@ -392,6 +392,9 @@ class CognitiveKernelTest {
         // {"ok":true,"output":"No memories matched..."} verbatim in chat).
         assertTrue(systemMsg.content.contains("Never paste raw tool"))
         assertTrue(systemMsg.content.contains("plain English"))
+        // v0.6.19: the anti-lecture rule and the pkg fact (field finding #8).
+        assertTrue(systemMsg.content.contains("Never answer an action request with a lecture"))
+        assertTrue(systemMsg.content.contains("pkg install -y"))
     }
 
     // ------------------------------------------------ nudge (v0.6.13):
@@ -484,6 +487,81 @@ class CognitiveKernelTest {
         assertEquals(2, llm.steps.size)
         assertEquals(1, sink.episodes.count { it.first == "nudge" })
         assertTrue(result.ok)
+    }
+
+    // ================== v0.6.19 lecture blind spot (field finding #8):
+    // "termux works install the tools you need" was answered with an essay
+    // about "learning language" — no tool call, no code block. The nudge
+    // must catch PROSE non-answers to action requests too.
+
+    @Test
+    fun `prose lecture answering an action request gets one nudge then the tool runs`() = runTest {
+        val sink = FakeSink()
+        val tool = FakeTool("shell")
+        val llm = FakeLlm(listOf(
+            // The exact field failure: an essay, no tool call, no code block.
+            Llm.LlmResponse.Text(
+                "Let's begin with learning about language.\n\n" +
+                    "### Step 1: Understanding Syntax\n" +
+                    "Syntax refers to the rules that govern the structure of sentences " +
+                    "in a language. Example: \"The cat eats fish.\"", done = true),
+            // After the nudge the model does the right thing.
+            toolUse("shell", """{"x":"pkg install -y git"}"""),
+            Llm.LlmResponse.Text("Installed git. [cite:exec:shell]", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run(
+            "t1", "termux works install the tools you need", llm, null)
+
+        // The corrective message was sent (3 LLM calls, not 1).
+        assertEquals(3, llm.steps.size)
+        val lastStep = llm.steps.last()
+        assertTrue(lastStep.any { it.role == "user" && it.content.contains("no tool call") })
+        assertTrue(lastStep.any { it.role == "user" && it.content.contains("pkg install -y") })
+        // The lecture nudge is logged under its own name.
+        assertTrue(sink.episodes.any {
+            it.first == "nudge" && it.second == "action-request-without-tool-call" })
+        // The tool actually ran and the answer is cited.
+        assertEquals(1, result.toolCalls)
+        assertFalse(result.answer.startsWith("[uncited]"))
+    }
+
+    @Test
+    fun `lecture nudge fires at most once - a second essay is delivered as final`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(
+            Llm.LlmResponse.Text("Step 1: Understanding Syntax. The cat eats fish.", done = true),
+            Llm.LlmResponse.Text("Step 2: Understanding Reasoning. Socrates is mortal.", done = true),
+        ))
+        val result = kernel(sink, emptyList()).run("t1", "install the tools", llm, null)
+
+        assertEquals(2, llm.steps.size)
+        assertEquals(1, sink.episodes.count { it.first == "nudge" })
+        assertTrue(result.ok)
+        assertTrue(result.answer.startsWith("[uncited]"))
+    }
+
+    @Test
+    fun `questions ending in a question mark never get the lecture nudge`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("Termux is a terminal emulator.", done = true)))
+        kernel(sink, emptyList()).run("t1", "how do I install python in termux?", llm, null)
+
+        assertEquals(1, llm.steps.size)
+        assertTrue(sink.episodes.none { it.first == "nudge" })
+    }
+
+    @Test
+    fun `action-request heuristic matches the field transcript and rejects chat`() {
+        // The exact message from the field recording.
+        assertTrue(CognitiveKernel.looksLikeActionRequest("termux works install the tools you need."))
+        assertTrue(CognitiveKernel.looksLikeActionRequest("run ls for me"))
+        assertTrue(CognitiveKernel.looksLikeActionRequest("please set up the workspace"))
+        // Questions are information requests, not action orders.
+        assertFalse(CognitiveKernel.looksLikeActionRequest("how do I install python?"))
+        assertFalse(CognitiveKernel.looksLikeActionRequest("what is your name?"))
+        assertFalse(CognitiveKernel.looksLikeActionRequest("tell me about termux"))
+        // Word boundaries: "install" must not fire inside "installation".
+        assertFalse(CognitiveKernel.looksLikeActionRequest("I love your installation of android"))
     }
 
     // ========================= v0.6.16 retry-loop backstop (field finding #4)
