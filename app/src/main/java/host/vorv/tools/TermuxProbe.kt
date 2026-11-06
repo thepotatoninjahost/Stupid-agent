@@ -388,27 +388,19 @@ object TermuxProbe {
     // --------------------------------------------------------- shared
 
     /**
-     * Same mapping as ShellTool.rawWorkspacePath — primary storage only.
-     * v0.6.18 root-grant fix (latent since v0.6.14, in BOTH copies):
-     * `docId.substringBefore(":", "")` returns "" (the missing-delimiter
-     * value) for a colon-less docId, so granting the ROOT of primary
-     * storage ("tree/primary") made the volume "" and dispatch REJECTED
-     * the workspace as not-primary — while workspaceOnPrimaryStorage
+     * Same mapping as ShellTool — by M-1 (code review, 2026-11) it IS the
+     * shared mapping now: [SafPaths.rawWorkspacePath] is the single copy of
+     * the primary-storage SAF → path logic, used by ShellTool, this probe
+     * and the healer. The v0.6.18 root-grant fix (latent since v0.6.14, in
+     * BOTH copies then): `docId.substringBefore(":", "")` returns "" (the
+     * missing-delimiter value) for a colon-less docId, so granting the ROOT
+     * of primary storage ("tree/primary") made the volume "" and dispatch
+     * REJECTED the workspace as not-primary — while workspaceOnPrimaryStorage
      * (correct) showed gate 1 PASS. The checklist said green, the shell
      * said no — exactly the contradiction that burned the field user.
-     * Deliberate asymmetry now: no colon → volume IS the docId, rest "".
+     * Deliberate asymmetry: no colon → volume IS the docId, rest "".
      */
-    private fun rawWorkspacePath(uriStr: String): String? {
-        val uri = Uri.parse(uriStr)
-        if (uri.authority != "com.android.externalstorage.documents") return null
-        val segments = uri.pathSegments
-        if (segments.size < 2 || segments[0] != "tree") return null
-        val docId = Uri.decode(segments[1])
-        val volume = docId.substringBefore(":")
-        val rest = docId.substringAfter(":", "")
-        if (volume != "primary") return null
-        return if (rest.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$rest"
-    }
+    private fun rawWorkspacePath(uriStr: String): String? = SafPaths.rawWorkspacePath(uriStr)
 
     private fun readDoc(ctx: Context, f: androidx.documentfile.provider.DocumentFile?): String? = try {
         f?.takeIf { it.isFile }?.let {

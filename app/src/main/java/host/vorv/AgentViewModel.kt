@@ -194,12 +194,22 @@ class AgentViewModel(
     // classes under different classloaders are different runtime identities —
     // dispatching through the shared KernelApi interface is the only way a
     // patched kernel can be used). Falls back to the original on any failure.
-    private val kernel: CognitiveKernel =
+    //
+    // C-1 (code review, 2026-11): the field used to be typed CognitiveKernel
+    // and re-cast the PatchRegistry result with `as? CognitiveKernel`. A
+    // hot-patched class loads under its OWN ClassLoader, so it is never an
+    // instanceof the original class — the cast always failed for a real
+    // patch, the freshly built patched kernel was silently discarded, and
+    // self-patch dispatch stayed dead code for the kernel no matter how
+    // correct the generated patch was. `trace` and `emitTelemetry` now live
+    // on KernelApi, so the field holds the interface type and there is no
+    // cross-classloader cast left to fail.
+    private val kernel: host.vorv.kernel.KernelApi =
         host.vorv.watchdog.PatchRegistry.create(
             host.vorv.kernel.KernelApi::class.java,
             CognitiveKernel::class.java.name,
             RoomKernelEventSink(db), tools, outputDir,
-        ) as? CognitiveKernel ?: CognitiveKernel(RoomKernelEventSink(db), tools, outputDir)
+        ) ?: CognitiveKernel(RoomKernelEventSink(db), tools, outputDir)
 
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
@@ -373,6 +383,15 @@ class AgentViewModel(
     fun setApiKey(key: String) {
         viewModelScope.launch(Dispatchers.IO) {
             secrets.setZaiApiKey(key)
+            // B-1 (code review, 2026-11): publish key presence IMMEDIATELY.
+            // The hot SecretsStore flow also carries this update now, but
+            // send()'s engineAvailable gate reads AgentState.hasApiKey —
+            // setting it here means a freshly saved key is usable on the
+            // very next message, with no dependency on collector scheduling.
+            // This one line is the difference between "paste a key, get told
+            // to paste a key" (the four-year first-run loop) and a working
+            // default cloud mode.
+            _state.update { it.copy(hasApiKey = key.isNotBlank()) }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
             val modelId = prefs.cloudModelId.first()
             val probe = CloudLlm.probe(key, modelId)

@@ -24,6 +24,30 @@ interface KernelApi {
         val error: String? = null,
     )
 
+    /**
+     * Live trace stream (thinking / tool start+end / answer / telemetry).
+     *
+     * C-1 (code review, 2026-11): moved onto the shared interface together
+     * with [emitTelemetry]. The ViewModel used to collect the concrete
+     * class's flow, which forced a `as? CognitiveKernel` cast on the
+     * PatchRegistry result — a cast that can never succeed for a genuinely
+     * patched class (different ClassLoader ⇒ different runtime identity)
+     * and therefore silently threw every real kernel patch away.
+     */
+    val trace: kotlinx.coroutines.flow.SharedFlow<TraceStep>
+
+    /**
+     * Emit a real measured telemetry point from the active LLM into the
+     * trace flow. AgentViewModel wires this to LocalLlm.onTelemetry so the
+     * UI shows actual tok/s — never fabricated estimates.
+     *
+     * C-1: this was the ONLY member AgentViewModel needed off the concrete
+     * CognitiveKernel type, and needing it is what made the patched-kernel
+     * dispatch dead code. On the interface now, a patched kernel's
+     * telemetry reaches the UI exactly like the original's does.
+     */
+    suspend fun emitTelemetry(tokensPerSecond: Float, generateMs: Long, engine: String)
+
     suspend fun run(
         taskId: String,
         prompt: String,

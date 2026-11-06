@@ -11,6 +11,7 @@ import host.vorv.healer.HealRequest
 import host.vorv.healer.HealResult
 import host.vorv.healer.PatchProposal
 import host.vorv.llm.Llm
+import host.vorv.tools.SafPaths
 import host.vorv.watchdog.HotPatcher
 import host.vorv.watchdog.PatchKeys
 import host.vorv.watchdog.PatchRegistry
@@ -778,18 +779,16 @@ class HealingAgent(
 
     // --- SAF helpers (workspace round-trip) ---
 
-    /** Maps a primary-storage SAF tree URI to its /storage/emulated/0 path. */
-    private fun rawWorkspacePath(uriStr: String): String? {
-        val uri = Uri.parse(uriStr)
-        if (uri.authority != "com.android.externalstorage.documents") return null
-        val segments = uri.pathSegments
-        if (segments.size < 2 || segments[0] != "tree") return null
-        val docId = Uri.decode(segments[1])
-        val volume = docId.substringBefore(":", "")
-        val rest = docId.substringAfter(":", "")
-        if (volume != "primary") return null
-        return if (rest.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$rest"
-    }
+    /**
+     * M-1 (code review, 2026-11): this used to be a THIRD private copy of
+     * the SAF → path mapping — the only one still carrying the pre-v0.6.18
+     * root-grant bug (`substringBefore(":", "")` returns "" for a
+     * colon-less docId, i.e. a ROOT grant of primary storage), so
+     * self-repair refused the very workspace the Setup checklist called
+     * green while ShellTool and TermuxProbe accepted it. The mapping now
+     * lives in exactly one place: [SafPaths.rawWorkspacePath].
+     */
+    private fun rawWorkspacePath(uriStr: String): String? = SafPaths.rawWorkspacePath(uriStr)
 
     private fun writeDoc(doc: DocumentFile, bytes: ByteArray): Boolean = runCatching {
         context.contentResolver.openOutputStream(doc.uri, "wt")?.use { it.write(bytes) } != null

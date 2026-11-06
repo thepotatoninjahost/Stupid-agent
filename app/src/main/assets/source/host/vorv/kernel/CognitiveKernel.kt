@@ -106,16 +106,14 @@ class CognitiveKernel(
     }
 
     private val _trace = MutableSharedFlow<TraceStep>(replay = 0, extraBufferCapacity = 64)
-    val trace: SharedFlow<TraceStep> = _trace.asSharedFlow()
+
+    /** C-1: trace and emitTelemetry are declared on [KernelApi] — see there. */
+    override val trace: SharedFlow<TraceStep> = _trace.asSharedFlow()
 
     private val toolMap: Map<String, Tool> = tools.associateBy { it.name }
 
-    /**
-     * Emit a real measured telemetry point from the active LLM into the trace
-     * flow. AgentViewModel wires this to LocalLlm.onTelemetry so the UI shows
-     * actual tok/s — never fabricated estimates.
-     */
-    suspend fun emitTelemetry(tokensPerSecond: Float, generateMs: Long, engine: String) {
+    /** C-1: moved to the [KernelApi] interface — the concrete doc lives there. */
+    override suspend fun emitTelemetry(tokensPerSecond: Float, generateMs: Long, engine: String) {
         _trace.emit(TraceStep.Telemetry(tokensPerSecond, generateMs, engine))
     }
 

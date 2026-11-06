@@ -18,7 +18,16 @@ import host.vorv.R
 class AgentService : Service() {
 
     companion object {
-        const val CHANNEL_ID = "vorv_agent"
+        // M-6 (code review, 2026-11): this used to be "vorv_agent" — the SAME
+        // channel id NotifyTool creates with IMPORTANCE_DEFAULT. Channels are
+        // immutable once created, so whichever component ran first won and
+        // the other's importance was silently dropped: the FGS's quiet
+        // status notification and the notify tool's user-facing pings fought
+        // over one channel and one of them was always wrong. The foreground
+        // service now owns its own channel; NotifyTool owns "vorv_notify".
+        const val CHANNEL_ID = "vorv_agent_fgs"
+        /** Id both components used to fight over — deleted on upgrade, below. */
+        private const val LEGACY_COLLIDED_CHANNEL_ID = "vorv_agent"
         const val NOTIF_ID = 1
 
         const val ACTION_START = "host.vorv.action.START"
@@ -44,15 +53,24 @@ class AgentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(
                 CHANNEL_ID,
-                "Vorv Agent",
+                "Vorv Agent Service",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
                 description = "Active agent tasks"
             }
-            getSystemService(NotificationManager::class.java).createNotificationChannel(chan)
+            nm.createNotificationChannel(chan)
+            // M-6 upgrade migration: on installs before the channel split,
+            // this service created "vorv_agent" (IMPORTANCE_LOW) and won the
+            // immutability race, silently demoting every NotifyTool
+            // notification to LOW forever after. Nothing posts to that id
+            // anymore — delete the stale channel so old installs get the
+            // correct DEFAULT importance on the new "vorv_notify" channel
+            // and no phantom "Vorv Agent" entry lingers in Settings.
+            nm.deleteNotificationChannel(LEGACY_COLLIDED_CHANNEL_ID)
         }
     }
 

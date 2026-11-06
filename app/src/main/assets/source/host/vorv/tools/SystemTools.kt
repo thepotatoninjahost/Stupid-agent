@@ -462,24 +462,7 @@ class ShellTool(private val appContext: Context) : Tool {
     }
 
     /** Maps a primary-storage SAF tree URI to its /storage/emulated/0/... path. */
-    private fun rawWorkspacePath(uriStr: String): String? {
-        val uri = Uri.parse(uriStr)
-        if (uri.authority != "com.android.externalstorage.documents") return null
-        val segments = uri.pathSegments
-        if (segments.size < 2 || segments[0] != "tree") return null
-        val docId = Uri.decode(segments[1])
-        // Deliberate asymmetry in the missing-delimiter values: a docId
-        // WITHOUT a colon ("primary" = the storage root) means the volume
-        // IS the whole docId and the subfolder is empty. Passing "" to
-        // BOTH (the v0.6.14–v0.6.17 code) made a root grant's volume ""
-        // and wrongly rejected every root-of-primary-storage workspace —
-        // latent bug caught by TermuxSetupTest's SAF-parsing cases and
-        // fixed in lockstep with TermuxProbe.rawWorkspacePath.
-        val volume = docId.substringBefore(":")
-        val rest = docId.substringAfter(":", "")
-        if (volume != "primary") return null
-        return if (rest.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$rest"
-    }
+    private fun rawWorkspacePath(uriStr: String): String? = SafPaths.rawWorkspacePath(uriStr)
 
     /** Single-quote for shell, escaping embedded quotes: ' → '\'' */
     private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
@@ -625,13 +608,20 @@ class NotifyTool(private val appContext: Context) : Tool {
         try {
             val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // M-6 (code review, 2026-11): this used to create "vorv_agent" —
+                // the SAME id AgentService creates for the foreground service —
+                // with a different importance. Channels are immutable once
+                // created, so whichever component ran first won and the other's
+                // importance was silently dropped. User-facing pings now live on
+                // their own channel; the FGS owns "vorv_agent_fgs" (and deletes
+                // the legacy collided id on upgrade).
                 val chan = android.app.NotificationChannel(
-                    "vorv_agent", "Vorv Agent",
+                    "vorv_notify", "Vorv Notifications",
                     android.app.NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply { description = "Vorv task notifications" }
                 nm.createNotificationChannel(chan)
             }
-            val notif = androidx.core.app.NotificationCompat.Builder(appContext, "vorv_agent")
+            val notif = androidx.core.app.NotificationCompat.Builder(appContext, "vorv_notify")
                 .setContentTitle(title)
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_menu_compass)

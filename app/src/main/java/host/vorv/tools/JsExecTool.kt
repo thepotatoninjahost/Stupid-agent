@@ -209,8 +209,21 @@ class JsExecTool : Tool {
                     resultRef.set(result?.toString())
                 } catch (e: EvaluatorException) {
                     errorRef.set(if (factory.aborted) TIMEOUT_MSG else (e.message ?: e.toString()))
-                } catch (e: Exception) {
-                    errorRef.set(e.message ?: e.toString())
+                } catch (t: Throwable) {
+                    // M-11 (code review, 2026-11): this used to catch Exception
+                    // only. A StackOverflowError that slips past Rhino's own
+                    // guards — e.g. JSON.parse on deeply nested arrays, which
+                    // recurses in Rhino's unguarded native Java JSON parser
+                    // (verified: raw java.lang.StackOverflowError on Rhino
+                    // 1.7.15.1) — killed this worker thread WITHOUT setting
+                    // errorRef, and the tool then reported ok=true with output
+                    // "(no output)": a fabricated success for exactly the
+                    // failure the sandbox exists to catch. Errors are RESULTS
+                    // here, not crashes: this thread's only job is the
+                    // evaluation, errorRef is the honest channel, and the
+                    // dedicated-thread design keeps the caller's thread safe
+                    // either way.
+                    errorRef.set(t.message ?: t.toString())
                 } finally {
                     factory.deadline = 0L
                 }

@@ -174,4 +174,29 @@ class JsExecToolTest {
         assertFalse(r.ok)
         assertTrue(r.error!!.contains("missing code"))
     }
+
+    // ---------------------------------------------------- M-11: Errors are results
+
+    @Test fun `hard StackOverflowError is reported as failure, never a fake success (M-11)`() {
+        // JSON.parse recurses in Rhino's native Java JSON parser, which has no
+        // depth guard — verified against the pinned Rhino 1.7.15.1 jar: deep
+        // nesting throws a RAW java.lang.StackOverflowError (an Error, not an
+        // Exception, and no instruction is counted so no timeout fires).
+        // The old `catch (Exception)` let that Error kill the worker thread
+        // without setting errorRef, and the tool then reported ok=true with
+        // output "(no output)" — a fabricated success for exactly the failure
+        // the sandbox exists to catch. The widened catch makes the failure a
+        // RESULT. (For contrast: deep paren nesting is depth-guarded by
+        // Rhino's parser itself and comes back as an EvaluatorException.)
+        val depth = 100_000
+        val r = runJs("JSON.parse('['.repeat($depth) + ']'.repeat($depth))")
+        assertFalse(
+            "a hard evaluation failure must never come back as ok=true — ${r.describe()}",
+            r.ok,
+        )
+        assertTrue(
+            "the error channel must carry the failure — ${r.describe()}",
+            (r.error ?: "").contains("StackOverflow"),
+        )
+    }
 }
