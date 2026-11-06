@@ -14,6 +14,20 @@ busy hints, stop notices, errors — all of it), reloaded in order (rowid
 tiebreak for same-millisecond writes), bounded at the 500 most recent,
 and wiped by the existing clear-all-data flow.
 
+Post-release correction (CI rounds 4–5, 2026-11-07): the M1 window query
+shipped upside down — `ORDER BY ts ASC … LIMIT 500` keeps the OLDEST
+500, so a restart past 500 messages restored the beginning of the
+conversation and silently dropped the recent tail. The new regression
+tests caught it on their first actual run (rounds 1–3 never got that
+far — compile errors). Fixed in two steps: the window now selects the
+newest messages (inner query `ts DESC, rowId DESC`) and presents them
+chronologically; and the insertion-order tiebreak became an explicit
+autoincrement `rowId` PRIMARY KEY, because Room's query verifier cannot
+see SQLite's implicit `rowid` at all. The message UUID carries a UNIQUE
+index so a re-inserted logical message still replaces its row
+(REPLACE strategy), and the v2 → v3 migration DDL was rewritten to the
+exact Room-expected schema.
+
 ## Local-mode tasks stop dying mid-run (R3)
 
 The kernel's own compaction window could open directly on a tool result
