@@ -469,7 +469,7 @@ class ShellTool(private val appContext: Context) : Tool {
             // it guess "no access" (field finding #3).
             SessionGrants.markShellVerified()
 
-            val exitCode = readTextCapped(codeFile, 64)?.trim()?.toIntOrNull() ?: -1
+            val exitCode = readTextCapped(codeFile, 64)?.text?.trim()?.toIntOrNull() ?: -1
             val stdoutCap = readTextCapped(out, MAX_OUTPUT_CHARS)
             val stderrCap = readTextCapped(err, MAX_ERR_CHARS)
             val stdoutText = stdoutCap?.let { c ->
@@ -507,13 +507,15 @@ class ShellTool(private val appContext: Context) : Tool {
      * The old readFile() slurped the WHOLE file with readText() and capped
      * only afterwards — a runaway command writing hundreds of MB to stdout
      * OOM-killed the app before the cap could ever apply. Reads at most
-     * [maxChars] chars; null when the file is absent/unreadable.
+     * [maxChars] chars; null when the file is absent/unreadable. The
+     * [CappedRead.truncated] flag tells the caller to append the honest
+     * truncation marker.
      */
-    private fun readTextCapped(f: androidx.documentfile.provider.DocumentFile?, maxChars: Int): String? = try {
+    private fun readTextCapped(f: androidx.documentfile.provider.DocumentFile?, maxChars: Int): CappedRead? = try {
         f?.let { file ->
             if (!file.isFile) null
             else appContext.contentResolver.openInputStream(file.uri)?.use { ins ->
-                readCapped(ins, maxChars).text
+                readCapped(ins, maxChars)
             }
         }
     } catch (e: Exception) {

@@ -236,7 +236,7 @@ object ToolCallParser {
         //    JSON data carrying a "name" key is data, not a call.
         if (trimmedText.startsWith("{") || trimmedText.startsWith("[")) {
             parseToolCallJson(trimmedText)
-                ?.takeIf { tc -> tc.toolCalls.all { it.name in knownTools } }
+                ?.takeIf { tc -> tc is Llm.LlmResponse.ToolUse && tc.toolCalls.all { it.name in knownTools } }
                 ?.let { return it }
         }
 
@@ -245,7 +245,7 @@ object ToolCallParser {
         val jsonStart = trimmedText.indexOfAny(charArrayOf('{', '['))
         if (jsonStart > 0) {
             parseToolCallJson(trimmedText.substring(jsonStart).trim())
-                ?.takeIf { tc -> tc.toolCalls.all { it.name in knownTools } }
+                ?.takeIf { tc -> tc is Llm.LlmResponse.ToolUse && tc.toolCalls.all { it.name in knownTools } }
                 ?.let { return it }
         }
 
