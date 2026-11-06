@@ -55,22 +55,27 @@ abstract class VorvDatabase : RoomDatabase() {
         /**
          * v2 → v3 (code review M1, 2026-11): the chat_messages table — chat
          * history becomes persistent. Fresh CREATE on upgrade; existing data
-         * untouched.
+         * untouched. rowId is the autoincrement PK (insertion-order tiebreak,
+         * explicit because Room cannot query SQLite's implicit rowid); id is
+         * UNIQUE so re-inserting a logical message replaces its row.
          */
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL(
                     """CREATE TABLE IF NOT EXISTS `chat_messages` (
+                        `rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                         `id` TEXT NOT NULL,
                         `ts` INTEGER NOT NULL,
                         `role` TEXT NOT NULL,
                         `content` TEXT NOT NULL,
-                        `citationsJson` TEXT NOT NULL,
-                        PRIMARY KEY(`id`)
+                        `citationsJson` TEXT NOT NULL
                     )""".trimIndent()
                 )
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_chat_messages_ts` ON `chat_messages` (`ts`)"
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_chat_messages_id` ON `chat_messages` (`id`)"
                 )
             }
         }

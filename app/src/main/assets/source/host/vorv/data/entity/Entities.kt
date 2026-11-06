@@ -117,10 +117,21 @@ data class Artifact(
  * logs survived, which reads to the user as "the app forgot what we just
  * said". Messages are written as they are appended and reloaded in
  * AgentViewModel's init. Citations are serialized as a JSON array.
+ *
+ * [rowId] is the autoincrement PRIMARY KEY — it is the insertion-order
+ * tiebreak when several messages share a millisecond (user echo + busy
+ * hint). Room's query verifier cannot see SQLite's implicit `rowid`, so
+ * the sequence must be an explicit column. `id` (the ChatMessage's UUID)
+ * carries a UNIQUE index so a re-insert of the same logical message
+ * replaces its row instead of duplicating it.
  */
-@Entity(tableName = "chat_messages", indices = [Index("ts")])
+@Entity(
+    tableName = "chat_messages",
+    indices = [Index("ts"), Index(value = ["id"], unique = true)],
+)
 data class ChatMessageEntity(
-    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val id: String = java.util.UUID.randomUUID().toString(),
     val ts: Long = System.currentTimeMillis(),
     val role: String,               // "user" | "assistant"
     val content: String,

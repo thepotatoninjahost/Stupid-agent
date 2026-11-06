@@ -159,21 +159,22 @@ class MigrationTest {
             db.query("PRAGMA table_info(chat_messages)").use { c ->
                 while (c.moveToNext()) cols.add(c.getString(1))
             }
-            assertEquals(listOf("id", "ts", "role", "content", "citationsJson"), cols)
+            assertEquals(listOf("rowId", "id", "ts", "role", "content", "citationsJson"), cols)
 
-            // The ts index exists.
+            // Both indices exist: ts (lookup) and the UNIQUE id (replace).
             val idx = mutableListOf<String>()
             db.query("PRAGMA index_list(chat_messages)").use { c ->
                 while (c.moveToNext()) idx.add(c.getString(1))
             }
             assertTrue("ts index must exist", idx.contains("index_chat_messages_ts"))
+            assertTrue("unique id index must exist", idx.contains("index_chat_messages_id"))
 
             // Pre-existing data survived.
             db.query("SELECT COUNT(*) FROM tool_calls").use { c ->
                 c.moveToFirst(); assertEquals(1, c.getInt(0))
             }
 
-            // The new table accepts the production insert shape.
+            // The new table accepts the production insert shape (rowId auto).
             db.execSQL(
                 """INSERT INTO chat_messages (id, ts, role, content, citationsJson)
                    VALUES ('m-1', 1, 'user', 'hello', '[]')"""
