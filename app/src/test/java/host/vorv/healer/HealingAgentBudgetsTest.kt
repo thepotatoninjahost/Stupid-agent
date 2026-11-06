@@ -38,7 +38,7 @@ class HealingAgentBudgetsTest {
     }
 
     @Test
-    fun `source cap holds every real source file whole (H3b)` {
+    fun `source cap holds every real source file whole (H3b)`() {
         val cap = constant("MAX_SOURCE_CHARS")
         val largestBundled = 47_000L // AgentViewModel.kt ≈ 46.8 K chars today
         assertTrue(
