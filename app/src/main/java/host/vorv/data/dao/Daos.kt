@@ -134,14 +134,16 @@ interface ArtifactDao {
 /**
  * M1 (code review, 2026-11): persisted chat history access. rowid is the
  * tiebreak so same-millisecond messages (user echo + busy hint) reload in
- * the order they were written.
+ * the order they were written. The window keeps the NEWEST [limit]
+ * messages (inner query DESC), then presents them chronologically (outer
+ * ASC) — a bounded RECENT window, not the oldest N.
  */
 @Dao
 interface ChatMessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(msg: ChatMessageEntity)
 
-    @Query("SELECT * FROM chat_messages ORDER BY ts ASC, rowid ASC LIMIT :limit")
+    @Query("SELECT * FROM (SELECT * FROM chat_messages ORDER BY ts DESC, rowid DESC LIMIT :limit) ORDER BY ts ASC, rowid ASC")
     suspend fun loadRecent(limit: Int = 500): List<ChatMessageEntity>
 
     @Query("SELECT COUNT(*) FROM chat_messages")

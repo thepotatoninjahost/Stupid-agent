@@ -17,7 +17,10 @@ import java.io.File
  *  - M10: file_list is bounded in depth and entries, with an honest
  *    truncation note instead of a silent partial listing.
  *
- * Plain JVM: DocumentFile.fromFile wraps java.io.File with no framework.
+ * Plain JVM: DocumentFile.fromFile wraps java.io.File (RawDocumentFile —
+ * listFiles/isDirectory/name/length are pure File ops). The tests touch the
+ * underlying File directly; DocumentFile.uri is NEVER read because that
+ * would need the Android framework.
  */
 class FileToolsBoundsTest {
 
@@ -56,21 +59,20 @@ class FileToolsBoundsTest {
 
     // ------------------------------------------------------------ M10
 
-    private fun tempTree(): DocumentFile {
-        val f = File.createTempFile("vorv-tree", "").let { it.delete(); it.mkdirs(); it }
-        return DocumentFile.fromFile(f)
+    private fun tempDir(): File = File.createTempFile("vorv-tree", "").let { f ->
+        f.delete(); f.mkdirs(); f
     }
 
     @Test
     fun `listing a small tree is complete and untruncated`() {
-        val root = tempTree()
-        File(root.uri.path!!, "a.txt").writeText("hi")
-        File(root.uri.path!!, "sub").mkdirs()
-        File(root.uri.path!!, "sub/b.txt").writeText("yo")
+        val dir = tempDir()
+        File(dir, "a.txt").writeText("hi")
+        File(dir, "sub").mkdirs()
+        File(dir, "sub/b.txt").writeText("yo")
 
         val out = StringBuilder()
         val budget = ListBudget()
-        listBounded(root, "", out, budget)
+        listBounded(DocumentFile.fromFile(dir), "", out, budget)
 
         assertFalse(budget.truncatedByEntries)
         assertFalse(budget.truncatedByDepth)
@@ -81,17 +83,17 @@ class FileToolsBoundsTest {
 
     @Test
     fun `depth beyond the cap is truncated with a flag`() {
-        val root = tempTree()
+        val dir = tempDir()
         // Build a chain deeper than MAX_LIST_DEPTH.
-        var dir = File(root.uri.path!!)
+        var d = dir
         repeat(MAX_LIST_DEPTH + 5) { i ->
-            dir = File(dir, "d$i").apply { mkdirs() }
-            File(dir, "f$i.txt").writeText("x")
+            d = File(d, "d$i").apply { mkdirs() }
+            File(d, "f$i.txt").writeText("x")
         }
 
         val out = StringBuilder()
         val budget = ListBudget()
-        listBounded(root, "", out, budget)
+        listBounded(DocumentFile.fromFile(dir), "", out, budget)
 
         assertTrue("depth cap must fire", budget.truncatedByDepth)
         assertFalse(budget.truncatedByEntries)
@@ -102,14 +104,14 @@ class FileToolsBoundsTest {
 
     @Test
     fun `entry count beyond the cap is truncated`() {
-        val root = tempTree()
+        val dir = tempDir()
         repeat(MAX_LIST_ENTRIES + 50) { i ->
-            File(root.uri.path!!, "f%04d.txt".format(i)).writeText("x")
+            File(dir, "f%04d.txt".format(i)).writeText("x")
         }
 
         val out = StringBuilder()
         val budget = ListBudget()
-        listBounded(root, "", out, budget)
+        listBounded(DocumentFile.fromFile(dir), "", out, budget)
 
         assertTrue("entry cap must fire", budget.truncatedByEntries)
         assertEquals("exactly the cap was listed", MAX_LIST_ENTRIES, budget.entries)
