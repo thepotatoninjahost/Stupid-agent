@@ -82,7 +82,10 @@ jobs:
     needs: test
     runs-on: ubuntu-26.04
     permissions:
-      contents: read
+      contents: write   # rolling CI release (below): release assets live outside
+                        # the Actions-storage quota, so the installable APKs stay
+                        # downloadable even when the artifact quota is exhausted
+      actions: write    # delete this repo's artifacts from previous runs (below)
     steps:
       - name: Checkout
         # actions/checkout v7.0.1
@@ -122,17 +125,50 @@ jobs:
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
-      # Artifact retention: 7 days, not 90. These artifacts are INTERMEDIATE
-      # outputs — the durable, user-facing installable is the signed APK
-      # attached to the GitHub Release below, which is permanent and does not
-      # consume the Actions-storage quota. Free accounts get 500 MB of
-      # artifact storage; each run here produces ~229 MB (125 MB debug +
-      # 103 MB release), so 90-day retention allowed roughly two runs' worth
-      # of history before "Artifact storage quota has been hit" started
-      # failing the upload step on 2026-11-06 (the build itself had
-      # succeeded). 7 days keeps a grab-and-sideload window for recent runs
-      # while staying far inside the quota.
+      # --- Actions-storage quota hygiene -----------------------------------
+      #
+      # Free accounts get 500 MB of artifact storage SHARED across every
+      # private repo on the account. Each run here produces ~229 MB
+      # (125 MB debug + 103 MB release), so without the two measures below
+      # the quota filled and the upload step started failing on 2026-11-06
+      # ("Artifact storage quota has been hit") while the BUILD itself had
+      # succeeded. The two measures, both applied every run:
+      #
+      # 1. The step directly below deletes this repo's artifacts from
+      #    PREVIOUS runs before the new ones are uploaded. Retention-days
+      #    alone cannot do this job — it only ages artifacts out after days,
+      #    while two runs back-to-back are already ~458 MB.
+      #
+      # 2. The installable APKs are ALSO attached to a rolling GitHub
+      #    Release ("ci-latest", step after the uploads). Release assets do
+      #    not consume the Actions-storage quota at all, so the user-facing
+      #    delivery channel works even in the worst case where the shared
+      #    quota is exhausted by other repos on the account.
+      #
+      # Both artifacts remain real artifacts (7-day retention kept for CI
+      # consumers); nothing was removed.
+      - name: Delete this repo's artifacts from previous runs
+        run: |
+          gh api --paginate "repos/$GH_REPO/actions/artifacts" \
+            -q '.artifacts[] | select(.expired == false) | .id' \
+          | while read -r id; do
+              if [ -n "$id" ]; then
+                echo "deleting stale artifact $id"
+                gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id"
+              fi
+            done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      # continue-on-error, not a silent swallow: an upload that fails because
+      # the ACCOUNT-WIDE shared quota is exhausted (other repos, out of this
+      # repo's control) must not paint a healthy build red — but the failure
+      # is still flagged as a warning annotation, and the run's real gate is
+      # the release-verification step below: if the APKs did not land on the
+      # rolling release, the run goes red. A broken build can never hide.
       - name: Upload debug APK artifact
+        continue-on-error: true
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -141,6 +177,7 @@ jobs:
           retention-days: 7
 
       - name: Upload release APK artifact
+        continue-on-error: true
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -158,6 +195,55 @@ jobs:
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
           if-no-files-found: error
+
+      # --- Rolling CI release (main only) ----------------------------------
+      #
+      # H-7 discipline: the signed Release published by the `publish` job is
+      # the production installable, and it stays gated on the release
+      # keystore — a debuggable build must never be presented as the release.
+      # This step is a DIFFERENT thing, labelled honestly as what it is: a
+      # rolling prerelease of the CI output so the APKs remain installable /
+      # signable locally even when the artifact quota is exhausted. Both
+      # files carry their true names and the notes say exactly what each is
+      # (debug = debuggable, test sideload only; release = unsigned, needs
+      # apksigner before install). Replaced on every main push.
+      - name: Publish rolling CI release (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DEBUG_APK=app/build/outputs/apk/debug/app-debug.apk
+          RELEASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -f "$DEBUG_APK" || { echo "debug APK missing"; exit 1; }
+          test -f "$RELEASE_APK" || { echo "release APK missing"; exit 1; }
+          # Replace the rolling release wholesale so stale assets can never
+          # linger next to newer ones.
+          gh release delete ci-latest --yes --cleanup-tag || true
+          # Quoted heredoc: backticks stay literal; the SHA goes in via
+          # placeholder substitution so no expansion happens inside the block.
+          NOTES=$(cat <<'EOF'
+          Automated CI output of commit __SHA__ — NOT a signed release.
+
+          - `app-debug.apk`: debug-signed, debuggable. Sideloadable for testing (Settings → Apps → Special access → Install unknown apps → allow the browser, then tap the APK).
+          - `app-release-unsigned.apk`: UNSIGNED. It will not install until signed: apksigner sign --ks <keystore> --out vorv-release.apk app-release-unsigned.apk.
+
+          A proper signed release is published by the publish job when the RELEASE_KEYSTORE_* secrets are configured.
+          EOF
+          )
+          NOTES=${NOTES/__SHA__/$SHORT_SHA}
+          gh release create ci-latest "$DEBUG_APK" "$RELEASE_APK" \
+            --prerelease \
+            --title "Vorv CI build $SHORT_SHA (debug + unsigned release)" \
+            --notes "$NOTES"
+          # The real gate: both APKs must be on the release. If not, red run.
+          for f in "$(basename "$DEBUG_APK")" "$(basename "$RELEASE_APK")"; do
+            gh release view ci-latest --json assets \
+              -q ".assets[].name" | grep -Fx "$f" \
+              || { echo "MISSING on ci-latest release: $f"; exit 1; }
+          done
+          echo "rolling ci-latest release verified: both APKs present"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   # ---------------------------------------------------------------- publish
   # Publish a Release only on main, and only when a release keystore is
