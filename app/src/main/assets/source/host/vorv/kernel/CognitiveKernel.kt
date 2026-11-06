@@ -634,6 +634,17 @@ class CognitiveKernel(
         appendLine("   that is a non-answer. Either call the tool that does it, or ask ONE short")
         appendLine("   clarifying question. Termux is a full Linux environment: it CAN install")
         appendLine("   software with pkg install -y <name>.")
+        // v0.7.3: the standing principle, promoted to a hard rule. Rule 1
+        // already banned inventing tool OUTPUT; v0.6.15 banned guessing
+        // AVAILABILITY from descriptions. This bans the guesses still left:
+        // file contents never read, command behavior never tried, and
+        // unverified "facts" stated as known.
+        appendLine("12. NEVER guess. If you have not read it, run it, or checked it, you")
+        appendLine("   don't know it — file_list before file_read, run the command to see what")
+        appendLine("   it actually does, web_search/web_fetch before stating a fact. Invented")
+        appendLine("   paths, flags, contents, or \"should work\" claims are failures even when")
+        appendLine("   they sound confident. What you cannot verify: say you don't know, or")
+        appendLine("   mark it [uncited].")
         appendLine()
         appendLine("Available tools:")
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }

@@ -395,6 +395,10 @@ class CognitiveKernelTest {
         // v0.6.19: the anti-lecture rule and the pkg fact (field finding #8).
         assertTrue(systemMsg.content.contains("Never answer an action request with a lecture"))
         assertTrue(systemMsg.content.contains("pkg install -y"))
+        // v0.7.3: the never-guess rule — the standing principle, pinned.
+        assertTrue(systemMsg.content.contains("NEVER guess"))
+        assertTrue(systemMsg.content.contains("file_list before file_read"))
+        assertTrue(systemMsg.content.contains("\"should work\" claims are failures"))
     }
 
     // ------------------------------------------------ nudge (v0.6.13):

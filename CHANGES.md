@@ -1,3 +1,28 @@
+# Changelog — v0.7.3 "Never Guess"
+
+One rule added to the HARD RULES the kernel sends with every task: NEVER
+guess. The codebase had already banned the two worst forms of it — rule 1
+(never invent what a tool returned) and the citation machinery (rule 4,
+`[uncited]`) — and v0.6.15 fixed the model guessing "no Termux" from a
+tool description instead of calling it. What was still legal for the model:
+
+- guessing a file's CONTENTS instead of reading it,
+- inventing command FLAGS instead of running `--help` or trying,
+- asserting "it should work" instead of testing that it does,
+- answering from plausibility when one tool call would have produced the fact.
+
+Rule 12 closes all four: if you have not read it, run it, or checked it,
+you don't know it. `file_list` before `file_read`; run the command to see
+what it actually does; `web_search`/`web_fetch` before stating a fact.
+Invented paths, flags, contents, and "should work" claims are failures even
+when they sound confident — and what cannot be verified is either admitted
+("I don't know") or marked `[uncited]`, exactly as rule 4 already requires.
+
+The rule is pinned by prompt assertions in `CognitiveKernelTest` (the same
+pattern every prior rule uses), and the bundled source mirror carries it
+too — `syncSourceMirror` keeps the healer reading the code that matches
+this binary.
+
 # Changelog — v0.7.2 "The Full Sweep"
 
 Phase 1 of the code-review fix plan: every remaining finding from the
