@@ -60,9 +60,11 @@ jobs:
       #
       # 3. From gradle/actions v6 the caching component is closed-source and
       #    proprietary (Gradle Terms of Use, guaranteed free only for public
-      #    repositories; this repo is private). Re-enabling caching would
-      #    mean accepting those terms on the repo owner's behalf — not a
-      #    decision CI gets to make silently.
+      #    repositories; the repo was private when this was written, and is
+      #    public as of 2026-11-06 — "for now", per the owner, so this may
+      #    flip back). Re-enabling caching while private would mean accepting
+      #    those terms on the repo owner's behalf — still not a decision CI
+      #    gets to make silently.
       #
       # Trade-off: each run re-downloads Gradle + dependencies (~1-2 min per
       # job, measured on the 2026-11-05 runs where caching was already dead).
@@ -133,6 +135,14 @@ jobs:
       # the quota filled and the upload step started failing on 2026-11-06
       # ("Artifact storage quota has been hit") while the BUILD itself had
       # succeeded. The two measures, both applied every run:
+      #
+      # Visibility note (2026-11-06): the repo is public "for now" (owner's
+      # words), which removes the quota entirely — public-repo artifacts
+      # are free and unlimited. Both measures STAY anyway:
+      #   - "for now" means visibility may flip back to private, where the
+      #     quota applies again with no warning;
+      #   - the cleanup step also keeps the artifacts page at exactly one
+      #   run's worth, private or not.
       #
       # 1. The step directly below deletes this repo's artifacts from
       #    PREVIOUS runs before the new ones are uploaded. Retention-days
