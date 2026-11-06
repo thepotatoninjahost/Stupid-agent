@@ -769,6 +769,10 @@ class CognitiveKernelTest {
     private fun bigMsg(role: String, id: Int) =
         Llm.Message(role, "payload $id ".repeat(120)) // ~1 KB each
 
+    /** R3 tests drive the kernel instance — compactHistoryIfNeeded is an
+     *  internal instance function, not a companion member. */
+    private fun compactor(): CognitiveKernel = kernel(FakeSink(), emptyList())
+
     @Test
     fun `compaction window never opens on a tool result`() {
         val call = Llm.ToolCall("c1", "file_read", "{\"path\":\"a\"}")
@@ -791,7 +795,7 @@ class CognitiveKernelTest {
             "tool", messages[messages.size - CognitiveKernel.COMPACT_KEEP_RECENT].role,
         )
 
-        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000)
+        compactor().compactHistoryIfNeeded(messages, 1_000)
 
         // The first kept message (index 3, after [system, task, digest]) must
         // NOT be a tool result — templates reject orphans (root cause RC-3).
@@ -822,7 +826,7 @@ class CognitiveKernelTest {
             "tool", messages[messages.size - CognitiveKernel.COMPACT_KEEP_RECENT].role,
         )
 
-        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000)
+        compactor().compactHistoryIfNeeded(messages, 1_000)
 
         // Whatever the window, a kept tool result must be immediately
         // preceded by the assistant that called it.
@@ -846,7 +850,7 @@ class CognitiveKernelTest {
             Llm.Message("user", "small"),
             Llm.Message("assistant", "answer"),
         )
-        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000_000)
+        compactor().compactHistoryIfNeeded(messages, 1_000_000)
         assertEquals(3, messages.size)
     }
 }

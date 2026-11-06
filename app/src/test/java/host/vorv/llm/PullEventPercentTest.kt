@@ -54,7 +54,8 @@ class PullEventPercentTest {
 
     @Test
     fun `completed maps to 100`() {
-        assertEquals(100, pullEventPercent(ModelManagerWrapper.PullEvent.Completed()))
+        // Completed is a Kotlin object in the SDK — the singleton instance.
+        assertEquals(100, pullEventPercent(ModelManagerWrapper.PullEvent.Completed))
     }
 
     @Test
