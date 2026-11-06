@@ -104,4 +104,50 @@ class WebFetchToolTest {
         assertEquals("web", r.citation?.type)
         assertEquals(url, r.citation?.ref)
     }
+
+    // ---------------------------------------------- M4: byte-true cap
+
+    @Test fun `byte budget caps bytes, not chars — multi-byte content`() {
+        // M4: the old loop counted decoded CHARS against maxBytes, so 3-byte
+        // CJK text pulled up to 3x the nominal byte cap through. readCappedUtf8
+        // counts actual bytes and its marker names BYTES.
+        val cjk = "語".repeat(1_000_000)          // 3 MB of UTF-8 bytes
+        val out = readCappedUtf8(
+            java.io.ByteArrayInputStream(cjk.toByteArray(Charsets.UTF_8)), 2_000_000L)
+        assertTrue(
+            "truncation marker must name bytes",
+            out.contains("truncated at 2000000 bytes"),
+        )
+        // 2,000,000 bytes ÷ 3 bytes/char ≈ 666,666 chars + marker line.
+        assertTrue("decoded body stays under the byte cap", out.length < 700_000)
+        // The cap must have cut in the MIDDLE of the byte stream: the last
+        // decoded char boundary is clean (no U+FFFD from a split sequence).
+        assertFalse("no replacement chars from a split multi-byte tail", out.contains("\uFFFD"))
+    }
+
+    @Test fun `readCappedUtf8 reads small streams whole`() {
+        val out = readCappedUtf8(
+            java.io.ByteArrayInputStream("hello".toByteArray(Charsets.UTF_8)), 100L)
+        assertEquals("hello", out)
+    }
+
+    @Test fun `trimPartialUtf8Tail drops a split multi-byte character`() {
+        val text = "日本語"                       // three 3-byte chars
+        val whole = text.toByteArray(Charsets.UTF_8)
+        // Cut one byte into the last character's 3-byte sequence.
+        val split = whole.copyOf(whole.size - 1)
+
+        val trimmed = trimPartialUtf8Tail(split)
+        assertEquals("the partial last char is cut, not replaced", "日本", trimmed.toString(Charsets.UTF_8))
+    }
+
+    @Test fun `trimPartialUtf8Tail keeps complete sequences`() {
+        val text = "abc日本語"
+        assertEquals(text, trimPartialUtf8Tail(text.toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
+    }
+
+    @Test fun `trimPartialUtf8Tail handles ascii-only and empty`() {
+        assertEquals("abc", trimPartialUtf8Tail("abc".toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
+        assertTrue(trimPartialUtf8Tail(ByteArray(0)).isEmpty())
+    }
 }

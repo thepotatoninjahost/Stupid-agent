@@ -6,7 +6,7 @@ import com.geniex.sdk.bean.HubSource
 import com.geniex.sdk.bean.ModelPullInput
 import com.geniex.sdk.bean.ModelType
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 
 /**
  * Selectable on-device models.
@@ -178,20 +178,7 @@ object ModelManager {
             display_name = choice.displayName,
             model_type = ModelType.LLM,
         )
-        return ModelManagerWrapper.pullFlow(input).map { event ->
-            when (event) {
-                is ModelManagerWrapper.PullEvent.Progress -> {
-                    val total = event.files.sumOf { it.total_bytes }
-                    val done = event.files.sumOf { it.downloaded_bytes }
-                    if (total <= 0) 0 else ((done * 100) / total).toInt().coerceIn(0, 100)
-                }
-                is ModelManagerWrapper.PullEvent.Completed -> 100
-                is ModelManagerWrapper.PullEvent.Error -> {
-                    throw RuntimeException("Model pull failed (code=${event.code}): ${event.message}")
-                }
-                else -> 0
-            }
-        }
+        return ModelManagerWrapper.pullFlow(input).mapNotNull { pullEventPercent(it) }
     }
 
     /**
@@ -220,4 +207,24 @@ object ModelManager {
         if (!legacy.exists()) return
         runCatching { legacy.deleteRecursively() }
     }
+}
+
+/**
+ * M7 (code review, 2026-11): one pull event → percent, or null when the
+ * event carries NO real progress. The old mapping emitted 0 for unknown
+ * events AND for Progress events whose total was not yet known — flickering
+ * the download bar back to 0% mid-download. null means "emit nothing": the
+ * bar never moves backwards. Errors still throw (honest failure).
+ * Pure over the SDK types, so it is unit-testable.
+ */
+internal fun pullEventPercent(event: ModelManagerWrapper.PullEvent): Int? = when (event) {
+    is ModelManagerWrapper.PullEvent.Progress -> {
+        val total = event.files.sumOf { it.total_bytes }
+        val done = event.files.sumOf { it.downloaded_bytes }
+        if (total <= 0L) null else ((done * 100) / total).toInt().coerceIn(0, 100)
+    }
+    is ModelManagerWrapper.PullEvent.Completed -> 100
+    is ModelManagerWrapper.PullEvent.Error ->
+        throw RuntimeException("Model pull failed (code=${event.code}): ${event.message}")
+    else -> null
 }

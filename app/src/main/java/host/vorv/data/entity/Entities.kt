@@ -110,3 +110,19 @@ data class Artifact(
     val contentPreview: String,        // first ~500 chars
     val fullContent: String,            // entire content (for small artifacts)
 )
+
+/**
+ * M1 (code review, 2026-11): persisted chat history. The conversation used
+ * to be memory-only — every restart lost every message while the tool-call
+ * logs survived, which reads to the user as "the app forgot what we just
+ * said". Messages are written as they are appended and reloaded in
+ * AgentViewModel's init. Citations are serialized as a JSON array.
+ */
+@Entity(tableName = "chat_messages", indices = [Index("ts")])
+data class ChatMessageEntity(
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
+    val ts: Long = System.currentTimeMillis(),
+    val role: String,               // "user" | "assistant"
+    val content: String,
+    val citationsJson: String = "[]",
+)

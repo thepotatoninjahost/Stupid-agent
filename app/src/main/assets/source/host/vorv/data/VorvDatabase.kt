@@ -16,8 +16,9 @@ import host.vorv.data.entity.*
         AgentTask::class,
         ToolCall::class,
         Artifact::class,
+        ChatMessageEntity::class,
     ],
-    version = 2,
+    version = 3,
     // Schema JSON export is deliberately OFF: it's tooling sugar, and the
     // KSP arg-based export path is flaky across variants in clean CI
     // environments (Room 2.6.1 "Empty schema file" in kspReleaseKotlin).
@@ -33,6 +34,7 @@ abstract class VorvDatabase : RoomDatabase() {
     abstract fun taskDao(): TaskDao
     abstract fun toolCallDao(): ToolCallDao
     abstract fun artifactDao(): ArtifactDao
+    abstract fun chatMessageDao(): ChatMessageDao
 
     companion object {
         /**
@@ -50,6 +52,29 @@ abstract class VorvDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2)
+        /**
+         * v2 → v3 (code review M1, 2026-11): the chat_messages table — chat
+         * history becomes persistent. Fresh CREATE on upgrade; existing data
+         * untouched.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `chat_messages` (
+                        `id` TEXT NOT NULL,
+                        `ts` INTEGER NOT NULL,
+                        `role` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `citationsJson` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )""".trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_chat_messages_ts` ON `chat_messages` (`ts`)"
+                )
+            }
+        }
+
+        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

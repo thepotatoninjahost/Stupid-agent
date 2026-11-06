@@ -228,6 +228,40 @@ class AgentViewModel(
     @Volatile
     private var currentTaskJob: kotlinx.coroutines.Job? = null
 
+    /** M1: serializer for chat-message citations (persisted as JSON). */
+    private val chatGson = com.google.gson.Gson()
+
+    /**
+     * M1 (code review, 2026-11): fire-and-forget persistence of one chat
+     * message. Failure to persist NEVER breaks the chat — the message still
+     * appears; the honest trade-off is logged, not thrown.
+     */
+    private fun persistChat(msg: ChatMessage) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                db.chatMessageDao().insert(
+                    host.vorv.data.entity.ChatMessageEntity(
+                        id = msg.id, ts = msg.ts, role = msg.role,
+                        content = msg.content,
+                        citationsJson = chatGson.toJson(msg.citations),
+                    )
+                )
+            }.onFailure {
+                android.util.Log.w("Vorv/Chat", "chat persist failed: ${it.message}")
+            }
+        }
+    }
+
+    // M3 (code review, 2026-11): the exact bridge lambdas THIS ViewModel
+    // installed. Kept so onCleared() can clear the singleton references
+    // ONLY when they still point into this instance — never nulling a
+    // newer ViewModel's handlers in a recreation race.
+    private val installedPermissionHandler: suspend (String) -> Boolean = ::permissionBridge
+    private val installedAuditSink: suspend (String, String, String) -> Unit =
+        { kind, summary, detailsJson ->
+            runCatching { db.episodeDao().insert(Episode(kind = kind, summary = summary, detailsJson = detailsJson)) }
+        }
+
     init {
         // v0.6.14: install the runtime-permission bridge BEFORE any tool can
         // run. Tools call PermissionBridge.request() when they hit the
@@ -236,7 +270,7 @@ class AgentViewModel(
         // process-level reference rather than a ToolContext field
         // (binary compatibility with registered patches).
         @Suppress("LeakingThis")
-        PermissionBridge.handler = ::permissionBridge
+        PermissionBridge.handler = installedPermissionHandler
         refreshTermuxStatus()
 
         // v0.6.15: the session-grant audit channel — every command executed
@@ -246,9 +280,7 @@ class AgentViewModel(
         // grant is a live user choice, not something a previous process
         // decided for this one.
         @Suppress("LeakingThis")
-        SessionGrants.auditSink = { kind, summary, detailsJson ->
-            runCatching { db.episodeDao().insert(Episode(kind = kind, summary = summary, detailsJson = detailsJson)) }
-        }
+        SessionGrants.auditSink = installedAuditSink
 
         modelRepository.onTelemetry = { tps, ms ->
             viewModelScope.launch { kernel.emitTelemetry(tps.toFloat(), ms.toLong(), "local") }
@@ -310,6 +342,31 @@ class AgentViewModel(
                     val next = prev.copy(autoFallback = enabled)
                     next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
                 }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            // M1 (code review, 2026-11): chat history is PERSISTENT. Reload
+            // the conversation on startup — a restart used to lose every
+            // message while tool-call logs survived. Guarded with
+            // messages.isEmpty() so a fast in-flight send never gets
+            // overwritten by the (older) disk snapshot.
+            val saved = runCatching { db.chatMessageDao().loadRecent() }.getOrDefault(emptyList())
+            if (saved.isNotEmpty()) {
+                val restored = saved.map { e ->
+                    ChatMessage(
+                        id = e.id,
+                        role = e.role,
+                        content = e.content,
+                        citations = runCatching {
+                            chatGson.fromJson<List<host.vorv.tools.Citation>>(
+                                e.citationsJson,
+                                object : com.google.gson.reflect.TypeToken<List<host.vorv.tools.Citation>>() {}.type,
+                            )
+                        }.getOrNull() ?: emptyList(),
+                        ts = e.ts,
+                    )
+                }
+                _state.update { s -> if (s.messages.isEmpty()) s.copy(messages = restored) else s }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -768,15 +825,17 @@ class AgentViewModel(
         //      locked in with no way to even say "stop") ----
         if (_state.value.busy) {
             val lower = trimmed.lowercase().trimEnd('.', '!', '?')
-            _state.update { it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed)) }
+            val busyEcho = ChatMessage(role = "user", content = trimmed)
+            _state.update { it.copy(messages = it.messages + busyEcho) }
+            persistChat(busyEcho)   // M1: the echo is part of the conversation
             if (lower == "stop" || lower == "cancel" || lower == "abort" || lower == "stop it") {
                 stopCurrentTask()
             } else {
-                _state.update {
-                    it.copy(messages = it.messages + ChatMessage(role = "assistant",
-                        content = "I'm still working on the previous task. To cancel it, tap ■ STOP " +
-                            "in the header (or send \"stop\"), then resend your message."))
-                }
+                val hint = ChatMessage(role = "assistant",
+                    content = "I'm still working on the previous task. To cancel it, tap ■ STOP " +
+                        "in the header (or send \"stop\"), then resend your message.")
+                _state.update { it.copy(messages = it.messages + hint) }
+                persistChat(hint)   // M1
             }
             return
         }
@@ -792,9 +851,13 @@ class AgentViewModel(
             } else {
                 "Cloud mode needs a Z.ai API key.\n\nOpen Setup → paste your key from z.ai/manage-apikey → Save. Or download the local model for offline mode."
             }
+            val echo = ChatMessage(role = "user", content = trimmed)
+            val hintMsg = ChatMessage(role = "assistant", content = hint)
             _state.update {
-                it.copy(messages = it.messages + ChatMessage(role = "user", content = trimmed) + ChatMessage(role = "assistant", content = hint))
+                it.copy(messages = it.messages + echo + hintMsg)
             }
+            persistChat(echo)     // M1: the whole exchange persists — including
+            persistChat(hintMsg)  // the honest "not configured yet" answers
             return
         }
 
@@ -806,6 +869,7 @@ class AgentViewModel(
                 liveTrace = emptyList(),
             )
         }
+        persistChat(userMsg)   // M1
 
         currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
@@ -866,23 +930,26 @@ class AgentViewModel(
                         liveTrace = emptyList(),
                     )
                 }
+                persistChat(assistantMsg)   // M1
                 db.taskDao().complete(task.id, result.answer.take(500), if (result.ok) "completed" else "failed")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // v0.6.16: the user pressed STOP (header button or "stop" in
                 // chat). Honest, immediate, final. DB write needs
                 // NonCancellable — suspend calls in a cancelled coroutine
                 // throw on entry.
+                val stoppedMsg = ChatMessage(
+                    role = "assistant",
+                    content = "Stopped — you cancelled this task. Work already done is " +
+                        "preserved in the Tasks tab; partial tool history is intact.",
+                )
                 _state.update {
                     it.copy(
-                        messages = it.messages + ChatMessage(
-                            role = "assistant",
-                            content = "Stopped — you cancelled this task. Work already done is " +
-                                "preserved in the Tasks tab; partial tool history is intact.",
-                        ),
+                        messages = it.messages + stoppedMsg,
                         busy = false,
                         liveTrace = emptyList(),
                     )
                 }
+                persistChat(stoppedMsg)   // M1
                 withContext(kotlinx.coroutines.NonCancellable) {
                     runCatching { db.taskDao().fail(task.id, "stopped by user") }
                 }
@@ -890,6 +957,7 @@ class AgentViewModel(
             } catch (e: Exception) {
                 val errMsg = ChatMessage(role = "assistant", content = "Error: ${e.message}")
                 _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                persistChat(errMsg)   // M1
                 db.taskDao().fail(task.id, e.message ?: "unknown")
             } finally {
                 currentTaskJob = null
@@ -1011,6 +1079,17 @@ class AgentViewModel(
     }
 
     override fun onCleared() {
+        // M3 (code review, 2026-11): the bridge singletons hold lambdas that
+        // capture this ViewModel (and its whole object graph). Without this,
+        // the LAST dead ViewModel stayed pinned until a future one happened
+        // to overwrite the reference. Clear only what this instance installed
+        // — a newer ViewModel's handlers are never touched.
+        if (PermissionBridge.handler === installedPermissionHandler) {
+            PermissionBridge.handler = null
+        }
+        if (SessionGrants.auditSink === installedAuditSink) {
+            SessionGrants.auditSink = null
+        }
         // Release native memory + the headless WebView (audit L-7).
         tools.filterIsInstance<BrowserAutomateTool>().forEach { it.destroy() }
         modelRepository.markBusy(false)

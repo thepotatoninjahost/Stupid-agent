@@ -152,7 +152,10 @@ class LocalLlm(
             onTelemetry?.invoke(p.decodingSpeed, p.decodeTimeMs)
         }
 
-        return ToolCallParser.parse(sb.toString().trim())
+        // H1b: the parser needs the real tool roster so JSON DATA carrying a
+        // "name" key on the bare/prose path is treated as an answer, not
+        // hijacked into a phantom tool call.
+        return ToolCallParser.parse(sb.toString().trim(), tools.map { it.name }.toSet())
     }
 
     private fun buildToolsJson(tools: List<Llm.ToolSpec>): String {

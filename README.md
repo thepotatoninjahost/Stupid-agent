@@ -9,7 +9,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 ## Status — honest, as always
 
 ✅ **Local LLM**: Qwen2.5-Coder-3B/7B-Instruct (Q4_0 GGUF) on the Hexagon NPU via Qualcomm **GenieX** — fully offline after a one-time 1.8–4.4 GB download.
-✅ **Cloud LLM**: GLM-4.6 via Z.ai (optional; needs your API key, stored encrypted at rest).
+✅ **Cloud LLM**: GLM-4.7-Flash via Z.ai — free tier, $0/token, the DEFAULT (optional paid models: GLM-5.3-Flash, GLM-5.3, GLM-4.6; needs your API key, stored encrypted at rest; automatic offline fallback to the local model when the signal drops).
 ✅ **16 tools, all wired** (list below). The 16th, `self_fix`, lets the user tell Vorv in chat to fix or change its own code — every patch is compiled on device, verified complete, signed, user-approved, and rolled back automatically if it causes a crash. js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
 ✅ **Verifiable logging**: every tool call persists real input/output/duration/exit-code; long outputs are stored in full and viewable from the Tasks screen.
 ⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.6.x series is a security/correctness remediation release — see [CHANGES.md](CHANGES.md).

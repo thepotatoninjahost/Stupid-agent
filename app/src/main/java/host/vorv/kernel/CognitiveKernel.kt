@@ -78,8 +78,39 @@ class CognitiveKernel(
         fun looksLikeActionRequest(prompt: String): Boolean {
             val p = prompt.trim().lowercase()
             if (p.endsWith("?")) return false
+            // L1 (code review, 2026-11): two-part rule. 1) A verb in
+            // IMPERATIVE position (leading, or right after a polite /
+            // agent-addressed lead-in) is an order. 2) A verb ANYWHERE ELSE
+            // still counts — the field transcript's "termux works install
+            // the tools you need." has a status preamble, not a subject —
+            // UNLESS the message opens like a STATEMENT about a subject
+            // ("the app runs slowly", "it won't update" mention action
+            // verbs but command nothing). The old anywhere-match nudged
+            // those statements; this is the precision fix.
+            val leadIns = listOf(
+                "please ", "can you ", "could you ", "would you ", "will you ",
+                "i want you to ", "i need you to ", "vorv ", "vorv, ",
+            )
+            val candidates = listOf(p) + leadIns.filter { p.startsWith(it) }.map { p.removePrefix(it) }
+            if (candidates.any { matchesLeadingVerb(it) }) return true
+            if (SUBJECT_STATEMENT_OPENERS.any { p.startsWith(it) }) return false
             return ACTION_REQUEST_VERBS.any { Regex("\\b$it\\b").containsMatchIn(p) }
         }
+
+        private fun matchesLeadingVerb(text: String): Boolean {
+            val firstWord = text.substringBefore(' ').trim(',', '!', '.')
+            return ACTION_REQUEST_VERBS.any { verb ->
+                verb == firstWord || (verb.contains(' ') && text.startsWith(verb))
+            }
+        }
+
+        /** L1: openers that mark a statement ABOUT a subject — see
+         *  [looksLikeActionRequest] part 2. Deliberately excludes "you":
+         *  "you should install git" addresses the agent and IS a request. */
+        private val SUBJECT_STATEMENT_OPENERS = listOf(
+            "the ", "it ", "this ", "that ", "these ", "those ", "my ",
+            "its ", "i ", "we ", "they ", "he ", "she ", "there ", "is ", "was ",
+        )
 
         /** Verbs that make a user message an ACTION request (see
          *  [looksLikeActionRequest]). Word-boundary matched: "install" does
@@ -248,7 +279,15 @@ class CognitiveKernel(
                         // Done. Check for inline citations, post answer.
                         val stripped = CitationStripper.strip(resp.content)
                         inlineCitations = stripped.citations
-                        val clean = stripped.text
+                        // M2 (code review, 2026-11): finish_reason=length means
+                        // the engine ran out of tokens mid-answer. Delivering
+                        // it as a final answer was a lie by omission — the
+                        // marker tells the user the text was cut and how to
+                        // get the rest, and the episode log records it.
+                        val clean = if (!resp.done) {
+                            stripped.text + "\n\n[answer truncated by the model's token limit — " +
+                                "ask me to continue if you need the rest]"
+                        } else stripped.text
                         // Citation enforcement: an answer is uncited when NO tool
                         // captured a citation AND the model attached no inline
                         // citation tags — at ANY iteration (was: iterations==1).
@@ -260,7 +299,7 @@ class CognitiveKernel(
                         _trace.emit(TraceStep.Done(finalClean.take(200), iterations))
                         eventSink.logEpisode(
                             "task_completed", finalClean.take(200),
-                            "{\"iterations\":$iterations,\"uncited\":$uncited}"
+                            "{\"iterations\":$iterations,\"uncited\":$uncited,\"truncated\":${!resp.done}}"
                         )
                         return KernelApi.TaskResult(true, finalClean, iterations, allCitations, toolCallCount)
                     }
@@ -277,7 +316,14 @@ class CognitiveKernel(
                                 continue
                             }
 
-                            // ---- rate limit (per task, per tool) ----
+                            // ---- rate limit CHECK (per task, per tool) ----
+                            // M14 (code review, 2026-11): the CHECK stays
+                            // here, but the budget is CHARGED only after
+                            // arguments parse AND schema validation pass —
+                            // a call that never dispatches must not consume
+                            // the per-tool budget (the model used to burn
+                            // maxCallsPerTask on malformed attempts and then
+                            // get locked out of the tool entirely).
                             val used = rateCounts.getOrDefault(tc.name, 0)
                             if (used >= tool.maxCallsPerTask) {
                                 val errMsg = "Rate limit: '${tc.name}' already called $used times this task " +
@@ -286,7 +332,6 @@ class CognitiveKernel(
                                 messages.add(Llm.Message("tool", "{\"error\":\"$errMsg\"}", toolCallId = tc.id))
                                 continue
                             }
-                            rateCounts[tc.name] = used + 1
 
                             val input = try {
                                 JsonParser.parseString(tc.arguments).asJsonObject
@@ -301,6 +346,9 @@ class CognitiveKernel(
                                 messages.add(Llm.Message("tool", "{\"error\":\"$validationError\"}", toolCallId = tc.id))
                                 continue
                             }
+
+                            // M14: validated — NOW the call is real. Charge it.
+                            rateCounts[tc.name] = used + 1
 
                             _trace.emit(TraceStep.ToolStart(iterations, tc.name, input))
 
@@ -475,7 +523,19 @@ class CognitiveKernel(
 
         // Indices 0 (system) and 1 (task) are sacred. Fold everything between
         // the task and the tail window into a digest.
-        val keepFrom = maxOf(2, messages.size - COMPACT_KEEP_RECENT)
+        var keepFrom = maxOf(2, messages.size - COMPACT_KEEP_RECENT)
+        // R3 (code review, 2026-11): pairing-safe boundary. Chat templates
+        // (GenieX local, OpenAI-style cloud) reject a tool result whose
+        // calling assistant message is not present — the count-based window
+        // could start directly on a role="tool" entry whose caller was just
+        // folded into the digest, and the task then died mid-run on template
+        // rejection (root cause RC-3). Same rule FallbackLlm.compactFor
+        // applies to the secondary engine: advance the boundary past leading
+        // tool results so the kept window starts at a user or assistant
+        // message and every kept tool result keeps its caller adjacent.
+        while (keepFrom < messages.size && messages[keepFrom].role == "tool") {
+            keepFrom++
+        }
         if (keepFrom <= 2) {
             // Everything is recent — trim old tool outputs in place instead.
             for (i in 2 until messages.size) {

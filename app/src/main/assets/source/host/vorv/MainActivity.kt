@@ -276,7 +276,10 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
                             onAnalyze = { analyzeCrash(crashLogText ?: "", previousTrace ?: "") },
-                            onSelfRepair = { _, _ ->
+                            // L6 (code review, 2026-11): the dialog no longer
+                            // passes a fake empty bootTrace — it has no trace of
+                            // its own, and the real one is right here in scope.
+                            onSelfRepair = {
                                 attemptSelfRepair(
                                     crashText = crashLogText ?: "",
                                     bootTrace = previousTrace ?: "",
@@ -634,7 +637,7 @@ private fun CrashLogDialog(
     rolledBackPatches: List<String>,
     onCopy: () -> Unit,
     onAnalyze: () -> Unit,
-    onSelfRepair: (String, String) -> Unit,
+    onSelfRepair: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -690,7 +693,7 @@ private fun CrashLogDialog(
                         Text("Analyze")
                     }
                     Button(
-                        onClick = { onSelfRepair(crashText, "") },
+                        onClick = onSelfRepair,
                         modifier = Modifier.weight(1f),
                     ) {
                         Text("Self-repair")

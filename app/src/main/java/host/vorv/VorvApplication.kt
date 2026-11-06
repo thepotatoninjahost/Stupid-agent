@@ -75,7 +75,10 @@ class VorvApplication : Application() {
         // including the crash handler install and the hot-patch load.
         BootTracer.start(this)
 
-        // Install the crash handler FIRST, before anything else can throw.
+        // L5 (code review, 2026-11): SECOND, not first — the boot marker
+        // above must already exist so a crash in here is attributable to
+        // THIS boot. The old comment claimed "first" and had drifted from
+        // the code's actual (correct) order.
         installCrashHandler()
         super.onCreate()
 

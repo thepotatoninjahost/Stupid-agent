@@ -564,6 +564,85 @@ class CognitiveKernelTest {
         assertFalse(CognitiveKernel.looksLikeActionRequest("I love your installation of android"))
     }
 
+    @Test
+    fun `L1 - statements about a subject are never action requests`() {
+        // The code-review examples: ordinary statements that mention action
+        // verbs. The old anywhere-match nudged them into "call the tool NOW".
+        assertFalse(CognitiveKernel.looksLikeActionRequest("the app runs slowly"))
+        assertFalse(CognitiveKernel.looksLikeActionRequest("it won't update"))
+        assertFalse(CognitiveKernel.looksLikeActionRequest("the phone gets hot when I run the camera"))
+        assertFalse(CognitiveKernel.looksLikeActionRequest("my build pipeline fails on deploy"))
+    }
+
+    @Test
+    fun `L1 - imperative position and lead-ins still fire`() {
+        assertTrue(CognitiveKernel.looksLikeActionRequest("update the dependencies"))
+        assertTrue(CognitiveKernel.looksLikeActionRequest("please install git"))
+        assertTrue(CognitiveKernel.looksLikeActionRequest("vorv, delete the temp files"))
+        assertTrue(CognitiveKernel.looksLikeActionRequest("i want you to clean the workspace"))
+        // "you" is deliberately NOT a subject-statement opener: addressing
+        // the agent IS a request.
+        assertTrue(CognitiveKernel.looksLikeActionRequest("you should install git"))
+        // No subject opener + verb mid-sentence = the field shape, still fires.
+        assertTrue(CognitiveKernel.looksLikeActionRequest("termux works install the tools you need."))
+    }
+
+    // -------------------------------------- M2: honest truncation marker
+
+    @Test
+    fun `finish_reason length answer is delivered with an honest truncation marker`() = runTest {
+        val sink = FakeSink()
+        // done=false == the engine ran out of tokens (finish_reason=length).
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("The capital of France is Par", done = false)))
+        val result = kernel(sink, emptyList()).run("t1", "what is the capital of france", llm, null)
+
+        assertTrue("task completes (degraded, not dead)", result.ok)
+        assertTrue(
+            "answer must carry the truncation marker",
+            result.answer.contains("truncated by the model's token limit"),
+        )
+        assertTrue(
+            "episode log records the truncation",
+            sink.episodes.any { it.first == "task_completed" && it.third.contains("\"truncated\":true") },
+        )
+    }
+
+    @Test
+    fun `complete answer carries no truncation marker`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("The capital of France is Paris.", done = true)))
+        val result = kernel(sink, emptyList()).run("t1", "what is the capital of france", llm, null)
+
+        assertTrue(result.ok)
+        assertFalse(
+            "done=true must not be marked truncated",
+            result.answer.contains("truncated"),
+        )
+    }
+
+    // -------------------------------------- M14: budget charged on dispatch
+
+    @Test
+    fun `invalid calls do not consume the per-tool rate budget`() = runTest {
+        val ran = mutableListOf<String>()
+        val tool = FakeTool(
+            name = "needs_x",
+            maxCallsPerTask = 2,
+            onRun = { ran.add("ran") },
+        ) // schema REQUIRES string "x"
+        val bad = toolUse("needs_x", "{}")            // missing required x
+        val good = toolUse("needs_x", """{"x":"1"}""")
+        val llm = FakeLlm(listOf(bad, bad, good, Llm.LlmResponse.Text("done", done = true)))
+        val sink = FakeSink()
+
+        val result = kernel(sink, listOf(tool)).run("t1", "do it", llm, null)
+
+        // Pre-M14: the two invalid attempts charged the budget (max 2), so
+        // the VALID third call was rate-limited and the tool never ran.
+        assertEquals("the valid call must dispatch despite two prior invalid ones", 1, ran.size)
+        assertTrue(result.ok)
+    }
+
     // ========================= v0.6.16 retry-loop backstop (field finding #4)
 
     /** A tool with a programmable per-call result — fail N times, then pass. */
@@ -680,5 +759,94 @@ class CognitiveKernelTest {
         assertTrue("cancellation must PROPAGATE — a swallowed stop is the v0.6.15 bug", rethrown)
         assertTrue("stopped task is logged",
             sink.episodes.any { it.first == "task_stopped" && it.second.contains("cancelled by user") })
+    }
+
+    // ------------------------------------------- R3: pairing-safe compaction
+    //
+    // compactHistoryIfNeeded is internal on purpose: these tests pin the
+    // window boundary directly, without a scripted LLM.
+
+    private fun bigMsg(role: String, id: Int) =
+        Llm.Message(role, "payload $id ".repeat(120)) // ~1 KB each
+
+    @Test
+    fun `compaction window never opens on a tool result`() {
+        val call = Llm.ToolCall("c1", "file_read", "{\"path\":\"a\"}")
+        val messages = mutableListOf(
+            Llm.Message("system", "SYS"),
+            Llm.Message("user", "THE-TASK"),
+        )
+        // Tuned so the NAIVE boundary (size - COMPACT_KEEP_RECENT) lands
+        // exactly ON the tool result: the pair is followed by exactly
+        // COMPACT_KEEP_RECENT-1 = 5 messages.
+        repeat(20) { messages.add(bigMsg("assistant", it)) }
+        messages.add(Llm.Message("assistant", "calling", listOf(call)))
+        messages.add(Llm.Message("tool", "RESULT-BODY", toolCallId = "c1"))
+        repeat(4) { messages.add(bigMsg("user", 100 + it)) }
+        messages.add(Llm.Message("assistant", "THE-FINAL"))
+
+        // Sanity: without the pairing fix the window opened on the tool msg.
+        assertEquals(
+            "test tuning: naive boundary must land on the tool result",
+            "tool", messages[messages.size - CognitiveKernel.COMPACT_KEEP_RECENT].role,
+        )
+
+        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000)
+
+        // The first kept message (index 3, after [system, task, digest]) must
+        // NOT be a tool result — templates reject orphans (root cause RC-3).
+        assertNotEquals("kept window must not start on an orphaned tool result", "tool", messages[3].role)
+        assertTrue("digest must be present", messages[2].content.contains("digest"))
+        assertTrue("recent turns survive", messages.size >= 4)
+        assertTrue("the final answer survives",
+            messages.any { it.role == "assistant" && it.content == "THE-FINAL" })
+    }
+
+    @Test
+    fun `kept tool result still has its calling assistant adjacent`() {
+        val call = Llm.ToolCall("c9", "shell", "{\"cmd\":\"ls\"}")
+        val messages = mutableListOf(
+            Llm.Message("system", "SYS"),
+            Llm.Message("user", "THE-TASK"),
+        )
+        repeat(20) { messages.add(bigMsg("assistant", it)) }
+        messages.add(Llm.Message("assistant", "calling", listOf(call)))
+        messages.add(Llm.Message("tool", "RESULT-BODY", toolCallId = "c9"))
+        // Again tuned: 5 messages after the pair put the tool result at the
+        // naive boundary — the pre-R3 window kept it WITHOUT its caller.
+        repeat(4) { messages.add(bigMsg("user", 100 + it)) }
+        messages.add(Llm.Message("assistant", "final answer"))
+
+        assertEquals(
+            "test tuning: naive boundary must land on the tool result",
+            "tool", messages[messages.size - CognitiveKernel.COMPACT_KEEP_RECENT].role,
+        )
+
+        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000)
+
+        // Whatever the window, a kept tool result must be immediately
+        // preceded by the assistant that called it.
+        messages.forEachIndexed { i, m ->
+            if (m.role == "tool") {
+                assertTrue("tool result cannot be the first kept message", i >= 3)
+                val prev = messages[i - 1]
+                assertTrue(
+                    "tool result (toolCallId=${m.toolCallId}) must follow its caller, got ${prev.role}",
+                    prev.role == "assistant" && prev.toolCalls.any { it.id == m.toolCallId },
+                )
+            }
+        }
+        assertTrue("compaction must have folded the bulk", messages.size < 28)
+    }
+
+    @Test
+    fun `under-budget history is untouched`() {
+        val messages = mutableListOf(
+            Llm.Message("system", "SYS"),
+            Llm.Message("user", "small"),
+            Llm.Message("assistant", "answer"),
+        )
+        CognitiveKernel.compactHistoryIfNeeded(messages, 1_000_000)
+        assertEquals(3, messages.size)
     }
 }

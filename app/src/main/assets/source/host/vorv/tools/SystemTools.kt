@@ -24,13 +24,27 @@ object DialGuard {
     private val premiumPatterns = listOf(
         Regex("""^\+?1-?9(00|76)"""),          // US 1-900 / 1-976 premium
         Regex("""^09\d{6,}$"""),                // UK 09xx premium
-        Regex("""^090"""),                      // IT/DE 090x premium
+        Regex("""^0900"""),                     // DE 0900 premium-rate (M12: was '^090',
+                                              // which matched EVERY Japanese mobile)
         Regex("""^89\d{6,}$"""),                // IT 89x value-added
         Regex("""^166\d"""),                    // HK 166x adult
         Regex("""^190\d"""),                    // AU 190x premium
         Regex("""^118\d{3}$"""),                // UK directory 118xxx
         Regex("""^1-?877-?ext"""),              // obviously malformed junk
     )
+
+    /**
+     * M12 (code review, 2026-11): Japanese mobile prefixes — 090/080/070
+     * followed by 8 digits — are ORDINARY numbers, not premium. The old
+     * patterns refused every one of them ('^09\d{6,}$' and '^090' both
+     * match 090-XXXX-XXXX), so the tool blocked normal Japanese calls.
+     * International form (+81 90-…) drops the leading 0, hence 0?.
+     * An 11-digit 090… number is ALSO a valid UK premium shape — that
+     * collision is inherent without a country code; the JP mobile
+     * interpretation wins (the finding's exact case) and the
+     * user-confirmation dialog remains the backstop for every dial.
+     */
+    private val jpMobile = Regex("""^(\+81[ -]?)?0?[789]0\d{8}$""")
 
     /** null = acceptable; non-null = honest refusal reason. */
     fun validate(raw: String): String? {
@@ -42,6 +56,9 @@ object DialGuard {
         if (digits.length < 7) return "phone number too short (${digits.length} digits)"
         if (digits.length > 15) return "phone number too long (${digits.length} digits, max 15)"
         val normalized = trimmed.replace(Regex("[\\s().-]"), "")
+        // M12: Japanese mobile shapes are checked BEFORE the premium list —
+        // see [jpMobile].
+        if (jpMobile.containsMatchIn(normalized)) return null
         val hit = premiumPatterns.firstOrNull { it.containsMatchIn(normalized) }
         if (hit != null) return "refusing to dial premium-rate number '$trimmed'"
         return null
@@ -402,7 +419,19 @@ class ShellTool(private val appContext: Context) : Tool {
                 putExtra("com.termux.RUN_COMMAND_WORKDIR", cwd ?: workDir)
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             }
-            appContext.startService(intent)
+            try {
+                appContext.startService(intent)
+            } catch (bg: IllegalStateException) {
+                // M13 (code review, 2026-11): Android 8+ forbids startService
+                // while the app is BACKGROUNDED. The generic handler used to
+                // bury this in "shell dispatch failed: …" without naming the
+                // cause or the fix — an honest wall with the exact remedy:
+                return@withContext ToolResult(
+                    ok = false, output = "",
+                    error = backgroundStartError(),
+                    durationMs = System.currentTimeMillis() - t0,
+                )
+            }
 
             // ---- poll for the exit-code file via SAF ----
             val deadline = System.currentTimeMillis() + timeoutMs
@@ -440,9 +469,15 @@ class ShellTool(private val appContext: Context) : Tool {
             // it guess "no access" (field finding #3).
             SessionGrants.markShellVerified()
 
-            val exitCode = readFile(codeFile)?.trim()?.toIntOrNull() ?: -1
-            val stdoutText = readFile(out)?.take(MAX_OUTPUT_CHARS) ?: ""
-            val stderrText = readFile(err)?.take(MAX_ERR_CHARS) ?: ""
+            val exitCode = readTextCapped(codeFile, 64)?.trim()?.toIntOrNull() ?: -1
+            val stdoutCap = readTextCapped(out, MAX_OUTPUT_CHARS)
+            val stderrCap = readTextCapped(err, MAX_ERR_CHARS)
+            val stdoutText = stdoutCap?.let { c ->
+                if (c.truncated) c.text + "\n…(stdout truncated at $MAX_OUTPUT_CHARS chars — the command produced more output than shown)" else c.text
+            } ?: ""
+            val stderrText = stderrCap?.let { c ->
+                if (c.truncated) c.text + "\n…(stderr truncated at $MAX_ERR_CHARS chars)" else c.text
+            } ?: ""
 
             out?.delete(); err?.delete(); codeFile.delete()
 
@@ -467,11 +502,18 @@ class ShellTool(private val appContext: Context) : Tool {
     /** Single-quote for shell, escaping embedded quotes: ' → '\'' */
     private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
-    private fun readFile(f: androidx.documentfile.provider.DocumentFile?): String? = try {
+    /**
+     * H2 (code review, 2026-11): capped streaming read of a workspace file.
+     * The old readFile() slurped the WHOLE file with readText() and capped
+     * only afterwards — a runaway command writing hundreds of MB to stdout
+     * OOM-killed the app before the cap could ever apply. Reads at most
+     * [maxChars] chars; null when the file is absent/unreadable.
+     */
+    private fun readTextCapped(f: androidx.documentfile.provider.DocumentFile?, maxChars: Int): String? = try {
         f?.let { file ->
             if (!file.isFile) null
-            else appContext.contentResolver.openInputStream(file.uri)?.use {
-                it.bufferedReader().readText()
+            else appContext.contentResolver.openInputStream(file.uri)?.use { ins ->
+                readCapped(ins, maxChars).text
             }
         }
     } catch (e: Exception) {
@@ -493,6 +535,29 @@ class ShellTool(private val appContext: Context) : Tool {
         private const val MAX_OUTPUT_CHARS = 100_000
         private const val MAX_ERR_CHARS = 20_000
 
+        /** H2 (code review, 2026-11): a capped read — content + whether the
+         *  stream held MORE than the cap (the caller appends an honest
+         *  truncation marker). */
+        internal data class CappedRead(val text: String, val truncated: Boolean)
+
+        /** H2: reads at most [maxChars] characters from [ins] and never
+         *  buffers beyond the cap — a runaway command's multi-MB stdout
+         *  cannot OOM the process. Pure JVM, unit-tested directly. */
+        internal fun readCapped(ins: java.io.InputStream, maxChars: Int): CappedRead {
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(ins, Charsets.UTF_8))
+            val sb = StringBuilder()
+            val buf = CharArray(8 * 1024)
+            var total = 0
+            while (total < maxChars) {
+                val n = reader.read(buf, 0, minOf(buf.size, maxChars - total))
+                if (n <= 0) break
+                total += n
+                sb.append(buf, 0, n)
+            }
+            val truncated = total >= maxChars && reader.read() != -1
+            return CappedRead(sb.toString(), truncated)
+        }
+
         /** v0.6.14 fallback when the one-tap grant was denied, dismissed,
          *  timed out, or no UI was available to ask on. Pinned by
          *  TermuxSetupTest — every wall names its price. */
@@ -504,6 +569,16 @@ class ShellTool(private val appContext: Context) : Tool {
                 "permissions → Run commands in Termux environment. Also ensure " +
                 "~/.termux/termux.properties has allow-external-apps=true (see the " +
                 "Termux integration section in Setup)."
+
+        /** M13 (code review, 2026-11): the honest background-start wall.
+         *  Android 8+ throws IllegalStateException from startService while
+         *  the app is backgrounded — the failure must NAME the cause and
+         *  the remedy, not bury them. Pinned verbatim by test. */
+        internal fun backgroundStartError(): String =
+            "Android blocked the Termux launch: Vorv was in the BACKGROUND " +
+                "when the command was dispatched (Android 8+ forbids starting services " +
+                "from the background). Bring Vorv to the foreground — open the app — " +
+                "and send the command again."
 
         /**
          * v0.6.16 (field finding #4): the dispatch-timeout error, REBUILT.

@@ -36,7 +36,7 @@ object ToolCallParser {
     )
     private val answerRegex = Regex("ANSWER:\\s*([\\s\\S]*)")
 
-    fun parse(text: String): Llm.LlmResponse {
+    fun parse(text: String, knownTools: Set<String>): Llm.LlmResponse {
         val trimmed = text.trim()
 
         // 1. Well-formed OpenAI-style call.
@@ -62,8 +62,11 @@ object ToolCallParser {
         //      or as a bare JSON object/array, instead of the expected
         //      <tool>...</tool> tags. This path strips fences and parses.
         //      Gated on having a "name" key so prose containing JSON is
-        //      never misparsed as a tool call.
-        parseMarkdownOrBareJson(trimmed)?.let { return it }
+        //      never misparsed as a tool call — and, on the BARE/prose
+        //      paths, on the name being a KNOWN tool (H1b): JSON data that
+        //      merely carries a "name" key (package.json, API payloads) is
+        //      an ANSWER, not a tool call.
+        parseMarkdownOrBareJson(trimmed, knownTools)?.let { return it }
 
         // 3. Plain-text protocol.
         plainToolCallRegex.find(trimmed)?.let { mr ->
@@ -123,10 +126,18 @@ object ToolCallParser {
         } catch (e: Exception) {
             null
         } ?: return null
-        val name = json.get("name")?.takeIf { !it.isJsonNull }?.asString ?: return null
-        val args = json.get("arguments")?.let {
-            if (it.isJsonObject) it.asJsonObject.toString() else it.asString
-        } ?: "{}"
+        // H1 (code review, 2026-11): a name that is not a JSON STRING
+        // (array, object, number, bool) is not a tool-call shape — return
+        // null (→ text) instead of letting .asString throw and kill the
+        // whole task.
+        val name = json.get("name").asStringOrNull() ?: return null
+        // H1: arguments must be an object or a string primitive. Arrays,
+        // numbers and bools are malformed — also null → text.
+        val args = when (val a = json.get("arguments")) {
+            null, com.google.gson.JsonNull.INSTANCE -> "{}"
+            is JsonObject -> a.toString()
+            else -> a.asStringOrNull() ?: return null
+        }
         return Llm.LlmResponse.ToolUse(
             toolCalls = listOf(Llm.ToolCall(
                 id = java.util.UUID.randomUUID().toString(),
@@ -136,6 +147,13 @@ object ToolCallParser {
             reasoning = null,
         )
     }
+
+    /** The element as a JSON string primitive, or null when it is absent,
+     *  null-JSON, or any non-string type (H1: never throws). */
+    private fun com.google.gson.JsonElement?.asStringOrNull(): String? =
+        runCatching {
+            (this as? com.google.gson.JsonPrimitive)?.takeIf { it.isString }?.asString
+        }.getOrNull()
 
     /**
      * Best-effort repair of truncated JSON: walks the string tracking string
@@ -185,7 +203,7 @@ object ToolCallParser {
      * Gated on the presence of a "name" key so ordinary prose or JSON data
      * is never misparsed as a tool call.
      */
-    private fun parseMarkdownOrBareJson(text: String): Llm.LlmResponse? {
+    private fun parseMarkdownOrBareJson(text: String, knownTools: Set<String>): Llm.LlmResponse? {
         val trimmedText = text.trimStart()
         // Cheap guard: skip if there's no JSON-shaped content at all. The
         // real gate is the "name" key check in parseToolCallJson — that's
@@ -214,15 +232,21 @@ object ToolCallParser {
         }
 
         // 2. Try the whole text as bare JSON (only if it starts with { or [).
+        //    H1b: on the BARE path the parsed name must be a KNOWN tool —
+        //    JSON data carrying a "name" key is data, not a call.
         if (trimmedText.startsWith("{") || trimmedText.startsWith("[")) {
-            parseToolCallJson(trimmedText)?.let { return it }
+            parseToolCallJson(trimmedText)
+                ?.takeIf { tc -> tc.toolCalls.all { it.name in knownTools } }
+                ?.let { return it }
         }
 
         // 3. Prose before bare JSON (e.g. "Sure! {\"name\":...}"): try from
-        //    the first { or [.
+        //    the first { or [. Same H1b known-tool gate as the bare path.
         val jsonStart = trimmedText.indexOfAny(charArrayOf('{', '['))
         if (jsonStart > 0) {
-            parseToolCallJson(trimmedText.substring(jsonStart).trim())?.let { return it }
+            parseToolCallJson(trimmedText.substring(jsonStart).trim())
+                ?.takeIf { tc -> tc.toolCalls.all { it.name in knownTools } }
+                ?.let { return it }
         }
 
         return null
@@ -261,7 +285,9 @@ object ToolCallParser {
     }
 
     private fun parseToolCallObject(obj: JsonObject): Llm.ToolCall? {
-        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: return null
+        // H1: name must be a JSON string — arrays/objects/numbers return null
+        // (treated as text) instead of throwing UnsupportedOperationException.
+        val name = obj.get("name").asStringOrNull() ?: return null
         val args = obj.get("arguments")?.let {
             when {
                 it.isJsonObject -> it.asJsonObject.toString()

@@ -75,10 +75,25 @@ class WatchdogService : Service() {
         /**
          * Called by the MAIN process to register a heartbeat. The watchdog
          * treats a recent heartbeat FROM A LIVE PROCESS as "main is alive".
+         *
+         * M6 (code review, 2026-11): the heartbeat file lives in INTERNAL
+         * storage. It used to sit on external storage (getExternalFilesDir),
+         * which a) wears external flash with a write every 5 s for the whole
+         * process lifetime and b) breaks crash detection whenever external
+         * storage is unmounted or slow to mount at boot. Both processes of
+         * this app share filesDir, so the watchdog reads the same path.
          */
+        internal fun heartbeatFile(context: Context): File =
+            File(context.filesDir, "watchdog/heartbeat.txt")
+
         fun writeHeartbeat(context: Context, step: String) {
             runCatching {
-                val file = File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt")
+                // M6: sweep the pre-M6 external heartbeat if one still exists
+                // from an older install — delete() on a missing file is a
+                // cheap no-op, so this needs no one-shot flag and can never
+                // leave a stale file as a false signal.
+                File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt").delete()
+                val file = heartbeatFile(context)
                 file.parentFile?.mkdirs()
                 val ts = System.currentTimeMillis()
                 file.writeText("$ts\n$step\npid=${Process.myPid()}\n")
@@ -169,7 +184,7 @@ class WatchdogService : Service() {
         }.getOrDefault("")
 
         val heartbeat: String = runCatching {
-            File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
+            heartbeatFile(this)
                 .takeIf { it.exists() }?.readText() ?: ""
         }.getOrDefault("")
 
@@ -253,10 +268,10 @@ class WatchdogService : Service() {
      * the live process list — the audited code ignored it (H-1 evidence).
      */
     private fun checkMainProcessHealth() {
-        val heartbeatFile = File(getExternalFilesDir(null), "watchdog/heartbeat.txt")
-        if (!heartbeatFile.exists()) return
+        val hbFile = heartbeatFile(this)
+        if (!hbFile.exists()) return
 
-        val heartbeatText = runCatching { heartbeatFile.readText() }.getOrNull() ?: return
+        val heartbeatText = runCatching { hbFile.readText() }.getOrNull() ?: return
         val lines = heartbeatText.lines()
         val heartbeatTs = lines.firstOrNull()?.toLongOrNull() ?: return
         val heartbeatPid = lines.firstOrNull { it.startsWith("pid=") }

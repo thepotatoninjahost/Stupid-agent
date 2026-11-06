@@ -38,7 +38,16 @@ class FileListTool(private val appContext: Context) : Tool {
             ?: return@withContext ToolResult(ok = false, output = "", error = "Path not found: $sub", durationMs = System.currentTimeMillis() - t0)
 
         val listing = StringBuilder()
-        listRecursive(target, "", listing)
+        val budget = ListBudget()
+        listBounded(target, "", listing, budget)
+        // M10: an honest truncation note — the model must KNOW the listing
+        // is partial and can ask for subfolders individually.
+        when {
+            budget.truncatedByEntries -> listing.appendLine(
+                "…(listing truncated: $MAX_LIST_ENTRIES-entry cap reached — list subfolders individually for more)")
+            budget.truncatedByDepth -> listing.appendLine(
+                "…(listing truncated: $MAX_LIST_DEPTH-level depth cap reached — list deeper subfolders individually)")
+        }
 
         ToolResult(
             ok = true,
@@ -54,19 +63,6 @@ class FileListTool(private val appContext: Context) : Tool {
             current = current.findFile(segment) ?: return null
         }
         return current
-    }
-
-    private fun listRecursive(df: DocumentFile, prefix: String, out: StringBuilder) {
-        df.listFiles().forEach { child ->
-            val rel = if (prefix.isBlank()) child.name ?: "?" else "$prefix/${child.name}"
-            if (child.isDirectory) {
-                out.appendLine("[dir] $rel/")
-                listRecursive(child, rel, out)
-            } else {
-                val kb = child.length() / 1024
-                out.appendLine("      $rel (${kb}KB)")
-            }
-        }
     }
 }
 
@@ -208,11 +204,17 @@ class FileWriteTool(private val appContext: Context) : Tool {
                 } catch (e: Exception) {
                     return@withContext ToolResult(ok = false, output = "", error = "Write failed: ${e.message}", durationMs = System.currentTimeMillis() - t0)
                 }
+                // M9 (code review, 2026-11): SAF providers may rename a file
+                // on create (adding an extension, uniquifying a collision).
+                // The tool reports the file's REAL name — a reported path
+                // that does not exist is a lie the model trips over on the
+                // next file_read.
+                val (actualPath, renameNote) = resolveWrittenPath(path, target.name ?: segment)
                 return@withContext ToolResult(
                     ok = true,
-                    output = "Wrote ${content.length} chars to $path",
+                    output = "Wrote ${content.length} chars to $actualPath$renameNote",
                     durationMs = System.currentTimeMillis() - t0,
-                    citation = Citation("file", target.uri.toString(), "file: $path"),
+                    citation = Citation("file", target.uri.toString(), "file: $actualPath"),
                 )
             } else {
                 // Directory
@@ -228,4 +230,69 @@ class FileWriteTool(private val appContext: Context) : Tool {
         /** 1 MB cap on a single file_write payload. */
         const val MAX_WRITE_CHARS = 1_000_000
     }
+}
+
+/**
+ * M10 (code review, 2026-11): file_list bounds. The old walker recursed
+ * without limit in depth or entries — a deep or huge tree produced
+ * megabytes of listing. Bounded, with an honest truncation note appended
+ * by the caller.
+ */
+internal const val MAX_LIST_DEPTH = 12
+internal const val MAX_LIST_ENTRIES = 2000
+
+/** M10: walker state — depth, entry count, and which cap fired. */
+internal class ListBudget {
+    var depth = 0
+    var entries = 0
+    var truncatedByEntries = false
+    var truncatedByDepth = false
+}
+
+/** M10: bounded recursive listing. Pure over DocumentFile, unit-testable. */
+internal fun listBounded(df: DocumentFile, prefix: String, out: StringBuilder, budget: ListBudget) {
+    if (budget.depth >= MAX_LIST_DEPTH) {
+        budget.truncatedByDepth = true
+        return
+    }
+    val children = df.listFiles()
+    for (child in children) {
+        if (budget.entries >= MAX_LIST_ENTRIES) {
+            budget.truncatedByEntries = true
+            return
+        }
+        val rel = if (prefix.isBlank()) child.name ?: "?" else "$prefix/${child.name}"
+        budget.entries++
+        if (child.isDirectory) {
+            out.appendLine("[dir] $rel/")
+            budget.depth++
+            listBounded(child, rel, out, budget)
+            budget.depth--
+            if (budget.entries >= MAX_LIST_ENTRIES) {
+                budget.truncatedByEntries = true
+                return
+            }
+        } else {
+            val kb = child.length() / 1024
+            out.appendLine("      $rel (${kb}KB)")
+        }
+    }
+}
+
+/**
+ * M9 (code review, 2026-11): the path file_write REPORTS. SAF providers
+ * may rename a created file (extension added, collision uniquified), so
+ * the reported path must be built from the file's REAL name — plus an
+ * explicit note when it differs from what was requested. Returns
+ * (actualPath, note); the note is "" when nothing was renamed.
+ */
+internal fun resolveWrittenPath(requested: String, actualName: String): Pair<String, String> {
+    val req = requested.trim('/')
+    val requestedName = req.substringAfterLast('/')
+    val dirPart = if (req.contains('/')) req.substringBeforeLast('/') else ""
+    val actualPath = if (dirPart.isBlank()) actualName else "$dirPart/$actualName"
+    val note = if (actualName != requestedName) {
+        " — NOTE: the storage provider renamed '$requestedName' to '$actualName'"
+    } else ""
+    return actualPath to note
 }

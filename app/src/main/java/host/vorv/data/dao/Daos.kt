@@ -130,3 +130,23 @@ interface ArtifactDao {
     @Query("SELECT * FROM artifacts WHERE id = :id LIMIT 1")
     suspend fun get(id: String): Artifact?
 }
+
+/**
+ * M1 (code review, 2026-11): persisted chat history access. rowid is the
+ * tiebreak so same-millisecond messages (user echo + busy hint) reload in
+ * the order they were written.
+ */
+@Dao
+interface ChatMessageDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(msg: ChatMessageEntity)
+
+    @Query("SELECT * FROM chat_messages ORDER BY ts ASC, rowid ASC LIMIT :limit")
+    suspend fun loadRecent(limit: Int = 500): List<ChatMessageEntity>
+
+    @Query("SELECT COUNT(*) FROM chat_messages")
+    suspend fun count(): Int
+
+    @Query("DELETE FROM chat_messages")
+    suspend fun clearAll()
+}

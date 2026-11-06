@@ -5,9 +5,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Table-driven tests for the local-LLM tool-call parser (audit H-6 + M-1).
+ * Table-driven tests for the local-LLM tool-call parser (audit H-6 + M-1,
+ * code-review H1/H1b 2026-11).
  */
 class ToolCallParserTest {
+
+    /** The realistic tool roster handed to the parser (H1b known-tool gate). */
+    private val knownTools = setOf(
+        "file_read", "file_write", "file_list", "js_exec", "memory_write",
+        "shell", "web_search", "web_fetch", "notify",
+    )
+
+    private fun parse(text: String): Llm.LlmResponse =
+        ToolCallParser.parse(text, knownTools)
 
     private fun parseName(res: Llm.LlmResponse): String? =
         (res as? Llm.LlmResponse.ToolUse)?.toolCalls?.firstOrNull()?.name
@@ -21,25 +31,25 @@ class ToolCallParserTest {
     // ---------------------------------------------------- well-formed <tool>
 
     @Test fun `parses well-formed openai tool call`() {
-        val r = ToolCallParser.parse("""<tool>{"name":"file_read","arguments":{"path":"a.txt"}}</tool>""")
+        val r = parse("""<tool>{"name":"file_read","arguments":{"path":"a.txt"}}</tool>""")
         assertEquals("file_read", parseName(r))
         assertTrue(parseArgs(r)!!.contains("a.txt"))
     }
 
     @Test fun `parses tool call with whitespace`() {
-        val r = ToolCallParser.parse("  <tool>  {\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}  </tool>  ")
+        val r = parse("  <tool>  {\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}  </tool>  ")
         assertEquals("js_exec", parseName(r))
     }
 
     @Test fun `tool call with multiline json arguments`() {
-        val r = ToolCallParser.parse(
+        val r = parse(
             "<tool>{\n  \"name\": \"memory_write\",\n  \"arguments\": {\n    \"topic\": \"t\",\n    \"content\": \"c\"\n  }\n}</tool>"
         )
         assertEquals("memory_write", parseName(r))
     }
 
     @Test fun `tool call with missing arguments key defaults to empty object`() {
-        val r = ToolCallParser.parse("""<tool>{"name":"file_list"}</tool>""")
+        val r = parse("""<tool>{"name":"file_list"}</tool>""")
         assertEquals("file_list", parseName(r))
         assertEquals("{}", parseArgs(r))
     }
@@ -47,42 +57,42 @@ class ToolCallParserTest {
     // ---------------------------------------------------- truncated <tool>
 
     @Test fun `repairs truncated tool call missing closing tag and braces`() {
-        val r = ToolCallParser.parse("""<tool>{"name":"file_write","arguments":{"path":"out.txt","content":"hello""")
+        val r = parse("""<tool>{"name":"file_write","arguments":{"path":"out.txt","content":"hello""")
         assertEquals("file_write", parseName(r))
         assertTrue(parseArgs(r)!!.contains("out.txt"))
         assertTrue(parseArgs(r)!!.contains("hello"))
     }
 
     @Test fun `repairs truncation inside a string value`() {
-        val r = ToolCallParser.parse("""<tool>{"name":"file_write","arguments":{"path":"o.txt","content":"line1\nline2""")
+        val r = parse("""<tool>{"name":"file_write","arguments":{"path":"o.txt","content":"line1\nline2""")
         assertEquals("file_write", parseName(r))
     }
 
     @Test fun `truncated garbage after tool tag falls back to text`() {
-        val r = ToolCallParser.parse("""<tool>this is not json at all""")
+        val r = parse("""<tool>this is not json at all""")
         assertTrue(r is Llm.LlmResponse.Text)
     }
 
     // ---------------------------------------------------- plain protocol
 
     @Test fun `parses plain TOOL_CALL newline ARGS format`() {
-        val r = ToolCallParser.parse("TOOL_CALL: memory_write\nARGS: {\"topic\":\"t\",\"content\":\"c\"}")
+        val r = parse("TOOL_CALL: memory_write\nARGS: {\"topic\":\"t\",\"content\":\"c\"}")
         assertEquals("memory_write", parseName(r))
     }
 
     @Test fun `parses plain TOOL_CALL colon ARGS format`() {
-        val r = ToolCallParser.parse("TOOL_CALL: js_exec ARGS: {\"code\":\"1\"}")
+        val r = parse("TOOL_CALL: js_exec ARGS: {\"code\":\"1\"}")
         assertEquals("js_exec", parseName(r))
     }
 
     @Test fun `plain format with invalid json args produces error payload not crash`() {
-        val r = ToolCallParser.parse("TOOL_CALL: js_exec ARGS: {not json")
+        val r = parse("TOOL_CALL: js_exec ARGS: {not json")
         assertEquals("js_exec", parseName(r))
         assertTrue(parseArgs(r)!!.contains("error"))
     }
 
     @Test fun `plain format with truncated args (no closing brace) is still a tool call`() {
-        val r = ToolCallParser.parse("TOOL_CALL: file_write ARGS: {\"path\":\"out.txt\",\"content\":\"hel")
+        val r = parse("TOOL_CALL: file_write ARGS: {\"path\":\"out.txt\",\"content\":\"hel")
         assertEquals("file_write", parseName(r))
         assertTrue(parseArgs(r)!!.contains("error"))
     }
@@ -90,22 +100,22 @@ class ToolCallParserTest {
     // ---------------------------------------------------- answers
 
     @Test fun `parses ANSWER prefix`() {
-        val r = ToolCallParser.parse("ANSWER: The file has 42 lines.")
+        val r = parse("ANSWER: The file has 42 lines.")
         assertEquals("The file has 42 lines.", parseText(r))
     }
 
     @Test fun `raw text without markers is a final answer`() {
-        val r = ToolCallParser.parse("The capital of France is Paris.")
+        val r = parse("The capital of France is Paris.")
         assertEquals("The capital of France is Paris.", parseText(r))
     }
 
     @Test fun `empty text returns empty answer`() {
-        val r = ToolCallParser.parse("   ")
+        val r = parse("   ")
         assertEquals("", parseText(r))
     }
 
     @Test fun `text before tool tag does not prevent tool parsing`() {
-        val r = ToolCallParser.parse("Let me check that.\n<tool>{\"name\":\"file_read\",\"arguments\":{\"path\":\"x\"}}</tool>")
+        val r = parse("Let me check that.\n<tool>{\"name\":\"file_read\",\"arguments\":{\"path\":\"x\"}}</tool>")
         assertEquals("file_read", parseName(r))
     }
 
@@ -141,19 +151,19 @@ class ToolCallParserTest {
     // (screen recording 20261101_164250); the unit tests below codify the fix.
 
     @Test fun `parses markdown-fenced json object tool call`() {
-        val r = ToolCallParser.parse("```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"console.log(2+2)\"}}\n```")
+        val r = parse("```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"console.log(2+2)\"}}\n```")
         assertEquals("js_exec", parseName(r))
         assertTrue(parseArgs(r)!!.contains("console.log(2+2)"))
     }
 
     @Test fun `parses markdown-fenced json array tool call`() {
-        val r = ToolCallParser.parse("```json\n[{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}]\n```")
+        val r = parse("```json\n[{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}]\n```")
         assertEquals("js_exec", parseName(r))
     }
 
     @Test fun `parses double-fenced json tool call from screen recording`() {
         // Exact pattern observed on-device: double ```json fence, single object.
-        val r = ToolCallParser.parse(
+        val r = parse(
             "```json\n```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"console.log(2+2)\"}}\n```\n```"
         )
         assertEquals("js_exec", parseName(r))
@@ -161,18 +171,18 @@ class ToolCallParserTest {
     }
 
     @Test fun `parses bare json object tool call`() {
-        val r = ToolCallParser.parse("""{"name":"file_read","arguments":{"path":"a.txt"}}""")
+        val r = parse("""{"name":"file_read","arguments":{"path":"a.txt"}}""")
         assertEquals("file_read", parseName(r))
         assertTrue(parseArgs(r)!!.contains("a.txt"))
     }
 
     @Test fun `parses bare json array tool call`() {
-        val r = ToolCallParser.parse("""[{"name":"file_read","arguments":{"path":"a.txt"}}]""")
+        val r = parse("""[{"name":"file_read","arguments":{"path":"a.txt"}}]""")
         assertEquals("file_read", parseName(r))
     }
 
     @Test fun `parses multiple tool calls in json array`() {
-        val r = ToolCallParser.parse(
+        val r = parse(
             """[{"name":"file_read","arguments":{"path":"a"}},{"name":"file_read","arguments":{"path":"b"}}]"""
         )
         assertTrue(r is Llm.LlmResponse.ToolUse)
@@ -183,35 +193,35 @@ class ToolCallParserTest {
     }
 
     @Test fun `parses fenced tool call with prose before it`() {
-        val r = ToolCallParser.parse(
+        val r = parse(
             "Let me run that for you.\n```json\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}\n```"
         )
         assertEquals("js_exec", parseName(r))
     }
 
     @Test fun `parses bare json with prose before it`() {
-        val r = ToolCallParser.parse("""Sure! {"name":"js_exec","arguments":{"code":"1+1"}}""")
+        val r = parse("""Sure! {"name":"js_exec","arguments":{"code":"1+1"}}""")
         assertEquals("js_exec", parseName(r))
     }
 
     @Test fun `fenced json without name key falls through to text`() {
         // Must NOT misparse ordinary JSON data as a tool call.
-        val r = ToolCallParser.parse("```json\n{\"foo\": 1, \"bar\": [1,2,3]}\n```")
+        val r = parse("```json\n{\"foo\": 1, \"bar\": [1,2,3]}\n```")
         assertTrue(r is Llm.LlmResponse.Text)
     }
 
     @Test fun `bare json without name key falls through to text`() {
-        val r = ToolCallParser.parse("""{"foo": 1, "bar": "hello"}""")
+        val r = parse("""{"foo": 1, "bar": "hello"}""")
         assertTrue(r is Llm.LlmResponse.Text)
     }
 
     @Test fun `prose without fences or braces is text`() {
-        val r = ToolCallParser.parse("The capital of France is Paris.")
+        val r = parse("The capital of France is Paris.")
         assertTrue(r is Llm.LlmResponse.Text)
     }
 
     @Test fun `truncated fenced json tool call is repaired`() {
-        val r = ToolCallParser.parse(
+        val r = parse(
             "```json\n{\"name\":\"file_write\",\"arguments\":{\"path\":\"out.txt\",\"content\":\"hello"
         )
         assertEquals("file_write", parseName(r))
@@ -220,14 +230,77 @@ class ToolCallParserTest {
     }
 
     @Test fun `fenced tool call with extra whitespace and newlines`() {
-        val r = ToolCallParser.parse(
+        val r = parse(
             "```json\n\n  {\n    \"name\": \"memory_write\",\n    \"arguments\": {\n      \"topic\": \"t\",\n      \"content\": \"c\"\n    }\n  }\n\n```"
         )
         assertEquals("memory_write", parseName(r))
     }
 
     @Test fun `plain code fence without json label parses`() {
-        val r = ToolCallParser.parse("```\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}\n```")
+        val r = parse("```\n{\"name\":\"js_exec\",\"arguments\":{\"code\":\"1+1\"}}\n```")
         assertEquals("js_exec", parseName(r))
+    }
+
+    // ------------------------------------------- H1: shape-safety (no throw)
+
+    @Test fun `array arguments in tool tag do not throw and fall to text`() {
+        // H1: pre-fix, .asString on a JsonArray threw UnsupportedOperationException
+        // out of parse() and aborted the whole task.
+        val r = parse("""<tool>{"name":"shell","arguments":["ls","-la"]}</tool>""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `numeric name in tool tag falls to text without throwing`() {
+        val r = parse("""<tool>{"name":123,"arguments":{"x":"1"}}</tool>""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `array name in bare json falls to text without throwing`() {
+        val r = parse("""{"name":["shell"],"arguments":{"cmd":"ls"}}""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `null arguments in tool tag default to empty object`() {
+        val r = parse("""<tool>{"name":"shell","arguments":null}</tool>""")
+        assertEquals("shell", parseName(r))
+        assertEquals("{}", parseArgs(r))
+    }
+
+    @Test fun `numeric arguments in tool tag fall to text`() {
+        val r = parse("""<tool>{"name":"shell","arguments":42}</tool>""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    // ------------------------------- H1b: known-tool gate on the bare/prose path
+
+    @Test fun `bare json with a name key but an UNKNOWN tool is an answer`() {
+        // The pre-H1b gate was the mere PRESENCE of a "name" key — JSON data
+        // like a package.json got hijacked into a phantom tool call.
+        val r = parse("""{"name":"vorv","version":"0.7.1","license":"MIT"}""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `prose before unknown-name json stays an answer`() {
+        val r = parse("""Sure, here is the manifest: {"name":"some-package","dependencies":{"foo":"1.0"}}""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `bare json array with one unknown call is an answer`() {
+        val r = parse("""[{"name":"file_read","arguments":{"path":"a"}},{"name":"not_a_tool","arguments":{}}]""")
+        assertTrue(r is Llm.LlmResponse.Text)
+    }
+
+    @Test fun `bare json with a KNOWN tool still parses as a call`() {
+        val r = parse("""{"name":"file_read","arguments":{"path":"a.txt"}}""")
+        assertEquals("file_read", parseName(r))
+    }
+
+    @Test fun `fenced json keeps the name-key gate — an unknown fenced name is still a call`() {
+        // Deliberate asymmetry: a fenced ```json block is a strong intent
+        // signal, so it stays on the name-key gate; the KERNEL then reports
+        // the unknown tool honestly to the model. Only the BARE path (above)
+        // requires a known tool name.
+        val r = parse("```json\n{\"name\":\"brand_new_tool\",\"arguments\":{\"x\":\"1\"}}\n```")
+        assertEquals("brand_new_tool", parseName(r))
     }
 }

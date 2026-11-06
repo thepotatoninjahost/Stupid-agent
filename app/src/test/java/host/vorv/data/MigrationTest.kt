@@ -109,4 +109,85 @@ class MigrationTest {
     fun `database exposes all migrations`() {
         assertTrue(VorvDatabase.ALL_MIGRATIONS.contains(VorvDatabase.MIGRATION_1_2))
     }
+
+    // ------------------------------------------- M1: v2 -> v3 chat_messages
+
+    private val v2ToolCallsDdl = """
+        CREATE TABLE IF NOT EXISTS `tool_calls` (
+            `id` TEXT NOT NULL,
+            `taskId` TEXT NOT NULL,
+            `ts` INTEGER NOT NULL,
+            `iteration` INTEGER NOT NULL,
+            `toolName` TEXT NOT NULL,
+            `inputJson` TEXT NOT NULL,
+            `outputJson` TEXT NOT NULL,
+            `exitCode` INTEGER NOT NULL,
+            `durationMs` INTEGER NOT NULL,
+            `errorMessage` TEXT,
+            `outputFilePath` TEXT,
+            PRIMARY KEY(`id`)
+        )
+    """.trimIndent()
+
+    private fun openV2Db(context: Context, name: String): SupportSQLiteDatabase {
+        val config = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(name)
+            .callback(object : SupportSQLiteOpenHelper.Callback(2) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL(v2ToolCallsDdl)
+                }
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+            })
+            .build()
+        return FrameworkSQLiteOpenHelperFactory().create(config).writableDatabase
+    }
+
+    @Test
+    fun `migration 2_3 creates chat_messages and preserves existing data`() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<Context>()
+        val db = openV2Db(context, "migration-2-3.db")
+        try {
+            db.execSQL(
+                """INSERT INTO tool_calls (id, taskId, ts, iteration, toolName, inputJson, outputJson, exitCode, durationMs, errorMessage, outputFilePath)
+                   VALUES ('keep-1', 'task-1', 12345, 1, 'shell', '{}', 'ok', 0, 42, NULL, NULL)"""
+            )
+
+            VorvDatabase.MIGRATION_2_3.migrate(db)
+
+            // The new table exists with the exact expected columns.
+            val cols = mutableListOf<String>()
+            db.query("PRAGMA table_info(chat_messages)").use { c ->
+                while (c.moveToNext()) cols.add(c.getString(1))
+            }
+            assertEquals(listOf("id", "ts", "role", "content", "citationsJson"), cols)
+
+            // The ts index exists.
+            val idx = mutableListOf<String>()
+            db.query("PRAGMA index_list(chat_messages)").use { c ->
+                while (c.moveToNext()) idx.add(c.getString(1))
+            }
+            assertTrue("ts index must exist", idx.contains("index_chat_messages_ts"))
+
+            // Pre-existing data survived.
+            db.query("SELECT COUNT(*) FROM tool_calls").use { c ->
+                c.moveToFirst(); assertEquals(1, c.getInt(0))
+            }
+
+            // The new table accepts the production insert shape.
+            db.execSQL(
+                """INSERT INTO chat_messages (id, ts, role, content, citationsJson)
+                   VALUES ('m-1', 1, 'user', 'hello', '[]')"""
+            )
+            db.query("SELECT content FROM chat_messages WHERE id = 'm-1'").use { c ->
+                assertTrue(c.moveToFirst()); assertEquals("hello", c.getString(0))
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `database exposes the 2_3 migration`() {
+        assertTrue(VorvDatabase.ALL_MIGRATIONS.contains(VorvDatabase.MIGRATION_2_3))
+    }
 }

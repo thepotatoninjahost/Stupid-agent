@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -47,7 +50,18 @@ import kotlinx.coroutines.withContext
  */
 class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
 
-    private val prefs: SharedPreferences = prefsOverride ?: run {
+    /**
+     * M5 (code review, 2026-11): the Keystore-backed EncryptedSharedPreferences
+     * is built LAZILY and, on the production path, the StateFlow seed is read
+     * on Dispatchers.IO. The store used to do both in its constructor — and
+     * VorvApplication.onCreate constructs it on the MAIN thread, so every
+     * app start paid the Android-Keystore handshake and the encrypted-file
+     * open on the UI thread. The prefsOverride path (unit tests) stays fully
+     * synchronous — the B-1 tests pin the immediately-visible seed there.
+     */
+    private val overridePrefs: SharedPreferences? = prefsOverride
+
+    private val productionPrefs: Lazy<SharedPreferences> = lazy {
         val masterKey: MasterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -60,20 +74,49 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
         )
     }
 
-    private val _zaiApiKey = kotlinx.coroutines.flow.MutableStateFlow(
-        prefs.getString(KEY_ZAI, "") ?: ""
-    )
+    private val prefs: SharedPreferences
+        get() = overridePrefs ?: productionPrefs.value
+
+    /** Seed scope — lives only until the one-shot seed read completes. */
+    private val seedScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    /** M5: set the moment a WRITE is attempted; a seed still in flight must
+     *  never overwrite a newer save or migration with a stale read. */
+    @Volatile private var savedDuringSeed = false
+
+    private val _zaiApiKey = kotlinx.coroutines.flow.MutableStateFlow("")
+
+    init {
+        if (overridePrefs != null) {
+            // Test path — synchronous, no Keystore, B-1 contract visible at
+            // construction.
+            _zaiApiKey.value = overridePrefs.getString(KEY_ZAI, "") ?: ""
+        } else {
+            // M5: production — read the encrypted file OFF the main thread.
+            // First access builds EncryptedSharedPreferences here too.
+            seedScope.launch {
+                val stored = runCatching { prefs.getString(KEY_ZAI, "") ?: "" }.getOrDefault("")
+                if (!savedDuringSeed) _zaiApiKey.value = stored
+                seedScope.cancel()
+            }
+        }
+    }
 
     /**
      * The stored API key ("" when none). Hot state: the CURRENT value is
      * always available without suspension, every save is published to
      * live collectors, and the value survives process restarts because it
-     * is seeded from the encrypted file at construction (B-1 fix).
+     * is seeded from the encrypted file (B-1 fix; M5: on the production
+     * path the seed read runs on Dispatchers.IO instead of the caller's
+     * — i.e. the app's main — thread).
      */
     val zaiApiKey: StateFlow<String> = _zaiApiKey.asStateFlow()
 
     suspend fun setZaiApiKey(key: String) {
         val trimmed = key.trim()
+        // M5: a seed read still in flight must not overwrite this save.
+        savedDuringSeed = true
         withContext(Dispatchers.IO) {
             prefs.edit().putString(KEY_ZAI, trimmed).apply()
         }
@@ -90,8 +133,10 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
     suspend fun migrateFromLegacy(legacy: VorvPrefs) {
         val legacyKey = legacy.readLegacyApiKeyOnce()
         if (legacyKey.isBlank()) return
-        val current = prefs.getString(KEY_ZAI, "") ?: ""
+        val current = withContext(Dispatchers.IO) { prefs.getString(KEY_ZAI, "") ?: "" }
         if (current.isBlank()) {
+            // M5: same seed guard as setZaiApiKey.
+            savedDuringSeed = true
             withContext(Dispatchers.IO) {
                 prefs.edit().putString(KEY_ZAI, legacyKey).apply()
             }

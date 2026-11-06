@@ -1,3 +1,103 @@
+# Changelog — v0.7.2 "The Full Sweep"
+
+Phase 1 of the code-review fix plan: every remaining finding from the
+25-finding review, fixed and regression-tested. Nothing removed, nothing
+watered down — 20 fixes, 40+ new tests, one Room migration (v2 → v3).
+
+## The conversation survives (M1)
+
+Chat history is now persisted to Room (`chat_messages`, schema v3) and
+reloaded on startup. Restarting the app used to lose every message while
+the tool-call logs survived — it read as "the app forgot what we just
+said." Every message is written as it is appended (user echo, answers,
+busy hints, stop notices, errors — all of it), reloaded in order (rowid
+tiebreak for same-millisecond writes), bounded at the 500 most recent,
+and wiped by the existing clear-all-data flow.
+
+## Local-mode tasks stop dying mid-run (R3)
+
+The kernel's own compaction window could open directly on a tool result
+whose calling assistant message had just been folded into the digest —
+chat templates reject orphaned tool messages, so longer local tasks died
+mid-run (root cause RC-3). The window boundary now advances past leading
+tool results, the same rule FallbackLlm already applied to the secondary
+engine. Regression tests tune the boundary to land exactly on the bug.
+
+## The parser stops throwing (H1) and stops hijacking (H1b)
+
+- `<tool>` calls with array/number/null `name` or `arguments` used to
+  throw UnsupportedOperationException straight out of parse() and abort
+  the task. Non-string names and non-object/non-string arguments are now
+  shape-rejected → treated as an answer, never a crash.
+- Bare/prose JSON carrying a "name" key (package.json, API payloads) was
+  hijacked into phantom tool calls. The bare path now requires a KNOWN
+  tool name; fenced blocks keep the name-key gate (a fence is strong
+  intent — the kernel reports unknown tools honestly there).
+
+## Shell output cannot OOM the app (H2)
+
+The shell tool's file reader slurped the WHOLE output file before
+capping — a runaway command writing hundreds of MB killed the process
+before the cap applied. The reader now stops AT the cap (streaming) and
+appends an honest truncation marker when more content existed.
+
+## self_fix gets a realistic budget (H3a/H3b) and stops leaking (M8)
+
+- Termux compile budget: 150 s → 600 s (real kotlinc round-trips exceed
+  150 s on-device; the old budget killed healthy compiles mid-flight).
+  Every attempt now records its REAL duration (log + lastCompileDurationMs).
+- Source cap: 8 000 → 131 072 chars — self_fix must re-emit files whole,
+  and the largest bundled source is ~47 K chars. A hypothetical larger
+  file is refused honestly instead of silently truncated into a
+  guaranteed-broken patch.
+- Verifier candidate dex files are swept on every write and deleted after
+  verification — they used to accumulate in cacheDir forever.
+
+## Honesty fixes
+
+- **M2**: finish_reason=length answers are delivered with an explicit
+  "[answer truncated by the model's token limit…]" marker and a
+  `truncated:true` episode — a cut-off answer is never presented as
+  complete.
+- **M9**: file_write reports the file's REAL name (SAF providers may
+  rename on create) plus an explicit rename note — a reported-but-
+  nonexistent path is a lie the model trips over on the next read.
+- **M13**: when Android blocks the Termux launch because Vorv is
+  backgrounded, the error names the cause and the exact remedy instead
+  of burying it in a generic dispatch-failure message.
+- **M14**: the per-tool rate limit is charged only when a call actually
+  dispatches — malformed attempts no longer burn the budget and lock the
+  model out of the tool.
+- **M10**: file_list is bounded (12 levels / 2000 entries) with an honest
+  truncation note.
+- **L1**: the action-request nudge only fires for imperative-position
+  verbs or non-subject statements — "the app runs slowly" no longer gets
+  a "call the tool NOW" correction.
+
+## Reliability fixes
+
+- **M4**: web_fetch caps actual BYTES, not decoded chars — multi-byte
+  content used to pull up to 4x the nominal cap through; split UTF-8
+  tails are trimmed cleanly.
+- **M5**: the Keystore-backed SecretsStore is built lazily and seeds its
+  state on Dispatchers.IO — app start no longer pays the Keystore
+  handshake on the main thread.
+- **M6**: the 5-second heartbeat moved to internal storage — no more
+  external-flash wear, and crash detection no longer breaks when
+  external storage is unmounted.
+- **M7**: model-download progress never emits a bogus 0% — unknown and
+  zero-total pull events are skipped instead of flickering the bar back.
+- **M3**: the PermissionBridge/SessionGrants singletons release the last
+  dead ViewModel in onCleared (guarded so a newer ViewModel's handlers
+  are never cleared in a recreation race).
+- **M12**: Japanese mobile numbers (090/080/070, +81) are no longer
+  refused as premium-rate; German 0900 and non-JP-shaped UK 09 numbers
+  stay blocked.
+- **L6**: the crash dialog's self-repair no longer passes a fake empty
+  boot trace; **L5** fixed a comment that had drifted from the code;
+  **L8** the README headline no longer says GLM-4.6 (default is the free
+  GLM-4.7-Flash tier).
+
 # Changelog — v0.7.0 "The Free Brain"
 
 The founding complaint, verbatim from the field: "It lies constantly. Literally

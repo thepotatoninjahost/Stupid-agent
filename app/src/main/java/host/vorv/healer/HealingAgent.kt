@@ -82,14 +82,31 @@ class HealingAgent(
         /** Hard budget for the whole heal (model load + attempts + verify). */
         private const val TOTAL_HEAL_BUDGET_MS = 15 * 60_000L
 
-        /** Wall-clock budget for ONE Termux compile (kotlinc is slow). */
-        private const val COMPILE_TIMEOUT_MS = 150_000L
+        /** Wall-clock budget for ONE Termux compile. H3a (code review,
+         *  2026-11): raised 150 s → 600 s. Real kotlinc-in-Termux round-trips
+         *  for a single class plus d8 routinely exceed 150 s on an S25 (cold
+         *  JVM start, no daemon); the old budget killed healthy compiles
+         *  mid-flight. 600 s = the plan's 8–10 min window. The honest
+         *  duration of every attempt is recorded in [lastCompileDurationMs]
+         *  and the log so future tuning uses measured data, not guesses. */
+        private const val COMPILE_TIMEOUT_MS = 600_000L
         private const val COMPILE_POLL_MS = 1_000L
 
-        /** Caps for prompt construction — problem inputs are untrusted data. */
+        /** Last REAL Termux compile round-trip duration (ms), success or
+         *  failure — set by compileInTermux on every attempt. H3a's
+         *  "log real compile times": readable by diagnostics and tests. */
+        @Volatile internal var lastCompileDurationMs: Long = -1L
+
+        /** Caps for prompt construction — problem inputs are untrusted data.
+         *  H3b (code review, 2026-11): MAX_SOURCE_CHARS raised 8 000 →
+         *  131 072 (128 KB). self_fix must re-emit the WHOLE file, so a cap
+         *  smaller than the file guarantees a broken patch — and the largest
+         *  bundled source (AgentViewModel.kt) is ~47 K chars. Every real
+         *  file now fits; a hypothetical larger file is refused honestly in
+         *  modifyInternal instead of silently truncated. */
         private const val MAX_STACK_CHARS = 4000
         private const val MAX_TRACE_CHARS = 1000
-        private const val MAX_SOURCE_CHARS = 8000
+        private const val MAX_SOURCE_CHARS = 131_072
         private const val MAX_COMPILER_ERROR_CHARS = 1500
         private const val MAX_PROBLEM_CHARS = 4000
         private const val MAX_DIAGNOSTICS_CHARS = 2000
@@ -186,6 +203,16 @@ class HealingAgent(
         if (buggySource == null) {
             return HealResult(false, error = "source not bundled for $targetClass " +
                 "(assets/source mirror) — the heal refuses to patch against unknown code")
+        }
+        // H3b: a file beyond the prompt budget cannot be re-emitted whole;
+        // truncating it silently guaranteed a broken patch. Refuse honestly
+        // (no bundled file is remotely this large — the cap is 2.8× the
+        // biggest class file, this guard is for future drift).
+        if (buggySource.length > MAX_SOURCE_CHARS) {
+            return HealResult(false, error = "source for $targetClass is " +
+                "${buggySource.length} chars — beyond the ${MAX_SOURCE_CHARS}-char " +
+                "self-patch budget. Split the class; self_fix will not emit a " +
+                "patch it cannot reproduce completely.")
         }
         Log.i(TAG, "source: $sourceFile (${buggySource.length} chars)")
 
@@ -385,11 +412,19 @@ class HealingAgent(
             compileError = "original class $targetClass not loadable for verification")
 
         val appClassesJar = extractAppClassesJar()
-        val verification = PatchVerifier.verify(
-            patchDex = File(writeTempDex(compiled.dexBytes!!)),
-            originalClass = original,
-            appClasspath = listOfNotNull(appClassesJar),
-        )
+        // M8 (code review, 2026-11): the verifier's candidate dex is scratch
+        // — deleted on EVERY path (success included). It used to leak one
+        // cacheDir/healer/candidate_*.dex per heal attempt, forever.
+        val verifierDex = File(writeTempDex(compiled.dexBytes!!))
+        val verification = try {
+            PatchVerifier.verify(
+                patchDex = verifierDex,
+                originalClass = original,
+                appClasspath = listOfNotNull(appClassesJar),
+            )
+        } finally {
+            runCatching { verifierDex.delete() }
+        }
         if (!verification.ok) {
             return compiled.copy(verification = verification)
         }
@@ -430,7 +465,11 @@ class HealingAgent(
     }
 
     private fun writeTempDex(bytes: ByteArray): String {
-        val f = File(context.cacheDir, "healer/candidate_${System.currentTimeMillis()}.dex")
+        val dir = File(context.cacheDir, "healer")
+        // M8: sweep candidates orphaned by earlier runs (crash mid-verify)
+        // before writing the new one — accumulation is bounded at one file.
+        sweepCandidateDex(dir)
+        val f = File(dir, "candidate_${System.currentTimeMillis()}.dex")
         f.parentFile?.mkdirs()
         f.writeBytes(bytes)
         return f.absolutePath
@@ -550,9 +589,13 @@ class HealingAgent(
             if (codeDoc != null) break
         }
         if (codeDoc == null) {
+            // H3a: record the REAL waited duration, not just the budget.
+            lastCompileDurationMs = System.currentTimeMillis() - t0
+            Log.w(TAG, "compile timed out after ${lastCompileDurationMs}ms (budget ${COMPILE_TIMEOUT_MS}ms)")
             return@withContext CompiledPatch(
                 null, "compile did not finish within ${COMPILE_TIMEOUT_MS / 1000}s " +
-                    "(kotlinc cold start is slow — check Termux)", null, emptyList())
+                    "(kotlinc cold start is slow — check Termux; this attempt waited " +
+                    "${lastCompileDurationMs / 1000}s)", null, emptyList())
         }
 
         val out = readDoc(healDir.findFile(outName)) ?: ""
@@ -570,9 +613,12 @@ class HealingAgent(
         runCatching { healDir.findFile("dex_$runId")?.delete() }
 
         if (code == "0" && out.contains("COMPILE_OK") && dexBytes != null) {
-            Log.i(TAG, "compile OK in ${System.currentTimeMillis() - t0}ms (${dexBytes.size} bytes)")
+            lastCompileDurationMs = System.currentTimeMillis() - t0
+            Log.i(TAG, "compile OK in $lastCompileDurationMs ms (${dexBytes.size} bytes dex)")
             CompiledPatch(dexBytes, null, null, emptyList())
         } else {
+            lastCompileDurationMs = System.currentTimeMillis() - t0
+            Log.w(TAG, "compile FAILED after $lastCompileDurationMs ms: exit=$code")
             val error = buildString {
                 append("exit=").append(code).append(" ")
                 append(out.take(400)).append(" ").append(err.take(MAX_COMPILER_ERROR_CHARS))
@@ -803,4 +849,17 @@ class HealingAgent(
         doc?.takeIf { it.isFile }
             ?.let { context.contentResolver.openInputStream(it.uri)?.use { it.readBytes() } }
     }.getOrNull()
+}
+
+/**
+ * M8 (code review, 2026-11): deletes leftover verifier scratch files
+ * (candidate_*.dex) in the healer cache [dir], keeping everything else.
+ * Top-level internal so the accumulation rule is unit-testable without a
+ * device: every new candidate write sweeps older ones first, and the
+ * verifier's dex is deleted after use — so at most ONE candidate file
+ * exists at any time, even across crashes.
+ */
+internal fun sweepCandidateDex(dir: File) {
+    val candidates = dir.listFiles { f -> f.name.startsWith("candidate_") && f.name.endsWith(".dex") }
+    candidates?.forEach { runCatching { it.delete() } }
 }

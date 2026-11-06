@@ -244,29 +244,10 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         .dns(NetworkGuard.PublicDns)
         .build()
 
-    /** Streams at most [maxBytes] as UTF-8 text (audit H-8, M-6). */
-    private fun readCapped(stream: java.io.InputStream?, maxBytes: Long): String {
-        if (stream == null) return ""
-        val sb = StringBuilder()
-        stream.use { s ->
-            // Audit M-6: decode through an InputStreamReader so multi-byte
-            // UTF-8 sequences split across 16 KB chunk boundaries are decoded
-            // incrementally, instead of becoming U+FFFD replacement chars per
-            // chunk (the old per-chunk String(buf, 0, n, UTF_8)).
-            val reader = java.io.InputStreamReader(
-                java.io.BufferedInputStream(s), Charsets.UTF_8)
-            var total = 0L
-            val cbuf = CharArray(16 * 1024)
-            while (total < maxBytes) {
-                val n = reader.read(cbuf)
-                if (n <= 0) break
-                total += n
-                sb.append(cbuf, 0, n)
-            }
-            if (total >= maxBytes) sb.append("\n…(truncated at $maxBytes chars)")
-        }
-        return sb.toString()
-    }
+    /** Streams at most [MAX_BYTES] bytes as UTF-8 text — see the top-level
+     *  [readCappedUtf8] (M4) for the byte-true budget and tail trimming. */
+    private fun readCapped(stream: java.io.InputStream?, maxBytes: Long): String =
+        readCappedUtf8(stream, maxBytes)
 
     private fun isTextual(contentType: String): Boolean =
         contentType.startsWith("text/") ||
@@ -301,4 +282,57 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
     private companion object {
         const val MAX_BYTES = 2_000_000L
     }
+}
+
+/**
+ * M4 (code review, 2026-11): streams at most [maxBytes] actual BYTES as
+ * UTF-8 text. The previous loop counted decoded CHARS against the byte
+ * budget, so multi-byte content (CJK, emoji) pulled up to 4x the nominal
+ * cap through the network before stopping. A cap that splits a multi-byte
+ * character mid-sequence is trimmed by [trimPartialUtf8Tail] so the text
+ * never ends in U+FFFD. Top-level internal + pure so the byte-budget
+ * behaviour is unit-testable.
+ */
+internal fun readCappedUtf8(stream: java.io.InputStream?, maxBytes: Long): String {
+    if (stream == null) return ""
+    stream.use { s ->
+        val bos = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0L
+        while (total < maxBytes) {
+            val n = s.read(buf, 0, minOf(buf.size.toLong(), maxBytes - total).toInt())
+            if (n <= 0) break
+            total += n
+            bos.write(buf, 0, n)
+        }
+        val truncated = total >= maxBytes && s.read() != -1
+        val decoded = trimPartialUtf8Tail(bos.toByteArray()).toString(Charsets.UTF_8)
+        return if (truncated) {
+            decoded + "\n…(truncated at $maxBytes bytes)"
+        } else decoded
+    }
+}
+
+/**
+ * M4 (code review, 2026-11): drops a trailing INCOMPLETE UTF-8 sequence (a
+ * lead byte whose continuation bytes fell past the byte cap) so a capped
+ * read never ends mid-character.
+ */
+internal fun trimPartialUtf8Tail(bytes: ByteArray): ByteArray {
+    for (i in 1..minOf(4, bytes.size)) {
+        val b = bytes[bytes.size - i].toInt() and 0xFF
+        if (b and 0xC0 == 0x80) continue // continuation byte — keep looking left
+        val expected = when {
+            b and 0xF8 == 0xF0 -> 4
+            b and 0xF0 == 0xE0 -> 3
+            b and 0xE0 == 0xC0 -> 2
+            else -> 1
+        }
+        // Lead byte present but fewer than `expected` bytes remain →
+        // the sequence is incomplete: cut it off entirely.
+        return if (i < expected) bytes.copyOf(bytes.size - i) else bytes
+    }
+    // Degenerate all-continuation tail — leave it; the decoder will do the
+    // honest replacement-char thing.
+    return bytes
 }
