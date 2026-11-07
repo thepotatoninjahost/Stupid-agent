@@ -290,7 +290,17 @@ class ShellTool(private val appContext: Context) : Tool {
             })
             add("timeout_ms", JsonObject().apply {
                 addProperty("type", "integer")
-                addProperty("description", "Optional timeout in milliseconds, 1000-120000. Default 30000.")
+                // Night session 2026-11-08: the model was never told it can
+                // RAISE the limit — slow commands (builds, test suites, pkg
+                // installs, sleeps) died at the 30s default and the kill was
+                // misread as "Termux setup missing". Teach the lever at
+                // planning time; the timeout error teaches it at decision
+                // time.
+                addProperty("description", "Optional per-command timeout in milliseconds, 1000-120000; " +
+                    "default 30000. The command is killed at the limit with an honest error. " +
+                    "If the command can legitimately run longer than ~25 seconds (builds, test " +
+                    "suites, package installs, long sleeps), pass a higher value — e.g. " +
+                    "timeout_ms=120000 — instead of letting it die at the default.")
             })
         })
         add("required", com.google.gson.JsonArray().apply { add("command") })
@@ -448,17 +458,10 @@ class ShellTool(private val appContext: Context) : Tool {
             if (codeFile == null) {
                 // Honest failure — do NOT fabricate output (audit C-3).
                 out?.delete(); err?.delete()
-                // v0.6.16 (field finding #4): record the dead-shell wall.
-                // Every retry after this fails instantly with the exact
-                // manual fix — the model can no longer burn 30 seconds per
-                // retry on a wall only the user can open.
-                SessionGrants.blockShell(
-                    "the command never came back within ${timeoutMs}ms — Termux's " +
-                        "one-time setup is missing on this device")
                 return@withContext ToolResult(
                     ok = false,
                     output = "",
-                    error = dispatchTimeoutMessage(timeoutMs.toLong()),
+                    error = onDispatchTimeout(timeoutMs.toLong()),
                     durationMs = System.currentTimeMillis() - t0,
                 )
             }
@@ -615,6 +618,46 @@ class ShellTool(private val appContext: Context) : Tool {
             appendLine("Do NOT retry this command. Tell the user the four steps above in plain")
             appendLine("English and wait. This command's actual result is UNKNOWN — do not")
             appendLine("claim it succeeded.")
+        }
+
+        /**
+         * Night session 2026-11-08: the dispatch-deadline verdict, split by
+         * what the session actually knows. v0.6.16 raised the dead-shell
+         * wall on EVERY dispatch timeout — correct when nothing has ever
+         * round-tripped (field finding #4), but wrong for a VERIFIED shell:
+         * `sleep 60` at the 30s default is a slow command, not the setup
+         * wall, and bricking the session's shell over it turned one honest
+         * timeout into a misdiagnosed session kill. Unverified → the wall
+         * goes up exactly as before (pinned by TermuxSmokeTest E6).
+         * Verified → honest slow-command error, no wall (E7).
+         */
+        internal fun onDispatchTimeout(timeoutMs: Long): String {
+            if (SessionGrants.shellVerified) {
+                return slowCommandTimeoutMessage(timeoutMs)
+            }
+            SessionGrants.blockShell(
+                "the command never came back within ${timeoutMs}ms — Termux's " +
+                    "one-time setup is missing on this device")
+            return dispatchTimeoutMessage(timeoutMs)
+        }
+
+        /**
+         * Night session 2026-11-08: the honest error for a timeout on a
+         * VERIFIED shell — the chain is known-good, so the command is slow
+         * or still running. Says what is known, what is not, and the exact
+         * retry lever. Pinned by TermuxSmokeTest (E7).
+         */
+        internal fun slowCommandTimeoutMessage(timeoutMs: Long): String = buildString {
+            appendLine("The command did not produce a result within ${timeoutMs / 1000}s (timeout_ms=${timeoutMs}).")
+            appendLine("The Termux chain is VERIFIED working this session — this is not a setup")
+            appendLine("problem. The command may simply run longer than the budget, and it may")
+            appendLine("still be running now: its actual result is UNKNOWN. Do not claim it")
+            appendLine("succeeded or failed.")
+            appendLine("If it needs more time, retry it with timeout_ms=120000 (the maximum, 120s)")
+            appendLine("— e.g. builds, test suites, package installs, long sleeps.")
+            appendLine("If it should have finished quickly, the Termux session may have died:")
+            appendLine("tell the user to reopen Termux, or check Setup → Termux integration →")
+            appendLine("Test connection.")
         }
 
         /**

@@ -331,5 +331,39 @@ class TermuxSmokeTest {
         assertTrue("re-enable path stated", prompt.contains("Test connection"))
     }
 
+    // ============ night session 2026-11-08: the verified-shell timeout split
+
+    /**
+     * The v0.6.16 wall must survive the timeout refactor untouched: when
+     * NOTHING has round-tripped this session, a dispatch timeout is the
+     * setup wall and the block goes up exactly as before.
+     */
+    @Test
+    fun `E6 unverified dispatch timeout still raises the v0_6_16 wall`() {
+        SessionGrants.resetForTest()
+        val err = ShellTool.onDispatchTimeout(30_000)
+        assertTrue("carries the setup diagnosis", err.contains("allow-external-apps=true"))
+        assertTrue("the wall is up", SessionGrants.shellBlocked)
+    }
+
+    /**
+     * Night session 2026-11-08: a VERIFIED shell that misses the deadline
+     * is a slow command, not the setup wall — `sleep 60` at the 30s default
+     * used to brick the session's shell with a Termux-setup misdiagnosis.
+     * No wall; honest unknown-result wording; the retry lever named.
+     */
+    @Test
+    fun `E7 verified dispatch timeout is a slow command - no wall, retry lever named`() {
+        SessionGrants.resetForTest()
+        SessionGrants.markShellVerified()
+        val err = ShellTool.onDispatchTimeout(30_000)
+        assertTrue("names the limit that was actually used", err.contains("timeout_ms=30000"))
+        assertTrue("result unknown - no success or failure claim", err.contains("UNKNOWN"))
+        assertTrue("names the retry lever", err.contains("timeout_ms=120000"))
+        assertFalse("NOT the setup diagnosis", err.contains("allow-external-apps"))
+        assertFalse("the wall must NOT go up for a verified shell",
+            SessionGrants.shellBlocked)
+    }
+
     private fun fail(msg: String): Nothing = throw AssertionError(msg)
 }
