@@ -14,8 +14,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 32
-        versionName = "0.7.3"
+        versionCode = 33
+        versionName = "0.7.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {

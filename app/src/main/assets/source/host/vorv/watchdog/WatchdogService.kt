@@ -45,8 +45,37 @@ class WatchdogService : Service() {
 
     companion object {
         private const val TAG = "Vorv/Watchdog"
-        private const val HEARTBEAT_INTERVAL_MS = 5000L
+
+        /** Heartbeat cadence while a Vorv activity is started (UI visible). */
+        internal const val HEARTBEAT_INTERVAL_MS = 5000L
+
+        /**
+         * M6 (code review, 2026-11): heartbeat cadence while NO activity is
+         * started (app in the background). A 5 s flash write for the whole
+         * process lifetime was storage wear with no diagnostic value while
+         * nothing is on screen — 12x fewer writes while backgrounded. The
+         * writer records the cadence it used IN the heartbeat file, and the
+         * stale check below adapts to it, so the backoff can never be
+         * misread as a dead process.
+         */
+        internal const val HEARTBEAT_BACKGROUND_INTERVAL_MS = 60_000L
+
         private const val RESTART_DELAY_MS = 1500L
+
+        /** Cadence for the next heartbeat: fast in the foreground, backed off otherwise. */
+        internal fun heartbeatIntervalMs(foreground: Boolean): Long =
+            if (foreground) HEARTBEAT_INTERVAL_MS else HEARTBEAT_BACKGROUND_INTERVAL_MS
+
+        /**
+         * The heartbeat is stale when it is older than THREE written
+         * cadences. [cadenceMs] is the cadence the writer actually recorded
+         * (null for legacy 3-line files, which follow the 5 s rule). The
+         * isMainProcessRunning() gate in checkMainProcessHealth stays the
+         * real discriminator — the backoff only stretches how long a
+         * backgrounded-but-alive process may sit between writes.
+         */
+        internal fun heartbeatIsStale(ageMs: Long, cadenceMs: Long?): Boolean =
+            ageMs >= 3 * maxOf(HEARTBEAT_INTERVAL_MS, cadenceMs ?: HEARTBEAT_INTERVAL_MS)
 
         /** Binder protocol: main registers its death token. */
         private const val TRANSACT_REGISTER = 1
@@ -82,21 +111,37 @@ class WatchdogService : Service() {
          * process lifetime and b) breaks crash detection whenever external
          * storage is unmounted or slow to mount at boot. Both processes of
          * this app share filesDir, so the watchdog reads the same path.
+         * The writer also backs off to [HEARTBEAT_BACKGROUND_INTERVAL_MS]
+         * while no activity is started, and records that cadence in the
+         * file (line 4) so the stale check adapts to the backoff.
          */
         internal fun heartbeatFile(context: Context): File =
             File(context.filesDir, "watchdog/heartbeat.txt")
 
-        fun writeHeartbeat(context: Context, step: String) {
+        /**
+         * One-shot per process: the legacy external heartbeat can only come
+         * from an OLDER app version (this code never writes there), so
+         * sweeping it on the first write of this process is sufficient and
+         * saves a getExternalFilesDir() resolution on every later write.
+         */
+        @Volatile
+        private var legacyExternalSwept = false
+
+        fun writeHeartbeat(context: Context, step: String, cadenceMs: Long = HEARTBEAT_INTERVAL_MS) {
             runCatching {
                 // M6: sweep the pre-M6 external heartbeat if one still exists
-                // from an older install — delete() on a missing file is a
-                // cheap no-op, so this needs no one-shot flag and can never
-                // leave a stale file as a false signal.
-                File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt").delete()
+                // from an older install — once per process (see above), so it
+                // can never leave a stale file as a false signal.
+                if (!legacyExternalSwept) {
+                    File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt").delete()
+                    legacyExternalSwept = true
+                }
                 val file = heartbeatFile(context)
                 file.parentFile?.mkdirs()
                 val ts = System.currentTimeMillis()
-                file.writeText("$ts\n$step\npid=${Process.myPid()}\n")
+                // Line 4 records the cadence the writer is running at, so
+                // the watchdog's stale threshold adapts to the M6 backoff.
+                file.writeText("$ts\n$step\npid=${Process.myPid()}\ncadence=$cadenceMs\n")
             }
         }
     }
@@ -277,8 +322,10 @@ class WatchdogService : Service() {
         val heartbeatPid = lines.firstOrNull { it.startsWith("pid=") }
             ?.removePrefix("pid=")?.toIntOrNull()
 
+        val cadenceMs = lines.firstOrNull { it.startsWith("cadence=") }
+            ?.removePrefix("cadence=")?.toLongOrNull()
         val ageMs = System.currentTimeMillis() - heartbeatTs
-        if (ageMs < 3 * HEARTBEAT_INTERVAL_MS) return
+        if (!heartbeatIsStale(ageMs, cadenceMs)) return
 
         // The heartbeat's owner must be gone (or unidentifiable) AND the
         // main process must not be running.

@@ -160,8 +160,13 @@ class VorvApplication : Application() {
         BootTracer.step(this, "init_model_repo")
         modelRepository = ModelRepository(this)
 
+        // M6 (code review, 2026-11): track whether any activity is started —
+        // the heartbeat backs off while the app sits in the background.
+        registerActivityLifecycleCallbacks(foregroundTracker.lifecycleCallbacks())
+
         // Start a background heartbeat writer — keeps the watchdog informed
-        // that this process is alive and which step it's on.
+        // that this process is alive and which step it's on. Fast (5 s)
+        // while the UI is visible, backed off (60 s) otherwise.
         startHeartbeatWriter()
 
         // One-shot migration: plaintext DataStore API key → encrypted storage (C-5).
@@ -179,19 +184,38 @@ class VorvApplication : Application() {
         Application.getProcessName() != packageName
 
     /**
-     * Background thread that writes a heartbeat every 5s. The watchdog reads
-     * this to detect when this process has died (stale heartbeat = crash).
+     * Background thread that writes a heartbeat at the FOREGROUND cadence
+     * (5 s) or the BACKGROUND cadence (60 s — M6 backoff: no flash writes
+     * every 5 s for the whole process lifetime while nothing is on screen).
+     * The watchdog reads this to detect when this process has died (stale
+     * heartbeat = crash); the written cadence line lets it adapt the stale
+     * threshold, so the backoff can never read as a death. The sleep is
+     * sliced (1 s) so a foreground/background flip changes the cadence
+     * within a second — without ever writing faster than the current
+     * cadence allows.
      */
     private var heartbeatThread: Thread? = null
     @Volatile private var heartbeatRunning = false
+
+    /** M6: foreground/background state driving the heartbeat cadence. */
+    private val foregroundTracker = ForegroundTracker()
 
     private fun startHeartbeatWriter() {
         heartbeatRunning = true
         heartbeatThread = Thread {
             while (heartbeatRunning) {
                 try {
-                    host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "alive")
-                    Thread.sleep(5000)
+                    val cadence = host.vorv.watchdog.WatchdogService
+                        .heartbeatIntervalMs(foregroundTracker.isForeground)
+                    host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "alive", cadence)
+                    var remaining = cadence
+                    while (remaining > 0 && heartbeatRunning) {
+                        val slice = if (remaining < 1000) remaining else 1000
+                        Thread.sleep(slice)
+                        remaining -= slice
+                        if (host.vorv.watchdog.WatchdogService
+                                .heartbeatIntervalMs(foregroundTracker.isForeground) != cadence) break
+                    }
                 } catch (_: InterruptedException) {
                     break
                 } catch (_: Exception) { /* keep going */ }

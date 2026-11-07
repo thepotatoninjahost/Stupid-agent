@@ -1,3 +1,71 @@
+# Changelog — v0.7.4 "The Heartbeat Learns to Rest"
+
+Post-sweep verification audit + the one gap it found, closed.
+
+## The audit: every review finding re-checked against the code
+
+After the v0.7.2 "Full Sweep" landed, every one of the 25 review findings
+was re-verified against the actual code at HEAD — mechanism, honesty, and
+the regression test that pins it — rather than trusting the sweep's own
+commit message. Result: 24 of 25 verified FIXED with real implementations
+and real tests (M1's full Room stack + migration, M4's byte-true fetch cap
+with UTF-8 tail trimming, M9's SAF rename honesty, M14's charge-only-on-
+dispatch, L1's tightened action heuristic, …). Hygiene: the production and
+test trees contain zero TODO / FIXME / STOPSHIP / @Ignore / "not
+implemented" hits; the source mirror is byte-identical to the live tree
+(all 56 Kotlin files at audit time, `cmp`-verified; v0.7.4 adds
+ForegroundTracker to both trees).
+
+## M6 upgraded from "moved" to the demanded mechanism
+
+The audit found exactly one substitution: the review demanded the 5 s
+heartbeat BACK OFF when no Activity is resumed, and the sweep had instead
+moved the file to internal storage (a real improvement — no external-flash
+wear, crash detection survives unmounted external storage — but the writes
+still fired every 5 s for the whole process lifetime). v0.7.4 implements
+the mechanism as demanded, and keeps the storage fix:
+
+- New ForegroundTracker: counts STARTED activities via
+  Application.ActivityLifecycleCallbacks (main-thread single writer,
+  volatile read). Foreground = at least one visible activity.
+- The heartbeat writer picks its cadence from the tracker: 5 s while the
+  UI is visible, 60 s while backgrounded — 12x fewer flash writes when
+  the app simply sits in the background.
+- The heartbeat file records the cadence it was written at (line 4,
+  `cadence=...`), and the watchdog's stale rule is now adaptive
+  (`heartbeatIsStale`: stale = older than 3 written cadences). A
+  backgrounded-but-alive main process can therefore NEVER be declared
+  dead because of the backoff; the isMainProcessRunning() process check
+  stays the real discriminator, and binder death remains the primary,
+  immediate signal.
+- The sleep is sliced (1 s) so switching foreground/background changes
+  the cadence within a second — without ever writing faster than the
+  current cadence allows.
+- The one-shot legacy-external-file sweep replaces a per-write
+  getExternalFilesDir() resolution (the legacy file can only come from an
+  older app version, so one sweep per process is provably sufficient).
+
+Tests: WatchdogHeartbeatPathTest grows 6 backoff tests (cadence line
+recorded, cadence-by-state, stale rule at both cadences, legacy-file rule,
+one-shot sweep) and a new ForegroundTrackerTest pins the counting rules
+PLUS the real wiring — a live activity start/stop cycle driven through
+Robolectric's controller flips the tracker exactly as the framework will
+on device. 11 new tests total.
+
+## The stale v1.0 release is retired
+
+The Releases page offered two artifacts: the rolling `ci-latest` build and
+`v1.0-00a4ce2` — a 170 MB debug APK from 2026-10-31 that predates every
+single fix (root causes R2 and R3 included) under a tag that says v1.0
+while the app was at 0.7.0. The review's fix plan ordered it retired; it
+is now deleted from the release surface (the git tag and its commit remain
+in history). A phone user can no longer download a known-broken build.
+The historical transition cost is unchanged: one uninstall if the
+v1.0-era keystore is installed, never again after (committed debug
+keystore since v0.7.0).
+
+Version 0.7.4 (versionCode 33).
+
 # Changelog — v0.7.3 "Never Guess"
 
 One rule added to the HARD RULES the kernel sends with every task: NEVER
