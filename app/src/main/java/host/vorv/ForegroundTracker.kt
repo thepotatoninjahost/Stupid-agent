@@ -2,6 +2,7 @@ package host.vorv
 
 import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 
 /**
  * M6 (code review, 2026-11): the heartbeat writer must BACK OFF when no
@@ -43,12 +44,25 @@ internal class ForegroundTracker {
     /** Wires this tracker into the Application's lifecycle callbacks. */
     fun lifecycleCallbacks(): Application.ActivityLifecycleCallbacks =
         object : Application.ActivityLifecycleCallbacks {
+            // The framework interface keeps all seven methods ABSTRACT at
+            // compileSdk 35 (no default implementations), so every one is
+            // overridden explicitly; only started/stopped carry logic.
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+
             override fun onActivityStarted(activity: Activity) {
                 activityStarted()
             }
 
+            override fun onActivityResumed(activity: Activity) = Unit
+
+            override fun onActivityPaused(activity: Activity) = Unit
+
             override fun onActivityStopped(activity: Activity) {
                 activityStopped()
             }
+
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+
+            override fun onActivityDestroyed(activity: Activity) = Unit
         }
 }
