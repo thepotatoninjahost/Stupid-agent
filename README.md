@@ -12,7 +12,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 ✅ **Cloud LLM**: GLM-4.7-Flash via Z.ai — free tier, $0/token, the DEFAULT (optional paid models: GLM-5.3-Flash, GLM-5.3, GLM-4.6; needs your API key, stored encrypted at rest; automatic offline fallback to the local model when the signal drops).
 ✅ **16 tools, all wired** (list below). The 16th, `self_fix`, lets the user tell Vorv in chat to fix or change its own code — every patch is compiled on device, verified complete, signed, user-approved, and rolled back automatically if it causes a crash. js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
 ✅ **Verifiable logging**: every tool call persists real input/output/duration/exit-code; long outputs are stored in full and viewable from the Tasks screen.
-⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.6.x series is a security/correctness remediation release — see [CHANGES.md](CHANGES.md).
+⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.7.x series fixes all 25 findings of the 2026-11 full code review — including the three root causes of "never usable" (no installable build ever published, the stale key gate, local-mode mid-task deaths) — see [CHANGES.md](CHANGES.md).
 
 ---
 
@@ -37,7 +37,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 ├─────────────────────────────────────────────────────────────┤
 │  LLM (kernel picks)              │  Tool Registry (16)        │
 │   ├─ Local: GenieX → Hexagon NPU  │  memory_write/recall      │
-│   └─ Cloud: GLM-4.6 (optional)    │  js_exec (Rhino sandbox)  │
+│   └─ Cloud: GLM-4.7-Flash (free)  │  js_exec (Rhino sandbox)  │
 │                                   │  python_exec (sandboxed)  │
 │                                   │  file_read/write/list     │
 │                                   │  web_search / web_fetch   │
@@ -47,8 +47,8 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 │                                   │  browser_automate         │
 ├─────────────────────────────────────────────────────────────┤
 │  Persistence                                                  │
-│   Room v2 (episodes, knowledge+FTS, skills, tasks,            │
-│     tool_calls w/ full-output files, artifacts)               │
+│   Room v3 (episodes, knowledge+FTS, skills, tasks,            │
+│     chat_messages, tool_calls, artifacts)                     │
 │   EncryptedSharedPreferences (API key, Keystore-backed)       │
 │   DataStore (workspace URI, modes, reminder registry)         │
 │   SAF DocumentFile (user-granted workspace)                   │
@@ -63,7 +63,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ### Install
 
-1. Download the latest **signed release APK** from the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases) (CI publishes `vX.Y.Z-<sha>` tags on every merge to main). Pre-releases are marked as such — check the "Pre-releases" section.
+1. From the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases), download **`app-debug.apk`** from the latest **`ci-latest` pre-release** — CI deletes and rebuilds it on every push to `main`, and the debug keystore is committed since v0.7.0, so it installs and updates in place. The `app-release-unsigned.apk` asset is for developers only. A signed release build is **not** published yet (it requires the `RELEASE_KEYSTORE_*` secrets — see DEVELOPMENT.md).
 2. On your S25: tap the APK → Settings → allow install from Chrome.
 3. Open **Vorv**.
 4. Grant the notification permission when prompted (needed by `notify` and `schedule`).
@@ -77,7 +77,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ### Enable cloud LLM (optional)
 
-Default mode is **cloud with no key** (idle until you add one). To use cloud mode with GLM-4.6:
+Default mode is **cloud with no key** (idle until you add one). Saving a key activates cloud mode on the **default free model, GLM-4.7-Flash**; the paid models (GLM-5.3-Flash, GLM-5.3, GLM-4.6) are a picker choice in Setup:
 
 1. Get a free API key at `z.ai/manage-apikey`.
 2. Open the **Setup** tab → paste your key → **Save Key**.
@@ -148,8 +148,8 @@ Before declaring "done", all 8 must pass on a real S25:
 
 GitHub Actions on every push to `main`, `feature/**`, `fix/**`:
 1. **test** — unit tests (JUnit + Robolectric) + the Python sandbox self-test.
-2. **build** — debug APK (artifact) + release APK (R8-minified; signed when the `RELEASE_KEYSTORE_*` secrets exist).
-3. **publish** (main only, keystore required) — GitHub Release with the **signed release APK**. A debuggable debug build is never the installable artifact.
+2. **build** — debug APK + R8-minified unsigned release APK (7-day artifacts).
+3. **publish** (main only) — the rolling **`ci-latest` pre-release** is deleted and rebuilt with `app-debug.apk` (debug-signed — the honest installable build) and `app-release-unsigned.apk`, and the step hard-fails if either asset is missing. A separately **signed** release is published only when the `RELEASE_KEYSTORE_*` secrets are configured (see DEVELOPMENT.md).
 
 Local build (JDK 17, Android SDK 35, Python 3.11 for Chaquopy):
 ```
