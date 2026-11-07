@@ -108,14 +108,96 @@ class CognitiveKernelTest {
     @Test
     fun `answer with inline citation is not flagged uncited`() = runTest {
         val sink = FakeSink()
-        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("Paris [cite:web:https://x.fr] is in France.", done = true)))
-        val result = kernel(sink, emptyList()).run("t1", "q", llm, null)
+        // Night session 2026-11-08: the citation gate changed this test's
+        // premise. The old version cited [cite:web:...] with ZERO tool
+        // activity and expected a proof chip — that was exactly the
+        // forged-citation exploit. Now the cite must be backed: the web
+        // tool's output really contains the URL.
+        val tool = FakeTool("web_search", ToolResult(true, "top result: https://x.fr", 1))
+        val llm = FakeLlm(listOf(
+            toolUse("web_search", """{"x":"q"}"""),
+            Llm.LlmResponse.Text("Paris [cite:web:https://x.fr] is in France.", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
 
         assertTrue(result.ok)
         assertFalse(result.answer.startsWith("[uncited]"))
         assertEquals(1, result.citations.size)
         assertEquals("web", result.citations[0].type)
         assertTrue(result.answer.contains("[1]"))
+    }
+
+    // ------------- night session 2026-11-08: the citation gate -------------
+
+    @Test
+    fun `unbacked inline citation is stripped to uncited and logged as forged`() = runTest {
+        val sink = FakeSink()
+        val tool = FakeTool("memory_recall", ToolResult(true, "[id=42] topic: porch light", 1))
+        val llm = FakeLlm(listOf(
+            toolUse("memory_recall", """{"x":"porch"}"""),
+            Llm.LlmResponse.Text("Porch light [cite:memory:42], and Mars [cite:memory:99] too.", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertTrue(result.ok)
+        assertEquals("only the backed cite survives", 1, result.citations.size)
+        assertEquals("42", result.citations[0].ref)
+        assertTrue("backed cite is numbered", result.answer.contains("[1]"))
+        assertTrue("forged cite becomes the honesty marker",
+            result.answer.contains("Mars [uncited]"))
+        assertFalse("one valid cite means the answer is not uncited-flagged",
+            result.answer.startsWith("[uncited]"))
+        assertTrue("the forgery is in the verifiable log",
+            sink.episodes.any { it.first == "citation_forged" && it.second.contains("memory:99") })
+    }
+
+    @Test
+    fun `answer whose only citation is forged gets the uncited flag`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text(
+            "Trust me [cite:memory:does-not-exist].", done = true)))
+        val result = kernel(sink, emptyList()).run("t1", "q", llm, null)
+
+        assertTrue(result.ok)
+        assertTrue("no real evidence → the flag is back",
+            result.answer.startsWith("[uncited]"))
+        assertTrue(result.citations.isEmpty())
+        assertTrue(sink.episodes.any { it.first == "citation_forged" })
+    }
+
+    @Test
+    fun `exec citation is backed by a real exec round-trip`() = runTest {
+        val sink = FakeSink()
+        val tool = FakeTool("shell", ToolResult(true, "ok", 1))
+        val llm = FakeLlm(listOf(
+            toolUse("shell", """{"x":"ls"}"""),
+            // The tool-call id lives in message metadata, not output text —
+            // the gate backs exec cites on the round-trip itself.
+            Llm.LlmResponse.Text("Ran it [cite:exec:call-1].", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertEquals(1, result.citations.size)
+        assertFalse(result.answer.startsWith("[uncited]"))
+        assertTrue(sink.episodes.none { it.first == "citation_forged" })
+    }
+
+    @Test
+    fun `failed tool output is not citation evidence`() = runTest {
+        val sink = FakeSink()
+        // A read that FAILED names the file in its error — that must not
+        // make the file citable (citing a file you never read is the
+        // hallucination the gate exists for).
+        val tool = FakeTool("file_read", ToolResult(false, "", 1, error = "No such file: notes.txt"))
+        val llm = FakeLlm(listOf(
+            toolUse("file_read", """{"x":"notes.txt"}"""),
+            Llm.LlmResponse.Text("The notes [cite:file:notes.txt] say hi.", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertTrue(result.citations.isEmpty())
+        assertTrue(result.answer.startsWith("[uncited]"))
+        assertTrue(sink.episodes.any { it.first == "citation_forged" })
     }
 
     @Test

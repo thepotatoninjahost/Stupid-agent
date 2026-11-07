@@ -45,4 +45,35 @@ class CitationStripperTest {
         val r = CitationStripper.strip("Some claim.")
         assertFalse(r.citations.isNotEmpty())
     }
+
+    // ---- night session 2026-11-08: the citation gate (stripValidated) ----
+
+    @Test fun `stripValidated keeps backed tags and numbers them`() {
+        val r = CitationStripper.stripValidated("A [cite:web:u1] B.") { type, ref -> type == "web" && ref == "u1" }
+        assertEquals("A [1] B.", r.text)
+        assertEquals(listOf("u1"), r.citations.map { it.ref })
+        assertTrue(r.forged.isEmpty())
+    }
+
+    @Test fun `stripValidated swaps rejected tags for the uncited marker`() {
+        val r = CitationStripper.stripValidated("A [cite:memory:42] and B [cite:memory:99].") { _, ref -> ref == "42" }
+        assertEquals("A [1] and B [uncited].", r.text)
+        assertEquals(listOf("42"), r.citations.map { it.ref })
+        assertEquals(listOf("99"), r.forged.map { it.ref })
+    }
+
+    @Test fun `stripValidated numbers only the kept citations`() {
+        val r = CitationStripper.stripValidated("X [cite:file:a] Y [cite:file:b] Z [cite:file:c].") { _, ref -> ref != "b" }
+        assertEquals("X [1] Y [uncited] Z [2].", r.text)
+        assertEquals(listOf("a", "c"), r.citations.map { it.ref })
+        assertEquals(listOf("b"), r.forged.map { it.ref })
+    }
+
+    @Test fun `stripValidated rejects everything when nothing is backed`() {
+        val r = CitationStripper.stripValidated("N [cite:tel:555].") { _, _ -> false }
+        assertEquals("N [uncited].", r.text)
+        assertTrue(r.citations.isEmpty())
+        assertEquals(1, r.forged.size)
+        assertEquals("tel", r.forged[0].type)
+    }
 }

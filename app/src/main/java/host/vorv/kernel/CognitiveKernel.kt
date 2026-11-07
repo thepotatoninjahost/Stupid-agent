@@ -62,6 +62,12 @@ class CognitiveKernel(
          *  slow on-device inference time. */
         const val MAX_NUDGES = 1
 
+        /** Night session 2026-11-08: per-family cap for citation-gate
+         *  evidence — generous (a ref can cite iteration-1 output in a
+         *  20-iteration task), bounded so a huge task cannot grow memory
+         *  without limit. */
+        private const val CITATION_EVIDENCE_CAP_CHARS = 65_536
+
         /**
          * v0.6.19 (field finding #8): field recording — the user typed
          * "termux works install the tools you need" and the model answered
@@ -175,6 +181,37 @@ class CognitiveKernel(
         var nudgesUsed = 0
         val rateCounts = HashMap<String, Int>()
 
+        // Night session 2026-11-08 (acceptance-prep audit) — the citation
+        // gate's evidence: a per-family record of what this task's tools
+        // actually returned, so an inline [cite:type:ref] can be checked
+        // against reality instead of being rendered on faith. A
+        // hallucinated [cite:memory:42] used to become a tappable proof
+        // chip and defeat the [uncited] flag; now it is stripped and
+        // logged.
+        val toolEvidence = HashMap<String, StringBuilder>()
+        var execToolCalls = 0
+
+        /**
+         * Night session 2026-11-08: is this inline citation backed by real
+         * tool activity in THIS task? memory/web/file need an exact
+         * tool-captured citation match or the ref appearing in a successful
+         * same-family tool's output. exec is looser on purpose: models
+         * honestly cite the tool-call id, which lives in message metadata
+         * rather than output text (observed live in acceptance test #1's
+         * [exec] chip) — any real exec round-trip this task backs it, and
+         * the chip links to the verifiable task log either way.
+         */
+        fun inlineCiteBacked(type: String, ref: String): Boolean = when (type) {
+            "memory", "web", "file" ->
+                toolCitations.any { it.type == type && it.ref == ref } ||
+                    toolEvidence[type]?.contains(ref) == true
+            "exec" ->
+                toolCitations.any { it.type == "exec" && it.ref == ref } ||
+                    execToolCalls > 0 ||
+                    toolEvidence["exec"]?.contains(ref) == true
+            else -> false
+        }
+
         // v0.6.16 retry-loop backstop (field finding #4): the same tool
         // failing over and over used to spin the loop until the iteration
         // cap — the field recording shows a model re-calling a dead shell
@@ -277,8 +314,23 @@ class CognitiveKernel(
                         }
 
                         // Done. Check for inline citations, post answer.
-                        val stripped = CitationStripper.strip(resp.content)
+                        // Night session 2026-11-08 — the citation gate: an
+                        // inline tag this task's real tool activity does
+                        // not back is swapped for [uncited] (rule 4's own
+                        // marker), never rendered as a proof chip.
+                        val stripped = CitationStripper.stripValidated(resp.content) { t, r ->
+                            inlineCiteBacked(t, r)
+                        }
                         inlineCitations = stripped.citations
+                        if (stripped.forged.isNotEmpty()) {
+                            val refs = stripped.forged.joinToString(", ") { c -> ("${c.type}:${c.ref}").take(60) }
+                            _trace.emit(TraceStep.Error(
+                                "stripped ${stripped.forged.size} unbacked citation tag(s): $refs"))
+                            eventSink.logEpisode(
+                                "citation_forged", refs.take(200),
+                                "{\"iteration\":$iterations,\"taskId\":\"$taskId\",\"count\":${stripped.forged.size}}",
+                            )
+                        }
                         // M2 (code review, 2026-11): finish_reason=length means
                         // the engine ran out of tokens mid-answer. Delivering
                         // it as a final answer was a lie by omission — the
@@ -411,6 +463,26 @@ class CognitiveKernel(
 
                             // Capture citation
                             result.citation?.let { toolCitations.add(it) }
+
+                            // Night session 2026-11-08: accumulate the
+                            // evidence an inline citation can point at —
+                            // the successful output of same-family tools.
+                            // Failed calls prove nothing (a file that
+                            // errored on read must not become citable), so
+                            // only ok results record text evidence; exec
+                            // still counts round-trips (the command RAN —
+                            // its exit code is in the verifiable log).
+                            citationFamily(tc.name)?.let { family ->
+                                if (family == "exec") execToolCalls++
+                                if (result.ok) {
+                                    val sb = toolEvidence.getOrPut(family) { StringBuilder() }
+                                    if (sb.length < CITATION_EVIDENCE_CAP_CHARS) {
+                                        sb.append(result.output.take(LLM_VISIBLE_TOOL_OUTPUT_CHARS))
+                                        if (result.stderr.isNotBlank()) sb.append('\n').append(result.stderr.take(500))
+                                        result.citation?.let { sb.append('\n').append(it.ref) }
+                                    }
+                                }
+                            }
 
                             _trace.emit(TraceStep.ToolEnd(iterations, tc.name, result))
 
@@ -575,6 +647,20 @@ class CognitiveKernel(
                 }
             }
         }
+    }
+
+    /**
+     * Night session 2026-11-08: which tool family's output can back which
+     * citation type. Types are the system prompt's rule-3 set
+     * (memory, web, exec, file); notify, schedule, app_intent and
+     * self_fix produce no citable evidence.
+     */
+    private fun citationFamily(toolName: String): String? = when (toolName) {
+        "memory_write", "memory_recall" -> "memory"
+        "web_search", "web_fetch", "browser_automate" -> "web"
+        "file_list", "file_read", "file_write" -> "file"
+        "shell", "js_exec", "python_exec" -> "exec"
+        else -> null
     }
 
     private fun estChars(m: Llm.Message): Int = m.content.length + m.toolCalls.sumOf { it.arguments.length + it.name.length }
