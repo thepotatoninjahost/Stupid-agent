@@ -135,7 +135,7 @@ class WatchdogHeartbeatPathTest {
     }
 
     @Test
-    fun `the legacy external sweep is one-shot per process`() {
+    fun `the legacy external sweep runs on every write`() {
         val legacy = File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt")
         legacy.parentFile?.mkdirs()
         legacy.writeText("1234\nancient\npid=999\n")
@@ -144,11 +144,13 @@ class WatchdogHeartbeatPathTest {
         assertFalse("first write sweeps the legacy file", legacy.exists())
 
         // A legacy file reappearing mid-process (impossible in practice —
-        // only an OLD app version writes there) is left alone: the sweep is
-        // one-shot per process, not a syscall on every write.
+        // only an OLD app version writes there) would STILL be swept: the
+        // sweep is stateless and unconditional, so no write can ever leave
+        // a stale external file behind as a false crash signal.
         legacy.parentFile?.mkdirs()
         legacy.writeText("1234\nancient\npid=999\n")
-        WatchdogService.writeHeartbeat(context, "second_write")
-        assertTrue("one-shot: the second write does not re-sweep", legacy.exists())
+        WatchdogService.writeHeartbeat(context, "second_write_sweeps_too")
+        assertFalse("second write sweeps it again — stateless", legacy.exists())
+        assertTrue("internal heartbeat present", WatchdogService.heartbeatFile(context).exists())
     }
 }

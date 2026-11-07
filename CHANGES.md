@@ -41,16 +41,21 @@ the mechanism as demanded, and keeps the storage fix:
 - The sleep is sliced (1 s) so switching foreground/background changes
   the cadence within a second — without ever writing faster than the
   current cadence allows.
-- The one-shot legacy-external-file sweep replaces a per-write
-  getExternalFilesDir() resolution (the legacy file can only come from an
-  older app version, so one sweep per process is provably sufficient).
+- The legacy external file is swept on EVERY heartbeat write — stateless
+  and unconditional (delete() on a missing file is a no-op, and the
+  backoff made writes 12x rarer in the background), so no write can ever
+  leave a stale external file behind as a false crash signal. An earlier
+  draft made this sweep one-shot per process; that carried process-level
+  static state for a negligible saving and was dropped before merge
+  (Robolectric shares statics across tests, and the state broke the
+  pre-existing sweep test).
 
 Tests: WatchdogHeartbeatPathTest grows 6 backoff tests (cadence line
 recorded, cadence-by-state, stale rule at both cadences, legacy-file rule,
-one-shot sweep) and a new ForegroundTrackerTest pins the counting rules
-PLUS the real wiring — a live activity start/stop cycle driven through
-Robolectric's controller flips the tracker exactly as the framework will
-on device. 11 new tests total.
+stateless sweep-on-every-write) and a new ForegroundTrackerTest pins the
+counting rules PLUS the real wiring — a live activity start/stop cycle
+driven through Robolectric's controller flips the tracker exactly as the
+framework will on device. 11 new tests total.
 
 ## The stale v1.0 release is retired
 

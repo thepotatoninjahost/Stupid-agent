@@ -118,24 +118,16 @@ class WatchdogService : Service() {
         internal fun heartbeatFile(context: Context): File =
             File(context.filesDir, "watchdog/heartbeat.txt")
 
-        /**
-         * One-shot per process: the legacy external heartbeat can only come
-         * from an OLDER app version (this code never writes there), so
-         * sweeping it on the first write of this process is sufficient and
-         * saves a getExternalFilesDir() resolution on every later write.
-         */
-        @Volatile
-        private var legacyExternalSwept = false
-
         fun writeHeartbeat(context: Context, step: String, cadenceMs: Long = HEARTBEAT_INTERVAL_MS) {
             runCatching {
                 // M6: sweep the pre-M6 external heartbeat if one still exists
-                // from an older install — once per process (see above), so it
-                // can never leave a stale file as a false signal.
-                if (!legacyExternalSwept) {
-                    File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt").delete()
-                    legacyExternalSwept = true
-                }
+                // from an older install — on EVERY write, stateless.
+                // delete() on a missing file is a cheap no-op (and the M6
+                // backoff made writes 12x rarer in the background), so the
+                // sweep stays unconditional: no state to leak, and no write
+                // can ever leave a stale external file behind as a false
+                // crash signal.
+                File(context.getExternalFilesDir(null), "watchdog/heartbeat.txt").delete()
                 val file = heartbeatFile(context)
                 file.parentFile?.mkdirs()
                 val ts = System.currentTimeMillis()
