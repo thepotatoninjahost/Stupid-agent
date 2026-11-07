@@ -130,7 +130,7 @@ Before declaring "done", all 8 must pass on a real S25:
 7. **Scheduled task.** "Remind me in 5 minutes to check the build." WorkManager job enqueued. 5 min later, notification fires (even if app killed).
 8. **Verifiable log.** Open any past task in Tasks screen and expand it. Every tool call shows real input, real output, real duration — with "View full output" for long results. Nothing paraphrased or invented.
 
-**Status:** NOT yet verified on-device — the maintainer must run them.
+**Status:** 2 of 8 passed on-device (2026-11-07/08 night session): #1 offline boot, #2 multi-step loop on the cloud path — the local-fallback run completed the loop but not the task (defects + receipts in [ACCEPTANCE_LOG.md](ACCEPTANCE_LOG.md)). #3–#8 pending; the exact prompts for the next session are in the log too.
 
 ---
 
