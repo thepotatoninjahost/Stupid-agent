@@ -194,3 +194,22 @@ Single root cause, now fixed at the architecture level.
 **Status: still 2 of 8 passed (#1, #2-cloud). v0.7.5 adds D-20/20:32-a…e
 fixes; the six pending prompts above are unchanged, and #5's retry loop
 should now survive its own timeout notice.**
+
+### v0.7.5 build receipts (CI)
+
+- Run 42469571677 on `e5a0b92`: unit tests + sandbox **success**, debug +
+  release APKs **success**, publish **success** (2026-11-08 10:10 UTC).
+  336 unit tests green, including the 9 new ones (7 ConversationPrompt,
+  crash_logs citation backing, rule-13 prompt pin).
+- `ci-latest` pre-release rebuilt: `app-debug.apk` (165 MB, debug-signed,
+  installable) + `app-release-unsigned.apk` (102 MB). Install the debug APK.
+- Three earlier runs failed for reasons worth recording: 42467841310/attempt
+  2 and 42468502389 died on GitHub's release-CDN 504 outage (first the
+  Gradle 8.9 distribution, then Maven Central's GitHub-hosted
+  kotlin-compiler-embeddable) — fixed by the hash-pinned Tencent wrapper
+  mirror and mirror-first Maven repositories, both verified bit-identical /
+  direct-serving before switching, both marked temporary; 42469102622
+  caught a missing import and a REAL design flaw: ConversationPrompt's
+  budget walk dropped the newest turns instead of the oldest — the exact
+  amnesia it exists to fix. Fixed by walking newest→oldest; all 21
+  assertions verified locally against an exact Python port before the push.
