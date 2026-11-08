@@ -200,15 +200,27 @@ class CognitiveKernel(
          * rather than output text (observed live in acceptance test #1's
          * [exec] chip) — any real exec round-trip this task backs it, and
          * the chip links to the verifiable task log either way.
+         *
+         * M-4 (code review, 2026-11): the evidence fallback used to be a
+         * raw `contains(ref)` SUBSTRING match — a hallucinated
+         * `[cite:web:example.com]` passed whenever "example.com" appeared
+         * inside ANY web output substring, including inside an unrelated
+         * URL like "https://notexample.community/...", and a two-char ref
+         * like "42" matched almost anything. The fallback is now
+         * [evidenceContainsRef]: length-gated (>= 4 chars) and
+         * word-boundary-delimited, so the ref must appear as a WHOLE token
+         * ("report.txt" still matches inside "…/report.txt" — boundaries
+         * sit at the slashes — while "example.com" no longer matches inside
+         * "notexample.community"). The exact-match path is unchanged.
          */
         fun inlineCiteBacked(type: String, ref: String): Boolean = when (type) {
             "memory", "web", "file" ->
                 toolCitations.any { it.type == type && it.ref == ref } ||
-                    toolEvidence[type]?.contains(ref) == true
+                    toolEvidence[type]?.let { evidenceContainsRef(it.toString(), ref) } == true
             "exec" ->
                 toolCitations.any { it.type == "exec" && it.ref == ref } ||
                     execToolCalls > 0 ||
-                    toolEvidence["exec"]?.contains(ref) == true
+                    toolEvidence["exec"]?.let { evidenceContainsRef(it.toString(), ref) } == true
             else -> false
         }
 
@@ -757,5 +769,45 @@ class CognitiveKernel(
         // pattern as PermissionBridge: zero signature changes, so old
         // registered patches keep working — they simply don't emit the line).
         appendLine(host.vorv.tools.SessionGrants.statusLine())
+    }
+}
+
+/**
+ * M-4 (code review, 2026-11): THE evidence-backing check for inline
+ * `[cite:type:ref]` citations — pure string logic so unit tests pin it.
+ *
+ * The old raw `contains(ref)` substring match let hallucinated refs pass on
+ * accidental partial overlaps: "example.com" matched inside the unrelated
+ * URL "https://notexample.community/...", and a two-character ref like "42"
+ * matched inside almost any output. Now:
+ *
+ *  1. Length gate: refs shorter than [MIN_BACKED_REF_CHARS] never pass the
+ *     evidence fallback (they may still pass the exact-match path).
+ *  2. Word boundaries when the ref's edges are word characters — the ref
+ *     must appear as a whole token. Path components still match
+ *     ("report.txt" inside "…/report.txt" — boundaries at the slashes);
+ *     embedded-in-longer-token matches no longer do.
+ *  3. Refs with non-word edges (":", "/", "primary:" style) fall back to
+ *     plain containment, still length-gated — boundary semantics are
+ *     meaningless there.
+ */
+internal const val MIN_BACKED_REF_CHARS = 4
+
+/** Word char per the REGEX ENGINE's \b semantics ([A-Za-z0-9_]) — ASCII.
+ *  Deliberately NOT Kotlin's Unicode-aware isLetterOrDigit: the boundary
+ *  branch must be taken only when \b can actually fire on the ref's edges,
+ *  so a ref with CJK edges (a workspace folder name in a file URI) takes
+ *  the containment branch instead of a \b that never matches. */
+private fun isRegexWordChar(c: Char): Boolean =
+    c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_'
+
+internal fun evidenceContainsRef(evidence: String, ref: String): Boolean {
+    if (ref.length < MIN_BACKED_REF_CHARS) return false
+    val startsWord = isRegexWordChar(ref.first())
+    val endsWord = isRegexWordChar(ref.last())
+    return if (startsWord && endsWord) {
+        Regex("\\b" + Regex.escape(ref) + "\\b").containsMatchIn(evidence)
+    } else {
+        evidence.contains(ref)
     }
 }
