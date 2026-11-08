@@ -51,20 +51,23 @@ class ConversationPromptTest {
 
     @Test
     fun `local engine keeps a tighter window than cloud`() {
-        val history = (1..12).map { Turn("user", "message number $it") }
+        // Zero-padded markers: "message 12" must not contain "message 1" —
+        // unpadded markers made the assertFalse checks self-defeating
+        // (caught by CI, run 42469102622).
+        val history = (1..12).map { Turn("user", "message %02d here".format(it)) }
 
         val local = ConversationPrompt.build("now", history, localEngine = true)
         val cloud = ConversationPrompt.build("now", history, localEngine = false)
 
         // Local: only the last 4 turns fit.
-        assertFalse(local.contains("message number 1"))
-        assertFalse(local.contains("message number 8"))
-        assertTrue(local.contains("message number 12"))
+        assertFalse(local.contains("message 01 here"))
+        assertFalse(local.contains("message 08 here"))
+        assertTrue(local.contains("message 12 here"))
         // Cloud: the last 10 fit.
-        assertFalse(cloud.contains("message number 1"))
-        assertFalse(cloud.contains("message number 2"))
-        assertTrue(cloud.contains("message number 3"))
-        assertTrue(cloud.contains("message number 12"))
+        assertFalse(cloud.contains("message 01 here"))
+        assertFalse(cloud.contains("message 02 here"))
+        assertTrue(cloud.contains("message 03 here"))
+        assertTrue(cloud.contains("message 12 here"))
     }
 
     @Test
@@ -80,13 +83,20 @@ class ConversationPromptTest {
     @Test
     fun `total budget stops the history with an honest omission note`() {
         // 10 turns × 400 chars = 4000 > cloud budget 3000 → the note must
-        // appear and the whole history must never be included.
-        val history = (1..10).map { Turn("assistant", "y".repeat(400) + " marker $it") }
+        // appear and only the OLDEST turns may be dropped. Markers lead each
+        // turn (head-truncation to 400 chars would eat a trailing marker)
+        // and are zero-padded ("marker-10" must not contain "marker-01").
+        // This test caught a real design flaw on CI (run 42469102622): the
+        // budget walk used to run oldest→newest and silently dropped the
+        // NEWEST turns — the exact amnesia this class exists to fix.
+        val history = (1..10).map { Turn("assistant", "marker-%02d done".format(it) + "y".repeat(400)) }
         val prompt = ConversationPrompt.build("now", history, localEngine = false)
 
         assertTrue(prompt.contains("older turns omitted"))
-        assertFalse(prompt.contains("marker 1"))
-        assertTrue(prompt.contains("marker 10"))
+        assertFalse(prompt.contains("marker-01 done"))
+        assertFalse(prompt.contains("marker-02 done"))
+        assertTrue(prompt.contains("marker-10 done"))
+        assertTrue(prompt.contains("marker-04 done"))
     }
 
     @Test
