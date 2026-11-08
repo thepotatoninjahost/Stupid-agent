@@ -116,9 +116,17 @@ class FileReadTool(private val appContext: Context) : Tool {
                 }
                 if (total >= MAX_READ_BYTES) sb.append("\n…(truncated at $MAX_READ_BYTES chars)")
                 val content = sb.toString()
+                // M-1 (code review, 2026-11): the output cap must announce
+                // itself — the old silent take() handed the model 50 000
+                // chars of a longer file with no sign anything was missing,
+                // so "read the whole file" beliefs were silently wrong.
+                val output = if (content.length > MAX_OUTPUT_CHARS) {
+                    content.take(MAX_OUTPUT_CHARS) +
+                        "\n…(truncated at $MAX_OUTPUT_CHARS chars — file_read caps single reads; use shell/python to page through the rest, or ask for specific sections)"
+                } else content
                 ToolResult(
                     ok = true,
-                    output = content.take(MAX_OUTPUT_CHARS),  // hard cap to keep prompt small
+                    output = output,  // hard cap to keep prompt small, now WITH an honest marker
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("file", file.uri.toString(), "file: $path"),
                 )

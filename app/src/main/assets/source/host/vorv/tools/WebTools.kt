@@ -224,7 +224,10 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
                 val clean = if (isHtml) htmlToText(raw) else raw
                 ToolResult(
                     ok = true,
-                    output = clean.take(8000),
+                    // M-2 (code review, 2026-11): the 8 000-char cap now
+                    // announces itself — a silently cut page reads as the
+                    // COMPLETE text to the model.
+                    output = capWithMarker(clean, MAX_OUTPUT_CHARS),
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("web", url, "url"),
                 )
@@ -281,6 +284,9 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
 
     private companion object {
         const val MAX_BYTES = 2_000_000L
+
+        /** M-2: 8 000 before, same number now — with the honest marker. */
+        const val MAX_OUTPUT_CHARS = 8_000
     }
 }
 

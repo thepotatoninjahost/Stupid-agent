@@ -42,6 +42,21 @@ data class ToolContext(
 )
 
 /**
+ * M-2 (code review, 2026-11): THE shared honest-truncation helper for tool
+ * output caps. The old silent `take(n)` calls (web_fetch 8 000 chars,
+ * browser_automate 6 000, file_read 50 000) handed the model a cut-off text
+ * with no sign anything was missing — so the model believed it had seen the
+ * WHOLE page/file and reasoned on that false belief. Every cap now appends
+ * an explicit marker naming the cap and the workaround. Pure string logic
+ * so unit tests pin the wording.
+ */
+internal fun capWithMarker(text: String, maxChars: Int): String =
+    if (text.length > maxChars) {
+        text.take(maxChars) +
+            "\n…(truncated at $maxChars chars — the source produced more than shown; narrow the request or page through the rest)"
+    } else text
+
+/**
  * Tool contract. Every tool the agent can call implements this.
  *
  * The schema is an OpenAI-style function definition — the LLM

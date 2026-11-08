@@ -107,7 +107,13 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
             "No memories matched '$query'."
         } else {
             results.joinToString("\n") { m ->
-                "[id=${m.id.take(8)}] ${m.topic}: ${m.content.take(200)}"
+                // M-2 family (code review, 2026-11): the 200-char preview
+                // announces itself — the model knows the full memory text
+                // is longer and can ask for it by id.
+                val preview = if (m.content.length > 200) {
+                    m.content.take(200) + "…(memory preview truncated at 200 chars — full text retrievable by id)"
+                } else m.content
+                "[id=${m.id.take(8)}] ${m.topic}: $preview"
             }
         }
         return ToolResult(

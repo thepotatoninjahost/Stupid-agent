@@ -263,14 +263,16 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                         val sel = gson.toJson(selector)
                         "(function(){var el=document.querySelector($sel);return el?el.innerText:'NOT_FOUND';})()"
                     }
-                    evalJs(wv, js).take(6000)
+                    // M-2 (code review, 2026-11): the cap now announces itself —
+                    // a silently cut extraction reads as the COMPLETE page text.
+                    capWithMarker(evalJs(wv, js), MAX_OUTPUT_CHARS)
                 }
                 "run" -> {
                     val js = input.get("js")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing js for run", durationMs = System.currentTimeMillis() - t0)
                     val wv = obtainWebView()
-                    evalJs(wv, js).take(6000)
+                    capWithMarker(evalJs(wv, js), MAX_OUTPUT_CHARS)
                 }
                 else -> return@withContext ToolResult(ok = false, output = "",
                     error = "unknown action: $action", durationMs = System.currentTimeMillis() - t0)
@@ -338,5 +340,14 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             }
             webViewRef.set(null)
         }
+    }
+
+    private companion object {
+        /**
+         * M-2 (code review, 2026-11): 6 000 before, same number now — but
+         * [capWithMarker] appends the honest truncation marker instead of
+         * silently cutting the extraction.
+         */
+        const val MAX_OUTPUT_CHARS = 6_000
     }
 }
