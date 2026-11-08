@@ -3,7 +3,6 @@ package host.vorv.watchdog
 import android.content.Context
 import android.util.Log
 import dalvik.system.DexClassLoader
-import host.vorv.tools.NetworkGuard
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -36,8 +35,14 @@ import java.security.MessageDigest
  *     overrides within the probation window, [quarantineIfCrashed] deletes
  *     the patch at next launch — a fix that makes things worse undoes
  *     itself.
- *  6. MANIFEST FETCHING PINNED. [fetchManifest] only accepts HTTPS URLs on
- *     an allow-listed host set and refuses everything else.
+ *  6. NO REMOTE FETCHING (I-1, code review, 2026-11). Patch manifests are
+ *     written ON DEVICE by the heal pipeline; nothing in the product ever
+ *     downloads a manifest or a dex. A dead `fetchManifest()` (zero
+ *     callers, zero tests — a network-egress surface for a feature that
+ *     does not exist) was removed outright rather than shipped unused:
+ *     smaller attack surface, same functionality. If remote patch
+ *     distribution is ever built, it must arrive with its own review —
+ *     HTTPS-pinned, allow-listed, signature-checked end to end.
  *
  * WHAT STAYS: the feature itself. Patches load, run, and repair the app —
  * now with proof of origin, user approval, and rollback.
@@ -52,11 +57,6 @@ object HotPatcher {
 
     /** Probation window: a crash in the patched class within this window rolls the patch back. */
     private const val PROBATION_MS = 72 * 60 * 60 * 1000L
-
-    /** Hosts patch manifests may be fetched from (HTTPS only). */
-    private val MANIFEST_HOST_ALLOWLIST = setOf(
-        "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
-    )
 
     // ================================================================
     // Boot path
@@ -327,40 +327,6 @@ object HotPatcher {
             val out = JSONObject().put("applied", JSONArray(ids))
             File(patchDir, APPROVED_FILE).writeText(out.toString())
         }
-    }
-
-    // ================================================================
-    // Manifest fetching — pinned to HTTPS allow-listed hosts (C-2)
-    // ================================================================
-
-    /**
-     * Fetch a patch manifest. REFUSES non-HTTPS URLs and hosts outside the
-     * allow-list; every response body must parse as a v2 manifest.
-     */
-    suspend fun fetchManifest(url: String): JSONObject? {
-        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return null
-        val scheme = uri.scheme?.lowercase() ?: ""
-        val host = uri.host?.lowercase() ?: ""
-        if (scheme != "https") {
-            Log.e(TAG, "manifest URL refused: scheme must be https, got '$scheme'")
-            return null
-        }
-        if (host !in MANIFEST_HOST_ALLOWLIST) {
-            Log.e(TAG, "manifest URL refused: host '$host' is not in the allow-list $MANIFEST_HOST_ALLOWLIST")
-            return null
-        }
-        return runCatching {
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .dns(NetworkGuard.PublicDns)
-                .build()
-            val req = okhttp3.Request.Builder().url(url).build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@runCatching null
-                JSONObject(resp.body?.string() ?: return@runCatching null)
-            }
-        }.getOrNull()
     }
 
     // ================================================================

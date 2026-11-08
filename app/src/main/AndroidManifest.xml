@@ -72,10 +72,22 @@
           process death, captures diagnostics from outside, orchestrates
           clean restart so the user sees the app come back instead of
           "Vorv has stopped".
+
+          M-6 (code review, 2026-11): foregroundServiceType="specialUse" so
+          the watchdog can be started via startForegroundService() when the
+          main process boots in the BACKGROUND (WorkManager reminder/crash
+          report wake-ups) — the service promotes itself for milliseconds,
+          demotes immediately, and keeps watching. Without this, background
+          boots on Android 8+ silently started NO watchdog at all.
         -->
         <service
             android:name=".watchdog.WatchdogService"
             android:process=":watchdog"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Crash watchdog: monitors main process health and relaunches after crashes" />
+        </service>
     </application>
 </manifest>

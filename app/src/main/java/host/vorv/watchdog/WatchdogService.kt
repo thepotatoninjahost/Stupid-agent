@@ -1,14 +1,21 @@
 package host.vorv.watchdog
 
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -79,6 +86,31 @@ class WatchdogService : Service() {
 
         /** Binder protocol: main registers its death token. */
         private const val TRANSACT_REGISTER = 1
+
+        /**
+         * M-6 (code review, 2026-11): when the main process boots in the
+         * BACKGROUND (WorkManager waking the app for a reminder or crash
+         * report — not a user tap), plain startService() throws
+         * IllegalStateException on Android 8+ and the old runCatching just
+         * recorded "start_watchdog_failed": NO watchdog for that whole
+         * process lifetime, silently. VorvApplication now retries with
+         * startForegroundService() + this flag; the service promotes itself
+         * to foreground just long enough to satisfy the 5-second rule, drops
+         * the notification again, and keeps running as a background started
+         * service — full crash protection on Android 8–11 background boots,
+         * and on 12+ whenever an FGS exemption applies. (On 12+ with no
+         * exemption the promote call itself is refused; the service stops
+         * honestly and the next INTERACTIVE boot starts the watchdog —
+         * MainActivity's bindService(BIND_AUTO_CREATE) creates the watchdog
+         * process whenever the UI opens, so interactive use always
+         * re-establishes it.) The watchdog is NOT removed — it is upgraded
+         * to survive the exact boots it used to miss.
+         */
+        const val EXTRA_FGS_PROMOTE = "host.vorv.extra.FGS_PROMOTE"
+
+        /** Quiet channel for the momentary foreground promotion (M-6). */
+        private const val FGS_CHANNEL_ID = "vorv_watchdog_fgs"
+        private const val FGS_NOTIF_ID = 3
 
         /**
          * N-L5 (VRA-2026-1103): relaunch circuit breaker. A persistent crash
@@ -195,7 +227,57 @@ class WatchdogService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "Watchdog onStartCommand")
+        // M-6 (code review, 2026-11): background-boot FGS promotion. Started
+        // via startForegroundService() (see VorvApplication), we must call
+        // startForeground() within ~5 s or the system ANR-kills the app. We
+        // promote with a quiet LOW notification, immediately drop back to a
+        // normal background started service, and keep watching — the
+        // notification exists for milliseconds and never lingers.
+        if (intent?.getBooleanExtra(EXTRA_FGS_PROMOTE, false) == true) {
+            val promoted = runCatching { promoteToForegroundBriefly() }
+                .onFailure {
+                    Log.w(TAG, "FGS promotion refused (${it.message}) — Android 12+ " +
+                        "background-start restriction; stopping honestly. The next " +
+                        "interactive boot re-establishes the watchdog.", it)
+                }
+                .isSuccess
+            if (!promoted) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
         return START_STICKY
+    }
+
+    /** M-6: satisfy the startForegroundService contract, then go quiet again. */
+    private fun promoteToForegroundBriefly() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    FGS_CHANNEL_ID,
+                    "Vorv watchdog (crash protection)",
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply { description = "Momentary system requirement while the crash watchdog starts in the background" }
+            )
+        }
+        val notification: Notification = NotificationCompat.Builder(this, FGS_CHANNEL_ID)
+            .setContentTitle("Vorv watchdog")
+            .setContentText("Starting crash protection…")
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
+            .build()
+        // specialUse (matching the manifest) is required on API 34+; ServiceCompat
+        // no-ops the type on older levels where it must not be passed.
+        ServiceCompat.startForeground(
+            this, FGS_NOTIF_ID, notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        )
+        // Immediately return to background priority: the FGS contract is
+        // satisfied, the notification is gone, the service keeps running.
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        Log.i(TAG, "FGS promotion completed and demoted — watchdog running (background boot)")
     }
 
     override fun onDestroy() {

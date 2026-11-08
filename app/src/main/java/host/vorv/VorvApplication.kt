@@ -150,11 +150,39 @@ class VorvApplication : Application() {
 
         // Start the watchdog service in a separate process. It survives this
         // process's crashes and orchestrates clean restarts.
+        //
+        // M-6 (code review, 2026-11): on Android 8+ a BACKGROUND boot
+        // (WorkManager waking the app for a reminder/crash report, not a
+        // user tap) makes plain startService() throw IllegalStateException —
+        // the old runCatching swallowed it and the watchdog silently never
+        // started for that whole process lifetime. Now the failure falls
+        // back to startForegroundService() with the promote flag: the
+        // service briefly satisfies the foreground contract, demotes itself
+        // and keeps watching (full protection on 8–11 background boots; on
+        // 12+ without an FGS exemption the promote is refused and the next
+        // interactive boot re-establishes the watchdog — MainActivity's
+        // bindService creates the watchdog process whenever the UI opens).
+        // The watchdog is never REMOVED to "fix" this — it is upgraded to
+        // survive the exact boots it used to miss.
         BootTracer.step(this, "start_watchdog")
         runCatching {
             val intent = android.content.Intent(this, host.vorv.watchdog.WatchdogService::class.java)
-            startService(intent)
-        }.onFailure { BootTracer.step(this, "start_watchdog_failed", it.message) }
+            try {
+                startService(intent)
+            } catch (bg: IllegalStateException) {
+                // Background-start restriction exists only on API 26+ —
+                // being in this catch implies it, but guard explicitly for
+                // lint and older devices that throw it spuriously.
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    BootTracer.step(this, "start_watchdog_bg", "retrying via foreground service")
+                    val promoted = android.content.Intent(this, host.vorv.watchdog.WatchdogService::class.java)
+                        .putExtra(host.vorv.watchdog.WatchdogService.EXTRA_FGS_PROMOTE, true)
+                    startForegroundService(promoted)
+                } else {
+                    throw bg
+                }
+            }
+        }.onFailure { BootTracer.step(this, "start_watchdog_bg_blocked", it.message) }
 
         // Write initial heartbeat — MAIN process only (H-1).
         host.vorv.watchdog.WatchdogService.writeHeartbeat(this, "app_oncreate")
