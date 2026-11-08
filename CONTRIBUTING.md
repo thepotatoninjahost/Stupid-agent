@@ -20,13 +20,22 @@ engine needs the Hexagon NPU). See [DEVELOPMENT.md](DEVELOPMENT.md).
 4. **Sensitive actions need consent.** Anything that leaves the app, dials,
    shares, launches, or spends the user's money goes through the confirmation
    bridge (`ctx.confirm`) — fail closed when it's absent.
-5. **Secrets never get committed.** Keystores, API keys, tokens — no
-   exceptions, no "it's just a debug key" force-adds.
+5. **Release secrets never get committed.** API keys, tokens and RELEASE
+   key material — no exceptions. One documented, deliberate non-secret
+   exception exists (H-2, code review 2026-11): the DEBUG signing key at
+   `app/vorv-debug.keystore`, pinned since v0.7.0 so CI-built debug APKs
+   update in place — see SECURITY.md ("Secrets") for the full rationale.
+   It signs debug builds only, grants no capabilities, and is never used
+   for release signing. If you catch yourself force-adding anything else
+   with "it's just a debug key", stop — that is exactly what this rule
+   exists to prevent.
 
 ## Workflow
 
 - Branch from `main` using `feature/**` or `fix/**` — CI builds and tests
   every push to those branches, so you can verify green before merging.
+  PRs targeting `main` get the same test + compile gate (I-2, code review
+  2026-11) — including PRs from forks, which previously got no CI at all.
 - Commit style: imperative subject line, honest body. Look at `git log` for
   the house voice ("Fix three real bugs caught by the user in v0.5.0").
 - PRs: describe what changed and why; link the audit finding ID

@@ -139,8 +139,18 @@ Five layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
 logs and healer diagnostics entirely — conversation and tool-call data never
 participate in cloud backup or device transfer; only non-secret settings do).
 - The pre-0.6.0 plaintext copy (DataStore) is migrated once and erased.
-- No secrets are committed to the repository. The previously committed debug
-  keystore was removed; release signing uses GitHub Actions secrets only.
+- No secrets are committed to the repository. Release key material is
+  never committed; release signing uses GitHub Actions secrets only.
+- One deliberate non-secret exception, stated honestly (H-2, code review
+  2026-11): `app/vorv-debug.keystore` — the DEBUG signing key — IS
+  committed, pinned since v0.7.0 so CI-built debug APKs install and update
+  in place over each other. It is not used for release signing, it grants
+  no capabilities (a debug signature cannot update a release install, and
+  anyone can build their own debug-signed APK of any open-source app),
+  and removing it would force reinstall cycles on every `ci-latest`
+  update. Earlier prose here claimed the committed debug keystore "was
+  removed" — that was false and is now corrected. The v1.0-era RELEASE
+  keystore removal claim stands and is accurate.
 
 ## Data
 
@@ -166,8 +176,9 @@ Open a GitHub issue marked **[security]** or contact the maintainer directly.
 
 The on-device self-repair system (crash dialog "Self-repair", the `self_fix`
 tool) can patch exactly the classes with a `PatchRegistry` dispatch point:
-the 16 agent tools, `CognitiveKernel` (via `KernelApi`) and `HealingAgent`
-(via `HealerApi`) — 18 classes. A problem outside that surface (Activity,
+the 17 agent tools, `CognitiveKernel` (via `KernelApi`) and `HealingAgent`
+(via `HealerApi`) — 19 classes, matching `PatchRegistry.DISPATCH_BASES`
+exactly. A problem outside that surface (Activity,
 Application, Service, helpers) is refused with an honest explanation, because
 a patch for such a class would compile but could never actually run.
 

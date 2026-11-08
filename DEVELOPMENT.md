@@ -109,15 +109,52 @@ debuggable build.
   the files live BEFORE committing them (audit L-2: the old text instructed
   committing schemas that the build never produced).
 
+## Dependency upgrade roadmap (I-3, code review 2026-11)
+
+The catalog currently holds **verified, envelope-safe** upgrades (see the
+comment block in `gradle/libs.versions.toml`): every version was
+existence-checked against Google Maven / Maven Central and sits inside the
+Gradle 8.9 / AGP 8.7.x / Kotlin 2.0.21 / compileSdk 35 envelope, so CI
+stays green by construction. OkHttp 4.12.1 in particular carries the
+security backport of the refreshed certificate blocklist (the compromised
+eMudhra intermediates — same fix as OkHttp 5.5.1).
+
+The **major stack migration** is a separate, coordinated change that MUST be
+done on a machine that can run the full build + connected tests, in this
+order (compatibility verified against the official release notes,
+2026-11):
+
+| Step | From → To | Requires first |
+| --- | --- | --- |
+| 1 | Gradle 8.9 → 9.6.x (wrapper + new `distributionSha256Sum`) | — |
+| 2 | AGP 8.7.3 → 9.5.0 | Gradle 9.6, JDK 17 ✓ already |
+| 3 | Kotlin 2.0.21 → 2.4.21 + matching KSP | AGP step (KGP 2.2.10+ is AGP 9.x's baseline) |
+| 4 | Chaquopy 15.0.1 → an AGP-9-compatible release | AGP step (check the Chaquopy changelog first — this is the usual blocker) |
+| 5 | Compose BOM 2025.04.01 → 2026.09.x | compileSdk 36 (AGP 8.9.1+ handles 36) |
+| 6 | OkHttp 4.12.1 → 5.5.1 | review the 5.5.0 DNS API additions (`NetworkGuard.PublicDns` still compiles — the old single-address `lookup` remains supported — but re-run `NetworkGuardTest`) |
+| 7 | Room 2.6.1 → 2.7.x | KSP step (KSP2) |
+
+Rules for whoever executes it: one step per PR, CI green (now including
+`pull_request` runs) before the next, `test_vorv_sandbox.py` green, and no
+step is ever rolled back by deleting a feature to make it compile —
+"never go backwards" applies to the toolchain too.
+
 ## CI pipeline
 
 `.github/workflows/build.yml`:
 
 1. **test** — `./gradlew test` + Python sandbox self-test. SHA-pinned actions.
 2. **build** — assembleDebug + assembleRelease (signed when secrets exist).
+   Artifact uploads and the rolling release run on **push** only.
 3. **publish** (main only, keystore required) — GitHub Release with the signed
    APK. Feature branches build and test only, so you can verify CI is green
    before merging — same flow the project has always used.
+
+I-2 (code review, 2026-11): the workflow ALSO runs on `pull_request`
+targeting main — fork PRs used to get zero CI — and on `dependabot/**`
+pushes — dependency-bump PRs used to get zero CI. PR runs are read-token
+safe: no secrets, no artifact writes, publish/rolling-release steps are
+main-ref gated.
 
 Dependabot watches Gradle deps and GitHub Actions weekly
 (`.github/dependabot.yml`).

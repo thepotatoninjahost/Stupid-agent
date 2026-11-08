@@ -1,3 +1,125 @@
+# Changelog — full code-review remediation (2026-11-08, on top of v0.7.5)
+
+Every code defect from the line-by-line code review, fixed — no downgrades,
+no removed guards. 2 High, 9 Medium, 6 Low, 3 Info, plus regression tests
+for every security-relevant fix. (Detailed per-finding notes live in each
+fix's code comments, tagged with the finding ID. The review's
+test-infrastructure recommendations — AgentViewModel and
+BrowserAutomateTool test suites, an androidTest module, and the
+major-stack migration — remain open by design: they need a real build
+environment and are tracked in DEVELOPMENT.md and the remediation report,
+not silently dropped.)
+
+## High
+
+- **H-1 shell-quote injection**: HealingAgent and TermuxProbe interpolated
+  the user-chosen workspace path into Termux dispatch wrappers inside
+  hand-written quotes — a folder named `x'$(cmd)'` executed arbitrary text
+  in Termux. New `ShellQuote` object is THE single escaper; all three call
+  sites (ShellTool, healer, probe) route through it; the wrapper builders
+  are pure functions pinned by `ShellQuoteTest` (bash word-splitting
+  round-trip over the exact attack payloads), and a real-bash run confirms
+  the pre-fix code fires the injection while the fixed code stays inert.
+- **H-2 false security claims**: SECURITY.md said the committed debug
+  keystore "was removed" while `app/vorv-debug.keystore` is committed
+  (deliberately, since v0.7.0, for update-in-place CI builds). Docs now
+  state the exception honestly with the rationale (removing it would break
+  update-in-place — a downgrade); CONTRIBUTING.md rule 5 aligned.
+
+## Medium
+
+- **M-1/M-2 silent truncation**: file_read's 50 000-char output cap,
+  web_fetch's 8 000, browser_automate's 6 000 and memory_recall's 200-char
+  preview all cut text with no marker — the model believed it had seen the
+  whole thing. New shared `capWithMarker()` announces every cap (Tool.kt);
+  the healer's compiler-error feedback is marked too.
+- **M-3 repair engines outside the ledger**: SelfFixTool/MainActivity built
+  their repair `LocalLlm` directly, outside ModelRepository's H-4 mutex, and
+  doubled NPU memory when the resident engine already was the 7B. New
+  `acquireRepairEngine()` — under the mutex, reuses the resident engine
+  when it IS the strongest repair model, caller-owned otherwise. All three
+  repair sites route through it.
+- **M-4 citation substring matching**: the inline-citation evidence check
+  was a raw `contains(ref)` — "example.com" matched inside
+  "notexample.community…". Now `evidenceContainsRef()`: length-gated (≥4),
+  word-boundary-delimited, regex-metacharacter-safe; pinned by
+  `EvidenceContainsRefTest`.
+- **M-5 tool-count drift**: ToolsScreen listed 16 tools (crash_logs
+  missing), SECURITY.md said 16/18, SettingsScreen said 16. Now 17 tools /
+  19 dispatchable classes everywhere, matching PatchRegistry exactly.
+- **M-6 watchdog dead on background boots**: `startService()` from a
+  WorkManager-woken process throws on Android 8+; the old catch swallowed
+  it silently. Fallback `startForegroundService()` + momentary quiet
+  foreground promotion (manifest specialUse type added) — the watchdog is
+  upgraded to survive the boots it used to miss, never removed.
+- **M-7 swallowed cancellation**: HealingAgent.callLlm's runCatching ate
+  CancellationException — a cancelled heal fought the retry loop. Now
+  rethrown; only real failures are logged.
+- **M-8 consent gate fail-open**: python_exec marked consent BEFORE the
+  dialog; a thrown bridge left it granted so a plain retry ran code
+  unconsented. Tri-state map (pending/granted/absent) — exceptions,
+  denials and cancellations all clean up and re-ask; concurrent same-task
+  calls fail closed honestly. Pinned by `PythonExecConsentTest`.
+- **M-9 secrets in backups**: README claimed the encrypted API-key store
+  was excluded from backups; the rules never excluded it. Both
+  backup_rules.xml and data_extraction_rules.xml now exclude
+  `shared_prefs/vorv_secrets.xml` (cloud backup + device transfer).
+- **M-2-family compiler-error feedback**: the healer's regeneration prompt
+  now says when compiler output was capped.
+
+## Low
+
+- **L-2 DialGuard `^166`**: refused every US number with area code 660–669
+  in international form ("1-660-…" normalizes to "1660…"). Anchored to the
+  real HK shape (exactly 8 digits); tests pin both sides.
+- **L-3 shell straggler files**: a dispatch that outlived its poll wrote
+  out/err/code files after the tool returned — nothing ever deleted them.
+  Every shell call now sweeps `<16hex>.{out,err,code}` files older than
+  10 min (age-gated far beyond the 120 s poll window).
+- **L-4 PatchVerifier field types**: fields were compared by NAME only — a
+  type-changed public field passed verification and broke every caller at
+  runtime. Now name AND type, with the exact expected/actual in the
+  regeneration feedback.
+- **L-5 CloudLlm retried deterministic failures**: HTTP 4xx (bad key, bad
+  request) burned 4 attempts / ~10 s for the same answer. Now a private
+  `NonRetryableLlmException` fails fast; 429/5xx keep their backoff.
+- **L-6 two decoders for one URI family**: SafPaths used Uri.decode while
+  TermuxProbe used java.net.URLDecoder ('+' → space, throw-on-malformed).
+  SafPaths is now pure string logic with ONE Uri.decode-semantics decoder;
+  both consumers share `primaryStorageTreeDocId()`.
+- **L-7 release shipped debug bytecode**: the healer's app_classes.jar was
+  always built from `tmp/kotlin-classes/debug` and embedded in EVERY
+  variant — release self-repair compiled against debug classes. Now a
+  per-variant jar task (packageHealerClasspathDebug/Release) with
+  variant-mapped consumer dependencies.
+
+## Info
+
+- **I-1 dead network surface**: HotPatcher.fetchManifest (zero callers,
+  zero tests, fresh OkHttpClient per call) removed outright — smaller
+  attack surface, same functionality; the class doc now states remote
+  manifest fetching does not exist in the product.
+- **I-2 CI blind spots**: no `pull_request` trigger (fork PRs: zero CI)
+  and `dependabot/**` matched no push pattern (bump PRs: zero CI). Both
+  added; PR runs are read-token-safe (no secrets, no artifact writes,
+  publish steps stay main-gated).
+- **I-3 dependency stack**: verified, envelope-safe upgrades applied
+  (AGP 8.7.3, KSP 1.0.28, OkHttp 4.12.1 — the certificate-blocklist
+  security backport, coroutines 1.10.2, gson 2.13.2, lifecycle 2.8.7,
+  core-ktx 1.15.0, datastore 1.1.7, WorkManager 2.10.0, Compose BOM
+  2025.04.01; every version existence-checked against Google Maven /
+  Maven Central and inside the Gradle 8.9 / Kotlin 2.0.21 / compileSdk 35
+  envelope). The major migration (AGP 9.5 + Gradle 9.6 + Kotlin 2.4 +
+  OkHttp 5.5.1 + Compose 2026.09) is a documented 7-step roadmap in
+  DEVELOPMENT.md — one step per PR, CI green between steps.
+
+**New tests**: ShellQuoteTest (H-1), EvidenceContainsRefTest (M-4),
+PythonExecConsentTest (M-8), DialGuard HK/US cases (L-2), SafPaths
+decoder/agreement cases (L-6). Mirror tree `assets/source/` re-synced
+byte-identical.
+
+---
+
 # Changelog — v0.7.5 "The Crash Vorv Can Finally See"
 
 The 20:32 screen recording, root-caused and fixed: an agent that could not
