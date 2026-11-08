@@ -4,11 +4,21 @@
   uploaded to Google cloud backup — SECURITY.md promises conversation data
   stays local. The database is excluded; only non-secret DataStore settings
   participate in backup.
+
+  M-9 (code review, 2026-11): the ENCRYPTED secrets file
+  (shared_prefs/vorv_secrets.xml — the Z.ai API key at rest) is excluded
+  too. README/SECURITY.md already claimed "excluded from cloud backups";
+  the rules never actually excluded it. The file is ciphertext, but the
+  Android-Keystore master key does NOT participate in backup/transfer — a
+  restore would yield a secret store that can never decrypt again (and
+  blocks clean re-creation). The user re-enters the key on a new install,
+  exactly like every other credential-holding app.
 -->
 <full-backup-content>
     <exclude domain="database" path="vorv.db" />
     <exclude domain="database" path="vorv.db-wal" />
     <exclude domain="database" path="vorv.db-shm" />
+    <exclude domain="sharedpref" path="vorv_secrets.xml" />
     <exclude domain="external" path="crash_logs" />
     <exclude domain="external" path="watchdog" />
     <exclude domain="external" path="healer" />

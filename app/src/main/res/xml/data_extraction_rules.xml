@@ -3,12 +3,22 @@
   Audit M-7: same policy for Android 12+ device transfer / cloud backup —
   conversation and tool-call data (vorv.db), crash logs and healer
   diagnostics never leave the device. Settings (DataStore) do transfer.
+
+  M-9 (code review, 2026-11): the ENCRYPTED secrets file
+  (shared_prefs/vorv_secrets.xml — the Z.ai API key at rest) is excluded
+  from BOTH cloud backup and device transfer. README/SECURITY.md already
+  claimed "excluded from backups"; the rules never actually excluded it.
+  The file is ciphertext, but the Android-Keystore master key does NOT
+  transfer with it — a restored copy could never decrypt again and would
+  block clean re-creation. The user re-enters the key on the new device,
+  exactly like every other credential-holding app.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="database" path="vorv.db" />
         <exclude domain="database" path="vorv.db-wal" />
         <exclude domain="database" path="vorv.db-shm" />
+        <exclude domain="sharedpref" path="vorv_secrets.xml" />
         <exclude domain="external" path="crash_logs" />
         <exclude domain="external" path="watchdog" />
         <exclude domain="external" path="healer" />
@@ -17,6 +27,7 @@
         <exclude domain="database" path="vorv.db" />
         <exclude domain="database" path="vorv.db-wal" />
         <exclude domain="database" path="vorv.db-shm" />
+        <exclude domain="sharedpref" path="vorv_secrets.xml" />
         <exclude domain="external" path="crash_logs" />
         <exclude domain="external" path="watchdog" />
         <exclude domain="external" path="healer" />

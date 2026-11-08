@@ -15,9 +15,13 @@ import host.vorv.ui.theme.*
 
 @Composable
 fun ToolsScreen(state: AgentState) {
-    // Audit N-M3 (VRA-2026-1103): the inventory lists ALL 16 registered tools —
+    // Audit N-M3 (VRA-2026-1103): the inventory lists ALL registered tools —
     // self_fix was missing from this screen entirely, and three other places
-    // counted "15" while AgentViewModel registers 16.
+    // counted "15" while AgentViewModel registers 17.
+    // M-5 (code review, 2026-11): crash_logs (the 17th registered tool,
+    // wired in v0.7.0) was missing from this inventory — the screen showed
+    // "16 tools" while the agent actually has 17. The list now matches
+    // AgentViewModel's tool list one-for-one (memory_write … self_fix).
     val ready = listOf(
         "memory_write" to "Persist a fact for future sessions (Room + FTS4)",
         "memory_recall" to "FTS4 keyword search + LIKE fallback",
@@ -25,6 +29,7 @@ fun ToolsScreen(state: AgentState) {
         "file_read" to "Read a file from granted workspace (SAF, 50KB cap)",
         "file_write" to "Write/overwrite a file in workspace (SAF, 1MB cap)",
         "file_list" to "Recursive list of workspace files (SAF)",
+        "crash_logs" to "Read the agent's own crash evidence: Java crash reports, watchdog detections, boot traces",
         "python_exec" to "Hardened Python 3.11 sandbox: audit hooks, import whitelist, no file/network",
         "web_search" to "Z.ai Web Search API (documented /web_search endpoint)",
         "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",

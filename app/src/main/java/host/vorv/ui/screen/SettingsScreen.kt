@@ -548,7 +548,7 @@ fun SettingsScreen(
         Text(
             "Vorv is a local-first autonomous agent. Coined name — no existing product.\n\n" +
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
-                "16 real tools (including self_fix, which lets you ask Vorv in chat to fix " +
+                "17 real tools (including self_fix, which lets you ask Vorv in chat to fix " +
                     "or change its own code). Local engine: Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU " +
                 "(offline after one 1.8–4.4 GB download). Cloud engine: Z.ai GLM — FREE tier by default " +
                 "(GLM-4.7-Flash), paid models optional, automatic offline fallback.\n\n" +
