@@ -23,6 +23,7 @@ import host.vorv.llm.ModelManager
 import host.vorv.llm.ModelRepository
 import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrowserAutomateTool
+import host.vorv.tools.CrashLogsTool
 import host.vorv.tools.FileListTool
 import host.vorv.tools.FileReadTool
 import host.vorv.tools.FileWriteTool
