@@ -99,4 +99,50 @@ class SafPathsTest {
     fun `plain string that is not a URI is rejected`() {
         assertNull(SafPaths.rawWorkspacePath("/storage/emulated/0/Documents"))
     }
+
+    // ------------------------------------- L-6: one decoder, Uri.decode semantics
+
+    @Test
+    fun `plus stays a literal - never a space - in the decoded docId`() {
+        // L-6: java.net.URLDecoder (the probe's old decoder) turns '+' into
+        // a space — a folder "A+B" would map to "A B". Uri.decode semantics
+        // (the single decoder now) keep the plus literal.
+        val uri = "content://com.android.externalstorage.documents/tree/primary%3AA%2BB"
+        assertEquals("/storage/emulated/0/A+B", SafPaths.rawWorkspacePath(uri))
+    }
+
+    @Test
+    fun `malformed percent escapes pass through and are rejected as non-primary`() {
+        // "primary%ZZ" decodes to itself (Uri.decode semantics: malformed
+        // sequences pass through) — it is not the "primary" volume.
+        val uri = "content://com.android.externalstorage.documents/tree/primary%ZZ"
+        assertNull(SafPaths.rawWorkspacePath(uri))
+    }
+
+    @Test
+    fun `multi-byte utf-8 folder names decode correctly`() {
+        val uri = "content://com.android.externalstorage.documents/tree/primary%3A%E6%A0%91%E8%8E%93%E6%B4%BE%E5%B7%A5%E5%9D%8A"
+        assertEquals("/storage/emulated/0/树莓派工坊", SafPaths.rawWorkspacePath(uri))
+    }
+
+    @Test
+    fun `primaryStorageTreeDocId agrees with rawWorkspacePath on every verdict`() {
+        // L-6's actual guarantee: the Setup checklist (workspaceOnPrimaryStorage)
+        // and the dispatch path (rawWorkspacePath) share ONE parser, so they
+        // can never disagree about a URI again.
+        val uris = listOf(
+            "content://com.android.externalstorage.documents/tree/primary",
+            "content://com.android.externalstorage.documents/tree/primary%3ADocuments",
+            "content://com.android.externalstorage.documents/tree/9016-4EF8%3ADCIM",
+            "content://com.android.providers.downloads.documents/tree/downloads",
+            "content://com.android.externalstorage.documents/document/primary%3Ax",
+            "",
+        )
+        for (u in uris) {
+            assertEquals(
+                SafPaths.primaryStorageTreeDocId(u) != null,
+                SafPaths.rawWorkspacePath(u) != null,
+            )
+        }
+    }
 }

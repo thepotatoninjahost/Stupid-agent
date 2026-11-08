@@ -139,10 +139,22 @@ object PatchVerifier {
         }
 
         // 3. public fields
-        val patchedFieldNames = patched.fields.map { it.name }.toSet()
+        // L-4 (code review, 2026-11): fields are compared by NAME **AND
+        // TYPE**. The old name-only set let a patch change a public field's
+        // type (Long → String, Citation → String, …) and still pass — every
+        // caller then broke at runtime (NoSuchFieldError / verify error on
+        // first access) with the patch already signed and applied. A
+        // type-changed field is now reported as an omission with the exact
+        // expected and actual types, feeding the regeneration prompt.
+        val patchedFields = patched.fields.associate { it.name to it.type }
         for (f in originalClass.fields) {
-            if (f.name !in patchedFieldNames) {
+            val patchedType = patchedFields[f.name]
+            if (patchedType == null) {
                 missingFields.add("field ${f.type.simpleName} ${f.name}")
+            } else if (patchedType != f.type) {
+                missingFields.add(
+                    "field ${f.name} changed type: ${f.type.simpleName} → " +
+                        "${patchedType.simpleName} — keep the original type ${f.type.simpleName}")
             }
         }
 
