@@ -58,7 +58,6 @@ import host.vorv.healer.CrashParser
 import host.vorv.healer.HealerApi
 import host.vorv.healer.HealingAgent
 import host.vorv.healer.PatchProposal
-import host.vorv.llm.LocalLlm
 import host.vorv.llm.ModelManager
 import host.vorv.ui.VorvApp
 import host.vorv.ui.theme.VorvTheme
@@ -407,15 +406,20 @@ class MainActivity : ComponentActivity() {
                     toastMain("No coder model is downloaded — analysis needs one (Setup tab).")
                     return@launch
                 }
-                val llm = LocalLlm(
-                    applicationContext,
-                    repairModel,
-                    ModelManager.repairLabel(repairModel, "crash analysis"),
-                )
+                // M-3 (code review, 2026-11): engine acquisition through the
+                // repository — single H-4 ledger, and REUSE of the resident
+                // engine when it already is the strongest repair model (no
+                // second native instance on the NPU).
+                val handle = app.modelRepository.acquireRepairEngine()
+                val repairLlm = handle.llm
+                if (repairLlm == null) {
+                    toastMain("No coder model is downloaded — analysis needs one (Setup tab).")
+                    return@launch
+                }
                 val bundle = try {
-                    healAgent(llm).produceDiagnosticBundle(crashText, bootTrace)
+                    healAgent(repairLlm).produceDiagnosticBundle(crashText, bootTrace)
                 } finally {
-                    llm.release()
+                    if (handle.owned) repairLlm.release()
                 }
                 toastMain("Analysis saved to ${bundle.bundleDir.absolutePath}")
             } catch (e: Exception) {
@@ -487,20 +491,27 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                val llm = LocalLlm(
-                    applicationContext,
-                    repairModel,
-                    ModelManager.repairLabel(repairModel, "self-repair"),
-                )
+                // M-3 (code review, 2026-11): engine acquisition through the
+                // repository — single H-4 ledger, and REUSE of the resident
+                // engine when it already is the strongest repair model (no
+                // second native instance on the NPU).
+                val handle = app.modelRepository.acquireRepairEngine()
+                val repairLlm = handle.llm
+                if (repairLlm == null) {
+                    onDone(false, "No coder model is downloaded — self-repair needs the " +
+                        "strongest on-device coder model (the 7B; Setup tab). " +
+                        "Nothing was changed.", false)
+                    return@launch
+                }
                 val result = try {
                     val crash = CrashInfo(
                         stackTrace = crashText,
                         bootTrace = bootTrace,
                         crashedClass = CrashParser.extractCrashedClass(crashText),
                     )
-                    healAgent(llm).heal(crash, workspaceUri, onConsent)
+                    healAgent(repairLlm).heal(crash, workspaceUri, onConsent)
                 } finally {
-                    llm.release()
+                    if (handle.owned) repairLlm.release()
                 }
 
                 if (result.success) {

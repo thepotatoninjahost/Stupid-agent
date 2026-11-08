@@ -145,6 +145,63 @@ class ModelRepository(private val appContext: Context) {
         busy = value
     }
 
+    /**
+     * M-3 (code review, 2026-11): single-owner acquisition of the REPAIR
+     * engine (self_fix / crash-dialog self-repair / crash analysis).
+     *
+     * Before this, every repair site constructed its own
+     * `LocalLlm(appContext, bestRepairModel(), …)` DIRECTLY — outside this
+     * repository, outside the mutex. Two consequences:
+     *
+     *  1. Lifecycle discipline (audit H-4: "ModelRepository serializes every
+     *     engine transition behind one Mutex") silently had a hole: repair
+     *     engines were born and died outside the ledger.
+     *  2. Wasted NPU memory: when the resident engine IS the strongest
+     *     repair model (local mode with the 7B selected), the repair path
+     *     STILL built a SECOND native engine for the same weights — two
+     *     GenieX instances on the NPU at once, exactly the doubling the
+     *     crash-dialog busy-check (N-L8) exists to prevent.
+     *
+     * Now the acquisition runs under the mutex, and when the resident
+     * engine is already the best repair model it is REUSED (owned =
+     * false — the repository keeps owning it; the caller must NOT release
+     * it). Otherwise a dedicated engine is built under the lock and handed
+     * to the caller with owned = true — release it in a finally block
+     * exactly like the old direct construction did.
+     *
+     * Strongest-model semantics are unchanged (v0.6.9): the 7B writes the
+     * repairs whenever it is on the device; a weak model never writes
+     * repairs while a stronger one sits on disk. Reuse only happens when
+     * the resident engine IS that strongest model.
+     */
+    suspend fun acquireRepairEngine(): RepairEngineHandle = mutex.withLock {
+        val choice = ModelManager.bestRepairModel()
+            ?: return RepairEngineHandle(null, owned = false)
+        val resident = localLlm
+        if (resident != null && resident.modelId == choice.id) {
+            Log.i(TAG, "repair engine: reusing resident ${choice.id} (no second native instance)")
+            RepairEngineHandle(resident, owned = false)
+        } else {
+            if (resident != null) {
+                Log.i(TAG, "repair engine: ${choice.id} built alongside resident ${resident.modelId} " +
+                    "(time-bounded: caller releases it after the heal)")
+            }
+            RepairEngineHandle(buildEngine(choice), owned = true)
+        }
+    }
+
+    /** The result of [acquireRepairEngine]: the engine, and who owns it. */
+    data class RepairEngineHandle(
+        /** The repair engine, or null when no coder model is downloaded. */
+        val llm: LocalLlm?,
+        /**
+         * True when the CALLER owns this engine and must [LocalLlm.release]
+         * it in a finally block; false when it is the repository's resident
+         * engine (reused) and releasing it would break the running task.
+         */
+        val owned: Boolean,
+    )
+
     private fun buildEngine(choice: ModelChoice): LocalLlm {
         val llm = LocalLlm(
             appContext,

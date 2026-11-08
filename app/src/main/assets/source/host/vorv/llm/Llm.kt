@@ -196,7 +196,15 @@ class CloudLlm(
                             return@use
                         }
                         if (!res.isSuccessful) {
-                            throw RuntimeException("LLM HTTP ${res.code}: ${responseBody.take(300)}")
+                            // L-5 (code review, 2026-11): every other 4xx
+                            // (400 bad request, 401/403 bad key, 404 wrong
+                            // model, …) is DETERMINISTIC — the same request
+                            // will fail identically. The old generic catch
+                            // retried them for up to 4 attempts / ~10 s of
+                            // dead air and burned quota for nothing. These
+                            // now fail fast via [NonRetryableLlmException].
+                            throw NonRetryableLlmException(
+                                "LLM HTTP ${res.code}: ${responseBody.take(300)}")
                         }
                         val json = JsonParser.parseString(responseBody).asJsonObject
 
@@ -233,6 +241,10 @@ class CloudLlm(
                     // it would keep a dead task's worker busy for up to
                     // MAX_ATTEMPTS more calls in the background.
                     throw e
+                } catch (e: NonRetryableLlmException) {
+                    // L-5: deterministic client-side failures fail FAST —
+                    // same request, same answer, no retry theater.
+                    throw e
                 } catch (e: Exception) {
                     lastErr = e.message
                     if (attempt < MAX_ATTEMPTS - 1) {
@@ -245,6 +257,13 @@ class CloudLlm(
 
     companion object {
         private const val MAX_ATTEMPTS = 4
+
+        /**
+         * L-5 (code review, 2026-11): marks a DETERMINISTIC failure (HTTP
+         * 4xx other than 429) that retrying cannot fix — [step] rethrows it
+         * immediately instead of burning the retry budget on it.
+         */
+        private class NonRetryableLlmException(message: String) : RuntimeException(message)
 
         /** Shared client — one connection pool for every CloudLlm instance. */
         private val client: OkHttpClient = OkHttpClient.Builder()

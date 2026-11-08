@@ -192,11 +192,37 @@ class SelfFixTool(
             }
         }
 
-        val llm = LocalLlm(
-            appContext,
-            repairModel,
-            ModelManager.repairLabel(repairModel, "self-fix"),
-        )
+        // M-3 (code review, 2026-11): the repair engine now comes from
+        // ModelRepository (single owner of the native engine lifecycle,
+        // audit H-4) — acquired under its mutex, REUSED when the resident
+        // engine already IS the strongest repair model (no second native
+        // instance on the NPU), and time-bounded-owned otherwise. The old
+        // direct `LocalLlm(...)` construction was a hole in the H-4 ledger
+        // and doubled NPU memory when the 7B was already resident.
+        // Strongest-model semantics are unchanged: bestRepairModel() inside
+        // the repository picks the 7B whenever it is downloaded.
+        val repository = (appContext as? VorvApplication)?.modelRepository
+        val handle = repository?.acquireRepairEngine()
+            ?: run {
+                // Fallback for contexts without a VorvApplication (tests):
+                // the old direct construction, caller-owned. repairModel is
+                // non-null — checked before the Termux gate above.
+                host.vorv.llm.ModelRepository.RepairEngineHandle(
+                    LocalLlm(
+                        appContext,
+                        repairModel,
+                        ModelManager.repairLabel(repairModel, "self-fix"),
+                    ),
+                    owned = true,
+                )
+            }
+        val llm = handle.llm
+            ?: return ToolResult(
+                ok = false, output = "", durationMs = elapsed(t0),
+                error = "No coder model is downloaded — self-fix generates patches with " +
+                    "the strongest on-device coder model (the 7B; Setup tab). " +
+                    "Nothing was changed.",
+            )
         return try {
             // Patch-aware construction: a verified, approved patch may
             // override the healer itself (the heal-the-healer case).
@@ -218,7 +244,9 @@ class SelfFixTool(
 
             formatResult(result, t0, llm.label)
         } finally {
-            llm.release()
+            // Owned engines are released; a REUSED resident engine belongs
+            // to ModelRepository and must survive this call.
+            if (handle.owned) llm.release()
         }
     }
 
