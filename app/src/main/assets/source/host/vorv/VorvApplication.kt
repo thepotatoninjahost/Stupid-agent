@@ -108,12 +108,27 @@ class VorvApplication : Application() {
             val count = BootTracer.incrementCrashCount(this)
             BootTracer.step(this, "previous_boot_crashed", "count=$count")
 
+            // Night session 2026-11-08 (screen recording 20:32 — "this time
+            // no crash report or notification"): a native crash or process
+            // kill fires NO Java handler, so CrashReportWorker writes
+            // nothing and the crash is invisible to the user, the dialog,
+            // the probation gate, and the agent. Before anything reads
+            // crash evidence this boot, SYNTHESIZE a report from what does
+            // exist — the previous boot's breadcrumbs and any watchdog
+            // detection — so the crash is visible to every consumer with
+            // one honest artifact that says what it is.
+            runCatching { synthesizeNativeCrashReportIfMissing() }
+                .onFailure { BootTracer.step(this, "synthesize_native_report_failed", it.message) }
+
             // Probation gate: a patch that was followed by a crash in the
             // class it overrides, within 72h of applying, is rolled back.
             val crashedClass = runCatching {
                 val latest = getLatestCrashLog()
                 latest?.let { f ->
                     host.vorv.healer.CrashParser.extractCrashedClass(f.readText())
+                        // No Java frame? Fall back to the breadcrumbs — the
+                        // last step before death names the culprit class.
+                        ?: host.vorv.healer.CrashParser.inferCrashedClassFromBootTrace(f.readText())
                 }
             }.getOrNull()
             rolledBackPatches = runCatching {
@@ -274,16 +289,128 @@ class VorvApplication : Application() {
     }
 
     /**
-     * Returns the most recent crash log file (written by CrashReportWorker),
-     * or null if none exists. Called by [MainActivity] to display the crash
-     * on next launch.
+     * Returns the most recent crash evidence file, or null if none exists.
+     *
+     * Order of preference (night session 2026-11-08):
+     *   1. newest report in crash_logs/ — a real Java crash log from
+     *      CrashReportWorker, or a synthesized native-crash report;
+     *   2. newest watchdog/crash_detected_*.txt — the watchdog's own
+     *      detection (heartbeat + boot trace). This fallback catches the
+     *      mid-session native crash: the app died after boot completed, the
+     *      watchdog wrote its file and relaunched, the new boot "completed"
+     *      cleanly — so nothing else would ever surface it.
+     *
+     * Called by [MainActivity] to display the crash on next launch, by the
+     * probation gate, and indirectly by the agent's crash_logs tool.
      */
     fun getLatestCrashLog(): java.io.File? {
-        val crashDir = java.io.File(getExternalFilesDir(null), "crash_logs")
-        if (!crashDir.exists()) return null
-        return crashDir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".txt") }
+        val extDir = getExternalFilesDir(null) ?: return null
+        val crashDir = java.io.File(extDir, "crash_logs")
+        val newestReport = crashDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
             ?.maxByOrNull { it.lastModified() }
+        if (newestReport != null) return newestReport
+
+        val wdDir = java.io.File(extDir, "watchdog")
+        return wdDir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("crash_detected") && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
+            ?.maxByOrNull { it.lastModified() }
+    }
+
+    /**
+     * Night session 2026-11-08: after the AGENT has taken a crash through
+     * selfDiagnoseOnBoot and reported, rename the newest evidence file with
+     * a `handled_` prefix — the raw-report dialog must not resurface a crash
+     * the agent already investigated on a later boot. The file STAYS on disk
+     * (evidence is never destroyed); the crash_logs tool still lists and
+     * reads it; only getLatestCrashLog (dialog + probation gate) skips it.
+     */
+    fun markCrashHandled(file: java.io.File) {
+        if (!file.isFile || file.name.startsWith("handled_")) return
+        runCatching {
+            val renamed = java.io.File(file.parentFile, "handled_${file.name}")
+            file.renameTo(renamed)
+        }
+    }
+
+    /**
+     * A native crash (SIGSEGV in GenieX/NPU) or an external process kill
+     * fires no Java handler — CrashReportWorker never runs, and the crash
+     * used to leave NO artifact anywhere the app looks. This synthesizes
+     * one from the evidence that DOES survive: the previous boot's
+     * breadcrumb trace and the newest watchdog detection (if any).
+     *
+     * The report says plainly what it is — no Java stack exists — so the
+     * crash dialog, the agent's crash_logs tool, and any future reader
+     * know exactly how much to trust it.
+     *
+     * Rules: a REAL report from CrashReportWorker stays authoritative (a
+     * Java crash wrote its own log moments before death — never duplicate
+     * it). A previous SYNTHESIZED report is replaced by this boot's (crash
+     * loops would otherwise stack synthesized files). Known edge, kept
+     * honestly: a stale real report from an OLD crash also suppresses
+     * synthesis — pre-existing behavior for the dialog, not made worse
+     * here.
+     */
+    private fun synthesizeNativeCrashReportIfMissing() {
+        val extDir = getExternalFilesDir(null) ?: return
+        val crashDir = java.io.File(extDir, "crash_logs").apply { mkdirs() }
+
+        val existing = crashDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
+            ?.maxByOrNull { it.lastModified() }
+
+        if (existing != null && !existing.name.startsWith("crash_synthesized_")) {
+            // A real Java crash report exists — it is authoritative for the
+            // crash that produced it. Do not write a second version of the
+            // same story.
+            return
+        }
+
+        // Replace a stale synthesized report from an earlier crash-loop
+        // iteration instead of stacking a new one on top.
+        existing?.takeIf { it.name.startsWith("crash_synthesized_") }?.let {
+            runCatching { it.delete() }
+        }
+
+        val prevTrace = BootTracer.readPreviousTrace(this)
+        val watchdogReport = java.io.File(extDir, "watchdog").listFiles()
+            ?.filter { it.isFile && it.name.startsWith("crash_detected") && it.name.endsWith(".txt") }
+            ?.maxByOrNull { it.lastModified() }
+
+        val timestamp = java.text.SimpleDateFormat(
+            "yyyy-MM-dd_HH-mm-ss-SSS", java.util.Locale.US
+        ).format(java.util.Date())
+        val outFile = java.io.File(crashDir, "crash_synthesized_${timestamp}_pid${android.os.Process.myPid()}.txt")
+
+        val sb = StringBuilder()
+        sb.appendLine("========================================")
+        sb.appendLine("Vorv crash report (SYNTHESIZED — no Java stack trace)")
+        sb.appendLine("========================================")
+        sb.appendLine("Synthesized at: ${java.util.Date()}")
+        sb.appendLine("Reason: the previous boot did not complete, but no Java crash")
+        sb.appendLine("report was written — consistent with a NATIVE crash (e.g. the")
+        sb.appendLine("GenieX/NPU layer) or the process being killed externally.")
+        sb.appendLine("There is NO exception class, NO stack trace, and NO line number")
+        sb.appendLine("below — the breadcrumbs are all that survived. Treat any")
+        sb.appendLine("diagnosis as inference, not fact.")
+        sb.appendLine("========================================")
+        sb.appendLine("Previous boot trace (breadcrumbs, last steps before death):")
+        sb.appendLine("========================================")
+        sb.appendLine(prevTrace ?: "(no previous trace available)")
+        sb.appendLine()
+        if (watchdogReport != null && watchdogReport.isFile) {
+            sb.appendLine("========================================")
+            sb.appendLine("Watchdog detection (embedded verbatim, may repeat the trace):")
+            sb.appendLine("========================================")
+            sb.appendLine(runCatching { watchdogReport.readText() }.getOrDefault("(watchdog report unreadable: path=${watchdogReport.name})"))
+        } else {
+            sb.appendLine("No watchdog detection on disk — the watchdog may have died too,")
+            sb.appendLine("or the crash occurred before the watchdog registered the process.")
+        }
+        outFile.writeText(sb.toString())
+        BootTracer.step(this, "native_report_synthesized", "file=${outFile.name}")
+        Log.w(TAG, "Synthesized native-crash report: ${outFile.absolutePath}")
     }
 
     /**

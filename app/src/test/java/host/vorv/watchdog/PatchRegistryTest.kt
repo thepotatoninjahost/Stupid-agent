@@ -27,10 +27,13 @@ class PatchRegistryTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun `the dispatch surface is exactly the 18 dispatchable classes`() {
-        assertEquals(18, PatchRegistry.DISPATCH_BASES.size)
+    fun `the dispatch surface is exactly the 19 dispatchable classes`() {
+        // Night session 2026-11-08: 18 → 19 — crash_logs joined the patchable
+        // surface (the agent's eyes on its own crash evidence).
+        assertEquals(19, PatchRegistry.DISPATCH_BASES.size)
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.ShellTool"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.SelfFixTool"))
+        assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.CrashLogsTool"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.kernel.CognitiveKernel"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.healer.HealingAgent"))
     }

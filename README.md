@@ -10,7 +10,7 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ✅ **Local LLM**: Qwen2.5-Coder-3B/7B-Instruct (Q4_0 GGUF) on the Hexagon NPU via Qualcomm **GenieX** — fully offline after a one-time 1.8–4.4 GB download.
 ✅ **Cloud LLM**: GLM-4.7-Flash via Z.ai — free tier, $0/token, the DEFAULT (optional paid models: GLM-5.3-Flash, GLM-5.3, GLM-4.6; needs your API key, stored encrypted at rest; automatic offline fallback to the local model when the signal drops).
-✅ **16 tools, all wired** (list below). The 16th, `self_fix`, lets the user tell Vorv in chat to fix or change its own code — every patch is compiled on device, verified complete, signed, user-approved, and rolled back automatically if it causes a crash. js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
+✅ **17 tools, all wired** (list below). The 17th, `crash_logs`, gives the agent eyes on its own crash evidence (Java crash reports, watchdog detections, boot traces) — the fix for the night-session finding that "did you see the crash report?" could only be answered "I don't have any" while the reports sat on disk, unreachable by every tool. The 16th, `self_fix`, lets the user tell Vorv in chat to fix or change its own code — every patch is compiled on device, verified complete, signed, user-approved, and rolled back automatically if it causes a crash. js_exec and python_exec run in hardened in-process sandboxes; sensitive actions require explicit user confirmation; outputs are real or the tool reports an honest error.
 ✅ **Verifiable logging**: every tool call persists real input/output/duration/exit-code; long outputs are stored in full and viewable from the Tasks screen.
 ⚠️ **Acceptance tests #1–#8 below are still developer-unverified on a real S25.** The 0.7.x series fixes all 25 findings of the 2026-11 full code review — including the three root causes of "never usable" (no installable build ever published, the stale key gate, local-mode mid-task deaths) — see [CHANGES.md](CHANGES.md).
 
@@ -35,11 +35,12 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 │   • per-tool wall-clock timeouts + per-task rate limits       │
 │   • max 20 iterations; every iteration logged                 │
 ├─────────────────────────────────────────────────────────────┤
-│  LLM (kernel picks)              │  Tool Registry (16)        │
+│  LLM (kernel picks)              │  Tool Registry (17)        │
 │   ├─ Local: GenieX → Hexagon NPU  │  memory_write/recall      │
 │   └─ Cloud: GLM-4.7-Flash (free)  │  js_exec (Rhino sandbox)  │
 │                                   │  python_exec (sandboxed)  │
 │                                   │  file_read/write/list     │
+│                                   │  crash_logs (own crashes) │
 │                                   │  web_search / web_fetch   │
 │                                   │  app_intent (confirmed)   │
 │                                   │  shell (real output)      │
@@ -101,10 +102,11 @@ Without any of these, `shell` returns an honest error explaining exactly what's 
 | Tool | What it does | Safety posture |
 |---|---|---|
 | `memory_write` / `memory_recall` | Room + FTS4 long-term memory | DB only |
-| `self_fix` | Fix/modify Vorv's own code | Full hardened pipeline: strongest on-device model generates the complete fixed class → compiled in Termux via the workspace → PatchVerifier completeness gate → device-key signature → user APPROVE/DENY → applies at next boot → 72h probation auto-rollback. Honest refusal for classes outside the 18-class patchable surface |
+| `self_fix` | Fix/modify Vorv's own code | Full hardened pipeline: strongest on-device model generates the complete fixed class → compiled in Termux via the workspace → PatchVerifier completeness gate → device-key signature → user APPROVE/DENY → applies at next boot → 72h probation auto-rollback. Honest refusal for classes outside the 19-class patchable surface |
 | `js_exec` | JavaScript, 5s budget | **Rhino sandbox**: ClassShutter denies all Java except immutable `java.lang` types; LiveConnect globals (`Packages`, `java`, …) deleted; scope sealed; instruction-count watchdog |
 | `python_exec` | Python 3.11, 30s budget | **Layered sandbox**: namespace scrubbing + transitive verification of the whitelist closure (no reachable os/sys; the audit-PoC chains are closed and self-tested); CPython audit hook blocks file/process/socket ops; restricted builtins; import whitelist; trace watchdog; first execution per task requires user consent |
 | `file_read` / `file_write` / `file_list` | SAF workspace I/O | Scoped to the granted folder; 50KB read / 1MB write caps |
+| `crash_logs` | List/read Vorv's OWN crash evidence: Java crash reports (`crash_logs/`), watchdog detections (`watchdog/`), boot traces | Read-only; paths confined to the two evidence dirs (traversal-checked); 50KB read cap |
 | `web_search` | Z.ai Web Search API (documented `/web_search` endpoint) | Key-gated |
 | `web_fetch` | HTTP fetch → text | 2MB cap; content-type allowlist; **private/loopback/LAN/metadata egress blocked**; jsoup extraction |
 | `app_intent` | view URL / share / dial / open app | **Every action needs a confirmation dialog**; http/https URLs only; premium-rate numbers refused outright |

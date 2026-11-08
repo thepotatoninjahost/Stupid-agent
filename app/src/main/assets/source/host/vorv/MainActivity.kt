@@ -231,6 +231,36 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Night session 2026-11-08 (screen recording 20:32): Vorv
+                // gets its own crash reports FIRST. The old flow pushed the
+                // raw report at the user and waited for a tap; the user's
+                // contract is the reverse — "you're supposed to see the
+                // crash report, not me; I see it when you're done fixing
+                // it." On boot after a crash the agent now takes the job
+                // directly: it reads crash_logs, diagnoses, and proposes a
+                // self_fix patch if one applies. The dialog below stays as
+                // the fallback (safe mode / engine not configured / busy).
+                var agentHandlingCrash by remember { mutableStateOf(false) }
+                LaunchedEffect(crashLogFile, previousBootCrashed) {
+                    if (app.safeMode) return@LaunchedEffect
+                    if (crashLogFile == null && !previousBootCrashed) return@LaunchedEffect
+                    // Engine readiness (API key / model) loads async from
+                    // prefs — give the VM a few seconds before falling back
+                    // to the dialog.
+                    repeat(5) {
+                        if (vm.selfDiagnoseOnBoot(
+                                hasJavaReport = crashLogFile != null,
+                                bootTrace = previousTrace ?: "",
+                                previousBootCrashed = previousBootCrashed,
+                                rolledBackPatches = rolledBack,
+                            )) {
+                            agentHandlingCrash = true
+                            return@LaunchedEffect
+                        }
+                        kotlinx.coroutines.delay(1000)
+                    }
+                }
+
                 // Safe mode screen OR normal app
                 if (app.safeMode) {
                     SafeModeScreen(
@@ -264,9 +294,10 @@ class MainActivity : ComponentActivity() {
                         toolPermissionLauncher.launch(permission)
                     })
 
-                    // Show crash dialog if we have a crash log from last time,
-                    // or report a probation rollback.
-                    if (crashLogText != null) {
+                    // Show crash dialog if the agent did NOT take over the
+                    // diagnosis (fallback path), or report a probation
+                    // rollback.
+                    if (crashLogText != null && !agentHandlingCrash) {
                         CrashLogDialog(
                             crashText = crashLogText!!,
                             rolledBackPatches = rolledBack,

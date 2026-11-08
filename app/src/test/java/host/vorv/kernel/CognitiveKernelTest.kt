@@ -939,4 +939,42 @@ class CognitiveKernelTest {
         compactor().compactHistoryIfNeeded(messages, 1_000_000)
         assertEquals(3, messages.size)
     }
+
+    // -------- night session 2026-11-08, screen recording 20:32 --------
+    // "did you see the crash report?" → "I don't have any crash report
+    // information" ([uncited]) — no tool could reach the crash artifacts,
+    // and the prompt never told the model to check. Two pins below: the
+    // crash_logs tool is citable evidence, and rule 13 exists.
+
+    @Test
+    fun `crash_logs evidence backs a file citation`() = runTest {
+        val sink = FakeSink()
+        val reportPath = "crash_logs/crash_2026-11-07_20-31-00-000pid1234.txt"
+        val tool = FakeTool("crash_logs", ToolResult(true, "newest: $reportPath (2 KB)", 1))
+        val llm = FakeLlm(listOf(
+            toolUse("crash_logs", """{"x":"list"}"""),
+            Llm.LlmResponse.Text(
+                "My last crash report [cite:file:$reportPath] shows what happened.",
+                done = true,
+            ),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertTrue(result.ok)
+        assertFalse(result.answer.startsWith("[uncited]"))
+        assertEquals(1, result.citations.size)
+        assertEquals("file", result.citations[0].type)
+    }
+
+    @Test
+    fun `system prompt carries rule 13 - check before claiming absence`() = runTest {
+        val sink = FakeSink()
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("ok", done = true)))
+        kernel(sink, emptyList()).run("t1", "q", llm, null)
+
+        val systemPrompt = llm.steps.first().first().content
+        assertTrue(systemPrompt.contains("13."))
+        assertTrue(systemPrompt.contains("crash_logs"))
+        assertTrue(systemPrompt.contains("never ask the user to paste something a tool should provide"))
+    }
 }

@@ -93,7 +93,7 @@ class SelfFixTool(
             add("target_class", JsonObject().apply {
                 addProperty("type", "string")
                 addProperty("description", "Optional fully-qualified class to patch, e.g. " +
-                    "host.vorv.tools.ShellTool. Only the 18 dispatchable classes can be " +
+                    "host.vorv.tools.ShellTool. Only the 19 dispatchable classes can be " +
                     "patched (the agent tools, host.vorv.kernel.CognitiveKernel, " +
                     "host.vorv.healer.HealingAgent). If omitted, the healer infers the " +
                     "target from the problem.")

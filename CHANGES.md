@@ -1,3 +1,105 @@
+# Changelog — v0.7.5 "The Crash Vorv Can Finally See"
+
+The 20:32 screen recording, root-caused and fixed: an agent that could not
+remember the last turn, could not read its own crash reports, and told the
+user to do the debugging. Four fixes, all traced to the recording.
+
+## The evidence (screen recording 2026-11-07 20:32, 4.2 s)
+
+The user scrolled the chat after two real crashes. Verbatim from the
+frames: *"did you see the crash report?"* → *"I don't have any crash report
+information in our current conversation. Could you share the crash report
+details with me? You can paste the error text, stack trace…"* — tagged
+`[uncited]`. Then a 5-minute task timeout, then *"try again"* → *"I don't
+have context for what you'd like me to try again."* — also `[uncited]`.
+The user's verdict: *"You're supposed to fix the problem. You are supposed
+to be [the one who] sees the crash report, not me. I'm not supposed to see
+the report until you're done fixing it."*
+
+## Root cause 1 — the agent was amnesiac BY DESIGN (the big one)
+
+`kernel.run` builds a fresh `[system, user(prompt)]` for every send. The
+model never saw a single prior turn — not the timeout notice, not the crash
+question before it. "I don't have context for what you'd like me to try
+again" was a perfectly honest answer to the only message it was ever
+given. Fix: `ConversationPrompt` (pure, unit-tested) prepends recent turns
+inside the prompt string — the `KernelApi.run` signature stays frozen
+(SessionGrants would crash approved patches otherwise). Budgets are honest
+per engine: local (nCtx 4096, 2048 reserved for output) gets 4 turns ×
+200 chars; cloud gets 10 × 400 with a 3000-char cap and an explicit
+"older turns omitted" note. Long-term memory stays in `memory_recall`.
+
+## Root cause 2 — no tool could reach the crash artifacts
+
+CrashReportWorker writes Java reports to `getExternalFilesDir/crash_logs/`;
+the watchdog writes detections to `watchdog/`. The file tools only see the
+SAF workspace; shell sees Termux. The reports sat on disk, invisible to
+every tool — "I don't have any crash report information" was the literal
+truth of a blind agent. Fix: **`crash_logs` (tool #17)** — list/read over
+both evidence dirs plus the current and previous boot traces; paths
+confined by prefix allow-list AND canonical-path check; 50KB read cap;
+joins the `file` citation family so a crash claim can be cited. On the
+19-class patchable surface (PatchRegistry + SelfFixTool updated; the
+surface test pins 19).
+
+## Root cause 3 — crash handling was user-driven, inverted from the contract
+
+On boot after a crash, MainActivity pushed the raw report at the USER and
+waited for a tap (Analyze / Self-Repair). The user's contract is the
+reverse. Fix: `AgentViewModel.selfDiagnoseOnBoot` — on boot after a crash,
+the agent gets the job directly: read the crash evidence, state the root
+cause as precisely as the evidence allows (native-crash reports say
+plainly that no Java stack exists — never invent one), `self_fix` if a
+code fix applies (user approval still gates the patch). The persisted
+kickoff note says what Vorv is doing; the task prompt never masquerades
+as a user message. The dialog stays as the fallback (safe mode / engine
+not configured / busy). Native crashes now also get a **synthesized
+report** (breadcrumbs + watchdog detection, labeled as synthesized —
+"there is NO exception class, NO stack trace below"), and
+`getLatestCrashLog` falls back to watchdog detections so a mid-session
+native death is never invisible again. The probation gate additionally
+falls back to `CrashParser.inferCrashedClassFromBootTrace` when a report
+has no Java frame.
+
+## Root cause 4 — the timeout notice carried nothing to retry
+
+"Task timed out after 5 minutes and was stopped. Partial tool-call
+history is preserved in the Tasks tab." — no task, no progress, and the
+model cannot read the Tasks tab. Fix: the notice now embeds the original
+task (200-char excerpt) and the last 5 tool outcomes (name + ok/failed),
+and ends with "If asked to retry, rerun the original task." The
+user-STOP message carries the original task too.
+
+## HARD RULE 13
+
+Rule 12 banned inventing facts; the recording showed the mirrored
+failure — claiming ABSENCE without looking, then asking the user to paste
+what a tool should provide. New rule in the kernel's system prompt:
+before saying you don't have or can't find information, CHECK the tool
+that could hold it (memory_recall / file_list / crash_logs); report what
+you checked; if no tool can reach it, say exactly that; never ask the
+user to paste something a tool should provide. Pinned by test
+(`system prompt carries rule 13`).
+
+## Tests
+
+New: `ConversationPromptTest` (7 tests — window sizes per engine, budgets,
+omission notes, flattening), `crash_logs evidence backs a file citation`,
+`system prompt carries rule 13`. Updated: the dispatch-surface pin 18→19.
+CI runs the full suite on push.
+
+## Honest limits (kept visible on purpose)
+
+- Boot self-diagnosis needs a working engine; with cloud 429ing and no
+  local model, it falls back to the dialog and says so.
+- A stale REAL crash report still suppresses synthesis (pre-existing
+  dialog behavior, not made worse; documented in code).
+- The watchdog itself can die (battery optimization) — its notification
+  path is still file-only; that residual is now at least readable by the
+  agent.
+
+---
+
 # Changelog — v0.7.4 "The Heartbeat Learns to Rest"
 
 Post-sweep verification audit + the one gap it found, closed.

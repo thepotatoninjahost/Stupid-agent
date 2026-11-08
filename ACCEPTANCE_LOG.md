@@ -119,3 +119,78 @@ outside the 18-class patchable surface.
 
 **Status after tonight: 2 of 8 passed (#1, #2-cloud). #3–#8 pending the six
 prompts above.**
+
+---
+
+## Evening 2026-11-07, 20:31–20:32 — the 4.2-second recording (post-crash session)
+
+Receipt: `Screen_Recording_20261107_203203_Vorv.mp4` (user-supplied,
+4.156 s, 1080×2340, no audio). Battery 20%, screen-record indicator on,
+engine label `GLM-4.7-Flash (cloud, free) · offline fall…`, status Idle.
+What it shows, in scroll order:
+
+1. User: *"did you see the crash report?"* → Vorv: *"I don't have any
+   crash report information in our current conversation. Could you share
+   the crash report details with me? You can paste the error text, stack
+   trace, or describe what happened when the crash occurred"* — `[uncited]`
+   tag, zero tool calls.
+2. User (verbatim, trimmed for the log): *"the crash report, when I closed,
+   it wasn't in tasks or files or anywhere… You're supposed to fix the
+   problem. You are supposed to be [the one who] sees the crash report, not
+   me. I'm not supposed to see the report until you're done fixing it."*
+3. User: *"you just crashed again. this time no crash report or
+   notification."*
+4. System-style assistant message: *"Task timed out after 5 minutes and
+   was stopped. Partial tool-call history is preserved in the Tasks tab."*
+5. User: *"try again"* → Vorv: *"I don't have context for what you'd like
+   me to try again. Could you clarify what you want me to retry?"* —
+   `[uncited]` again.
+
+### Defects logged (this is the receipt trail for the v0.7.5 fixes)
+
+- **D-20/20:32-a — crash blindness.** No tool could read
+  `crash_logs/` or `watchdog/` (file tools are SAF-workspace-scoped,
+  shell is Termux-scoped). The honest answer existed but was unreachable;
+  the delivered answer asked the USER to paste evidence. → `crash_logs`
+  tool (v0.7.5), HARD RULE 13.
+- **D-20/20:32-b — total conversation amnesia.** `kernel.run` builds a
+  fresh `[system, user(prompt)]` per send; the model never saw prior
+  turns. "Try again" arrived as two words in a void; the non-answer was
+  literally correct. → `ConversationPrompt` history-in-prompt (v0.7.5).
+- **D-20/20:32-c — timeout notice without context.** The 5-minute notice
+  named neither the task nor the progress, and the model cannot read the
+  Tasks tab it pointed at. → notice now embeds task + last 5 tool
+  outcomes (v0.7.5).
+- **D-20/20:32-d — native crash invisibility.** Second crash left no
+  report and no notification: no Java handler fires on a native crash,
+  nothing synthesized one, and `getLatestCrashLog` never looked at the
+  watchdog's own `crash_detected_*.txt`. → synthesized native-crash
+  reports + watchdog fallback in `getLatestCrashLog` (v0.7.5).
+- **D-20/20:32-e — inverted crash responsibility.** The boot-after-crash
+  flow showed the raw report to the user and waited for a tap. →
+  `selfDiagnoseOnBoot`: the agent reads its own evidence and reports the
+  conclusion; dialog demoted to fallback (v0.7.5).
+
+Corrections to the previous session's record: the earlier framing "quality
+issue: reply inconsistent with notification" (run 3) was a symptom of
+D-20/20:32-b — the reply engine never saw what the task was about either.
+Single root cause, now fixed at the architecture level.
+
+### Verification prompts for v0.7.5 (owner's hands, after CI publishes)
+
+1. **Amnesia fix** — send any task, let it finish, then send only:
+   `try again`. PASS = the task is actually re-run (trace shows it), not
+   a request for clarification.
+2. **crash_logs** — Chat: `Did you see your own crash reports? List them.`
+   PASS = a `crash_logs` tool call appears in the trace, and the reply
+   cites a real report path.
+3. **Boot self-diagnosis** — after the next real crash, just open the app.
+   PASS = Vorv speaks first ("I crashed last session… reading my own
+   crash reports"), the trace shows crash_logs reads, and the reply
+   states a root cause or says plainly that only a native-crash
+   breadcrumb exists. The raw-report dialog must NOT appear while an
+   engine is available.
+
+**Status: still 2 of 8 passed (#1, #2-cloud). v0.7.5 adds D-20/20:32-a…e
+fixes; the six pending prompts above are unchanged, and #5's retry loop
+should now survive its own timeout notice.**

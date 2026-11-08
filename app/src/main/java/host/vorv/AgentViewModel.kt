@@ -175,6 +175,7 @@ class AgentViewModel(
         FileReadTool(appContext),
         FileWriteTool(appContext),
         FileListTool(appContext),
+        CrashLogsTool(appContext),
         PythonExecTool(appContext),
         WebSearchTool(secrets),
         WebFetchTool(),
@@ -908,14 +909,36 @@ class AgentViewModel(
                 }
 
                 val timeoutMs = if (mode == "local") LOCAL_TASK_TIMEOUT_MS else CLOUD_TASK_TIMEOUT_MS
+                // Night session 2026-11-08 — conversation continuity: the
+                // model used to receive ONLY this message (kernel.run starts
+                // a fresh [system, user(prompt)] every task), so "try again"
+                // arrived as two words in a void. Recent turns now ride
+                // along, budget-aware per engine — see buildPromptWithContext.
+                val promptWithContext = buildPromptWithContext(trimmed, localEngine = mode == "local")
                 val result = try {
                     withTimeout(timeoutMs) {
-                        kernel.run(task.id, trimmed, llm, wsUri, confirm = ::requestConfirmation)
+                        kernel.run(task.id, promptWithContext, llm, wsUri, confirm = ::requestConfirmation)
                     }
                 } catch (e: TimeoutCancellationException) {
-                    val msg = "Task timed out after ${timeoutMs / 60000} minutes and was stopped. " +
-                        "Partial tool-call history is preserved in the Tasks tab."
-                    host.vorv.kernel.KernelApi.TaskResult(false, msg, 0, emptyList(), 0, error = "timeout")
+                    // Screen recording 20:32: the bare timeout notice left the
+                    // model with nothing to retry — "try again" got "I don't
+                    // have context for what you'd like me to try again". The
+                    // notice now carries the original task and the real
+                    // progress, so a retry request has full context.
+                    val steps = _state.value.liveTrace
+                        .filterIsInstance<TraceStep.ToolEnd>()
+                        .takeLast(5)
+                        .joinToString("; ") { step ->
+                            "${step.tool}(${if (step.result.ok) "ok" else "failed"})"
+                        }
+                        .ifBlank { "no tool calls completed" }
+                    host.vorv.kernel.KernelApi.TaskResult(
+                        false,
+                        "Task timed out after ${timeoutMs / 60000} minutes and was stopped. " +
+                            "Original task: \"${trimmed.take(200)}\". Progress before timeout: $steps. " +
+                            "Full history: Tasks tab. If asked to retry, rerun the original task.",
+                        0, emptyList(), 0, error = "timeout",
+                    )
                 }
 
                 val assistantMsg = ChatMessage(
@@ -939,8 +962,8 @@ class AgentViewModel(
                 // throw on entry.
                 val stoppedMsg = ChatMessage(
                     role = "assistant",
-                    content = "Stopped — you cancelled this task. Work already done is " +
-                        "preserved in the Tasks tab; partial tool history is intact.",
+                    content = "Stopped — you cancelled this task. Original task: \"${trimmed.take(200)}\". " +
+                        "Work already done is preserved in the Tasks tab; partial tool history is intact.",
                 )
                 _state.update {
                     it.copy(
@@ -970,6 +993,187 @@ class AgentViewModel(
                 refreshSessionGrants()
             }
         }
+    }
+
+    // ------------------------------------------------------- conversation continuity
+
+    /**
+     * Night session 2026-11-08 — the amnesia fix (see [ConversationPrompt]
+     * for the full story and the frozen-signature constraint). The pure
+     * builder lives in the kernel package so it is unit-testable without
+     * Android; this wrapper just feeds it the live chat state.
+     */
+    internal fun buildPromptWithContext(newMessage: String, localEngine: Boolean): String =
+        host.vorv.kernel.ConversationPrompt.build(
+            newMessage = newMessage,
+            // The current user message was ALREADY appended to state by
+            // send() before this runs — drop it; it is delivered as the
+            // [New message] section, never duplicated inside the history.
+            history = _state.value.messages
+                .dropLast(1)
+                .map { host.vorv.kernel.ConversationPrompt.Turn(it.role, it.content) },
+            localEngine = localEngine,
+        )
+
+    // ------------------------------------------------------- boot self-diagnosis
+
+    /** Once-per-process guard for [selfDiagnoseOnBoot] (survives activity recreation). */
+    @Volatile
+    private var bootDiagnosisStarted = false
+
+    /**
+     * Night session 2026-11-08 (screen recording 20:32): the user's contract
+     * is "when you crash, YOU read the crash report and fix it — I see the
+     * report only after you're done." Reality was inverted: the crash dialog
+     * pushed the raw report at the USER, and "did you see the crash report?"
+     * could only be answered "I don't have any" — no tool reached the crash
+     * artifacts at all. This is the missing half: on boot after a crash the
+     * agent gets the job directly, reads its own reports (crash_logs tool),
+     * and reports back; the dialog stays as the fallback.
+     *
+     * Guard checks run synchronously; a false return tells the caller
+     * (MainActivity) to show the crash dialog instead. The task prompt is
+     * system-authored and never masquerades as a user message — the
+     * persisted kickoff note says plainly what Vorv is doing.
+     */
+    fun selfDiagnoseOnBoot(
+        hasJavaReport: Boolean,
+        bootTrace: String,
+        previousBootCrashed: Boolean,
+        rolledBackPatches: List<String> = emptyList(),
+    ): Boolean {
+        if (bootDiagnosisStarted) return true
+        val s = _state.value
+        if (s.busy) return false
+        val engineAvailable = when (s.llmMode) {
+            "local" -> s.localModelReady
+            else -> s.hasApiKey
+        }
+        if (!engineAvailable) return false
+        bootDiagnosisStarted = true
+
+        val situation = when {
+            hasJavaReport ->
+                "A Java crash report was written by CrashReportWorker — it is in crash_logs/."
+            previousBootCrashed ->
+                "The previous boot died WITHOUT completing and no Java report was written — " +
+                    "consistent with a NATIVE crash (e.g. the GenieX/NPU layer) or an external " +
+                    "process kill. A synthesized report from the breadcrumbs may be in " +
+                    "crash_logs/, and watchdog detections may be in watchdog/."
+            else ->
+                "The watchdog detected a mid-session process death (watchdog/ has the detection)."
+        }
+
+        val prompt = buildString {
+            appendLine("[Automatic boot task — Vorv crashed last session]")
+            appendLine("You (Vorv) crashed. Find out why, and fix yourself if a code fix is possible.")
+            appendLine()
+            appendLine("What is known: $situation")
+            if (bootTrace.isNotBlank()) {
+                appendLine("Last breadcrumbs before death (tail of the previous boot trace — the full trace is readable via crash_logs):")
+                appendLine(bootTrace.trim().takeLast(600))
+            }
+            if (rolledBackPatches.isNotEmpty()) {
+                appendLine("Probation gate: ${rolledBackPatches.size} hot-patch(es) were rolled back this boot " +
+                    "(a patch was followed by a crash in a class it overrides): " +
+                    rolledBackPatches.joinToString(", ") + ". Mention this in your report.")
+            }
+            appendLine("All crash artifacts are ON THIS DEVICE — read them yourself with the crash_logs tool (action=list, then action=read).")
+            appendLine()
+            appendLine("Steps:")
+            appendLine("1. crash_logs action=list — see every report that exists.")
+            appendLine("2. Read the newest relevant report(s) in full.")
+            appendLine("3. State the root cause as precisely as the evidence allows. If the evidence only supports \"native crash, no Java stack\", say exactly that — never invent a stack trace, class name, or line number.")
+            appendLine("4. If a code fix is possible, use self_fix. The patch still needs the user's approval — describe it clearly when the consent dialog appears.")
+            appendLine("5. If no fix applies, say plainly what you found and what evidence would be needed.")
+            appendLine()
+            appendLine("Report your findings in plain language. Do not ask the user to paste or fetch anything — you can read all of it yourself.")
+        }
+
+        val kickoff = ChatMessage(
+            role = "assistant",
+            content = "I crashed last session. I'm reading my own crash reports now — " +
+                "I'll tell you what I find, and if I can fix it, you'll get the patch to approve.",
+        )
+        _state.update {
+            it.copy(
+                messages = it.messages + kickoff,
+                busy = true,
+                liveTrace = emptyList(),
+            )
+        }
+        persistChat(kickoff)
+
+        currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+            val task = AgentTask(
+                prompt = "[boot self-diagnosis] $situation",
+                status = "in_progress",
+                startedAt = System.currentTimeMillis(),
+            )
+            db.taskDao().insert(task)
+            host.vorv.service.AgentService.start(appContext, "Working: boot self-diagnosis")
+            try {
+                val mode = prefs.llmMode.first()
+                val key = secrets.zaiApiKey.first()
+                val choice = ModelChoice.fromId(prefs.localModelId.first())
+                val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
+                val autoFallback = prefs.autoFallback.first()
+                val wsUri = _state.value.workspaceUri.ifBlank { null }
+
+                modelRepository.markBusy(true)
+                val llm: Llm = modelRepository.activeEngine(mode, key, choice, cloudModel, autoFallback)
+
+                val timeoutMs = if (mode == "local") LOCAL_TASK_TIMEOUT_MS else CLOUD_TASK_TIMEOUT_MS
+                val result = try {
+                    withTimeout(timeoutMs) {
+                        kernel.run(task.id, prompt, llm, wsUri, confirm = ::requestConfirmation)
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    host.vorv.kernel.KernelApi.TaskResult(
+                        false,
+                        "Boot self-diagnosis timed out after ${timeoutMs / 60000} minutes and was stopped. " +
+                            "The crash reports are still on disk — send \"diagnose the crash\" and I'll go again.",
+                        0, emptyList(), 0, error = "timeout",
+                    )
+                }
+
+                val assistantMsg = ChatMessage(
+                    role = "assistant",
+                    content = result.answer,
+                    citations = result.citations,
+                )
+                _state.update {
+                    it.copy(
+                        messages = it.messages + assistantMsg,
+                        busy = false,
+                        liveTrace = emptyList(),
+                    )
+                }
+                persistChat(assistantMsg)
+                db.taskDao().complete(task.id, result.answer.take(500), if (result.ok) "completed" else "failed")
+                // The agent has reported on this crash — mark the evidence
+                // handled so the raw-report dialog never resurfaces it on a
+                // later boot (files stay on disk for crash_logs).
+                (appContext as? VorvApplication)?.let { app ->
+                    app.getLatestCrashLog()?.let(app::markCrashHandled)
+                }
+            } catch (e: Exception) {
+                val errMsg = ChatMessage(
+                    role = "assistant",
+                    content = "Boot self-diagnosis failed: ${e.message}. The crash reports are still " +
+                        "on disk — send \"diagnose the crash\" to retry.",
+                )
+                _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                persistChat(errMsg)
+                db.taskDao().fail(task.id, e.message ?: "unknown")
+            } finally {
+                currentTaskJob = null
+                modelRepository.markBusy(false)
+                host.vorv.service.AgentService.stop(appContext)
+                refreshSessionGrants()
+            }
+        }
+        return true
     }
 
     // ------------------------------------------------------- task details / full output

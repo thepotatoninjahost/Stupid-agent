@@ -658,7 +658,7 @@ class CognitiveKernel(
     private fun citationFamily(toolName: String): String? = when (toolName) {
         "memory_write", "memory_recall" -> "memory"
         "web_search", "web_fetch", "browser_automate" -> "web"
-        "file_list", "file_read", "file_write" -> "file"
+        "file_list", "file_read", "file_write", "crash_logs" -> "file"
         "shell", "js_exec", "python_exec" -> "exec"
         else -> null
     }
@@ -731,6 +731,18 @@ class CognitiveKernel(
         appendLine("   paths, flags, contents, or \"should work\" claims are failures even when")
         appendLine("   they sound confident. What you cannot verify: say you don't know, or")
         appendLine("   mark it [uncited].")
+        // Night session 2026-11-08 (screen recording 20:32): asked "did you
+        // see the crash report?", the model answered "I don't have any
+        // crash report information" from nothing — no tool call, no check,
+        // [uncited] flag, and a request for the USER to paste what a tool
+        // should have read. Rule 12 banned inventing facts; this bans the
+        // mirrored failure: claiming ABSENCE without looking.
+        appendLine("13. Before saying you don't have or can't find information, CHECK the")
+        appendLine("   tool that could hold it: memory_recall for taught facts, file_list for")
+        appendLine("   workspace files, crash_logs for anything about Vorv itself (crashes,")
+        appendLine("   restarts, boot traces). Report what you actually checked. If no tool")
+        appendLine("   can reach it, say exactly that (\"I have no tool that can read X\") —")
+        appendLine("   never ask the user to paste something a tool should provide.")
         appendLine()
         appendLine("Available tools:")
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }

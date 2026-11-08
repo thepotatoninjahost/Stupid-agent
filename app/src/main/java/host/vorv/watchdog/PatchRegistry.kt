@@ -47,6 +47,7 @@ object PatchRegistry {
         "host.vorv.tools.FileReadTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.FileWriteTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.FileListTool" to host.vorv.tools.Tool::class.java,
+        "host.vorv.tools.CrashLogsTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.PythonExecTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.WebSearchTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.WebFetchTool" to host.vorv.tools.Tool::class.java,
