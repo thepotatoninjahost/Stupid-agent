@@ -145,19 +145,18 @@ object TermuxProbe {
 
     /**
      * Is the SAF tree URI a folder on primary local storage — the only
-     * volume Termux can write that Vorv can read back? Pure string parsing
-     * (no android.net.Uri) so unit tests pin it; mirrors the mapping
-     * ShellTool and the probe enforce at dispatch time.
+     * volume Termux can write that Vorv can read back?
+     *
+     * L-6 (code review, 2026-11): delegates to [SafPaths.primaryStorageTreeDocId]
+     * — THE single recognizer. This used to carry its own prefix parse and a
+     * java.net.URLDecoder decode while SafPaths used Uri.decode: two
+     * decoders, drifting semantics ('+' → space vs literal), one URI family
+     * — the exact duplication pattern that produced the M-1 three-copies
+     * bug. Same verdict for every input now, by construction: there is only
+     * one parser left.
      */
-    fun workspaceOnPrimaryStorage(uriStr: String?): Boolean {
-        if (uriStr.isNullOrBlank()) return false
-        val prefix = "content://com.android.externalstorage.documents/tree/"
-        if (!uriStr.startsWith(prefix)) return false
-        val docId = runCatching {
-            java.net.URLDecoder.decode(uriStr.removePrefix(prefix).substringBefore('/'), "UTF-8")
-        }.getOrNull() ?: return false
-        return docId == "primary" || docId.startsWith("primary:")
-    }
+    fun workspaceOnPrimaryStorage(uriStr: String?): Boolean =
+        SafPaths.primaryStorageTreeDocId(uriStr) != null
 
     /**
      * v0.6.18 (field finding #6): the exact Termux-side steps, ONE SHORT
@@ -283,8 +282,7 @@ object TermuxProbe {
         val b64 = android.util.Base64.encodeToString(
             PROBE_COMMAND.toByteArray(),
             android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
-        val wrapper = "printf '%s' '$b64' | base64 -d | bash > '$rawDir/$SHELL_DIR/$outName' " +
-            "2> '$rawDir/$SHELL_DIR/$errName'; echo \$? > '$rawDir/$SHELL_DIR/$codeName'"
+        val wrapper = buildProbeWrapper(b64, rawDir, SHELL_DIR, outName, errName, codeName)
 
         val dispatched = runCatching {
             val intent = Intent().apply {
@@ -349,6 +347,31 @@ object TermuxProbe {
     // price: the one-tap path where it exists, the exact manual commands
     // where it does not, and an honest statement when the app cannot tell
     // two causes apart.
+
+    /**
+     * H-1 (code review, 2026-11): the dispatch wrapper, as a PURE function.
+     * The path interpolations used to sit inside hand-written single quotes
+     * — a workspace folder named `x'$(cmd)'` (a perfectly legal SAF grant
+     * the user picks) broke out of the quoting and executed arbitrary text
+     * in Termux. Every path is now wrapped in [ShellQuote.sh], the same
+     * escaping discipline ShellTool follows; the [b64] payload is Base64
+     * (NO_PADDING/NO_WRAP) whose alphabet cannot terminate a single-quoted
+     * string. Internal and pure so the injection regression tests pin it
+     * without a device.
+     */
+    internal fun buildProbeWrapper(
+        b64: String,
+        rawDir: String,
+        shellDir: String,
+        outName: String,
+        errName: String,
+        codeName: String,
+    ): String {
+        val outPath = ShellQuote.sh("$rawDir/$shellDir/$outName")
+        val errPath = ShellQuote.sh("$rawDir/$shellDir/$errName")
+        val codePath = ShellQuote.sh("$rawDir/$shellDir/$codeName")
+        return "printf '%s' '$b64' | base64 -d | bash > $outPath 2> $errPath; echo \$? > $codePath"
+    }
 
     fun noWorkspaceMessage(): String =
         "No workspace folder granted. The test round-trips its output through " +

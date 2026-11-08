@@ -12,6 +12,8 @@ import host.vorv.healer.HealResult
 import host.vorv.healer.PatchProposal
 import host.vorv.llm.Llm
 import host.vorv.tools.SafPaths
+import host.vorv.tools.ShellQuote
+import host.vorv.tools.capWithMarker
 import host.vorv.watchdog.HotPatcher
 import host.vorv.watchdog.PatchKeys
 import host.vorv.watchdog.PatchRegistry
@@ -113,6 +115,30 @@ class HealingAgent(
 
         private const val HEAL_DIR = ".vorv-heal"
         private const val ASSET_CLASSES_JAR = "healer/app_classes.jar"
+
+        /**
+         * H-1 (code review, 2026-11): the bash -c payload that runs the
+         * compile script and captures its output/exit code, as a PURE
+         * function. Every path is [ShellQuote.sh]-quoted: the old
+         * hand-written single quotes let a workspace folder name carrying
+         * a quote, `$()`, backtick or semicolon break out of the quoting
+         * and execute arbitrary text inside Termux. Internal and pure so
+         * the injection regression tests pin it without a device.
+         */
+        internal fun dispatchCommand(
+            rawDir: String,
+            dirName: String,
+            scriptName: String,
+            outName: String,
+            errName: String,
+            codeName: String,
+        ): String {
+            val scriptPath = ShellQuote.sh("$rawDir/$dirName/$scriptName")
+            val outPath = ShellQuote.sh("$rawDir/$dirName/$outName")
+            val errPath = ShellQuote.sh("$rawDir/$dirName/$errName")
+            val codePath = ShellQuote.sh("$rawDir/$dirName/$codeName")
+            return "bash $scriptPath > $outPath 2> $errPath; echo \$? > $codePath"
+        }
     }
 
     // ================================================================
@@ -530,7 +556,10 @@ class HealingAgent(
         val script = buildString {
             appendLine("#!/data/data/com.termux/files/usr/bin/bash")
             appendLine("set -u")
-            appendLine("H=\"$rawDir/$HEAL_DIR\"")
+            // H-1 (code review, 2026-11): the workspace path is user-chosen
+            // (folder NAME picked in the SAF grant) — quoting it terminates
+            // any quote/backtick/dollar-parenthesis a folder name may carry.
+            appendLine("H=" + ShellQuote.sh("$rawDir/$HEAL_DIR"))
             appendLine("command -v kotlinc >/dev/null 2>&1 || { echo \"KOTLINC_MISSING (pkg install kotlin in Termux)\"; exit 1; }")
             appendLine("D8=\"\"")
             appendLine("command -v d8 >/dev/null 2>&1 && D8=d8")
@@ -555,8 +584,11 @@ class HealingAgent(
 
         // Dispatch via Termux RUN_COMMAND with output capture (ShellTool's
         // proven wrapper pattern: base64-transport, code file poll).
+        // H-1 (code review, 2026-11): every path is ShellQuote.sh-quoted —
+        // the old hand-written single quotes let a folder name containing
+        // a quote break out and inject commands into Termux.
         val b64 = android.util.Base64.encodeToString(
-            "bash '$rawDir/$HEAL_DIR/$scriptName' > '$rawDir/$HEAL_DIR/$outName' 2> '$rawDir/$HEAL_DIR/$errName'; echo \$? > '$rawDir/$HEAL_DIR/$codeName'".toByteArray(),
+            dispatchCommand(rawDir, HEAL_DIR, scriptName, outName, errName, codeName).toByteArray(),
             android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
         val wrapper = "printf '%s' '$b64' | base64 -d | bash"
 
@@ -619,9 +651,14 @@ class HealingAgent(
         } else {
             lastCompileDurationMs = System.currentTimeMillis() - t0
             Log.w(TAG, "compile FAILED after $lastCompileDurationMs ms: exit=$code")
+            // M-2 family (code review, 2026-11): the caps announce themselves —
+            // the regeneration prompt must know the compiler output was cut, or
+            // the model believes it saw every error.
+            val outPart = capWithMarker(out, 400)
+            val errPart = capWithMarker(err, MAX_COMPILER_ERROR_CHARS)
             val error = buildString {
                 append("exit=").append(code).append(" ")
-                append(out.take(400)).append(" ").append(err.take(MAX_COMPILER_ERROR_CHARS))
+                append(outPart).append(" ").append(errPart)
             }.trim()
             CompiledPatch(null, error.ifBlank { "unknown compile failure" }, null, emptyList())
         }
@@ -806,6 +843,12 @@ class HealingAgent(
                 is Llm.LlmResponse.ToolUse -> resp.reasoning ?: ""
             }
         }.onFailure {
+            // M-7 (code review, 2026-11): a cancelled coroutine must STAY
+            // cancelled — swallowing CancellationException here made scope
+            // cancellation fight the retry loop until the next delay() woke
+            // up, so a user backing out of a heal waited on a zombie. Only
+            // REAL failures are logged and nulled.
+            if (it is kotlinx.coroutines.CancellationException) throw it
             Log.e(TAG, "LLM call failed: ${it.message}", it)
         }.getOrNull()
     }

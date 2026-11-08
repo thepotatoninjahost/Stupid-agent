@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+
+private const val TAG = "Vorv/ShellTool"
 
 /**
  * DialGuard (audit finding H-1): refuses premium-rate and malformed numbers.
@@ -27,7 +30,14 @@ object DialGuard {
         Regex("""^0900"""),                     // DE 0900 premium-rate (M12: was '^090',
                                               // which matched EVERY Japanese mobile)
         Regex("""^89\d{6,}$"""),                // IT 89x value-added
-        Regex("""^166\d"""),                    // HK 166x adult
+        // L-2 (code review, 2026-11): HK adult 166x lines are EIGHT digits.
+        // The old '^166\d' prefix form matched the international form of
+        // every US number with area code 660–669 written without '+'
+        // ("1-660-555-0123" → "16605550123" → refused) — an 11-digit US
+        // number is not an HK adult line. Anchoring to exactly 8 digits
+        // keeps every real HK 166xxxxx refusal and clears the false
+        // positive; the user-confirmation dialog remains the backstop.
+        Regex("""^166\d{5}$"""),                // HK 8-digit adult 166xxxxx
         Regex("""^190\d"""),                    // AU 190x premium
         Regex("""^118\d{3}$"""),                // UK directory 118xxx
         Regex("""^1-?877-?ext"""),              // obviously malformed junk
@@ -407,6 +417,18 @@ class ShellTool(private val appContext: Context) : Tool {
                 error = "Could not create .$SHELL_DIR directory in the workspace.",
                 durationMs = System.currentTimeMillis() - t0)
 
+        // L-3 (code review, 2026-11): sweep stragglers from TIMED-OUT
+        // dispatches. When the poll gave up, the Termux side may still have
+        // been alive and written its out/err/code files AFTER the tool
+        // returned — nothing ever deleted them, so .vorv-shell/ accumulated
+        // one file-set per dead call, forever. Any file matching our
+        // <16-hex>.{out,err,code} naming that is older than
+        // [STALE_SHELL_FILE_MS] (far beyond any in-flight poll window) is
+        // removed here, before the current call's files are created. The
+        // current call's fresh files can never match the age gate.
+        runCatching { sweepStaleShellFiles(shellDir) }
+            .onFailure { Log.w(TAG, "stale shell-file sweep failed: ${it.message}") }
+
         val id = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
         val outName = "$id.out"
         val errName = "$id.err"
@@ -502,8 +524,42 @@ class ShellTool(private val appContext: Context) : Tool {
     /** Maps a primary-storage SAF tree URI to its /storage/emulated/0/... path. */
     private fun rawWorkspacePath(uriStr: String): String? = SafPaths.rawWorkspacePath(uriStr)
 
-    /** Single-quote for shell, escaping embedded quotes: ' → '\'' */
-    private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+    /**
+     * L-3 (code review, 2026-11): sweep stale output files left behind by
+     * TIMED-OUT shell dispatches. A dispatch that outlived its poll writes
+     * its <id>.out/.err/.code files after the tool already returned — the
+     * normal cleanup never sees them. Every later shell call sweeps files
+     * matching the exact naming scheme that are older than
+     * [STALE_SHELL_FILE_MS] (10 min — far beyond the longest poll window of
+     * 120 s, so an in-flight neighbor call can never be touched; the
+     * current call's own fresh files are likewise immune by age). Pure over
+     * DocumentFile, internal so unit tests pin the name filter.
+     */
+    internal fun sweepStaleShellFiles(shellDir: androidx.documentfile.provider.DocumentFile, nowMs: Long = System.currentTimeMillis()) {
+        for (child in shellDir.listFiles()) {
+            val name = child.name ?: continue
+            if (!STALE_SHELL_NAME.matches(name)) continue
+            val modified = child.lastModified()
+            if (modified > 0 && nowMs - modified > STALE_SHELL_FILE_MS) {
+                runCatching { child.delete() }
+                    .onFailure { Log.w(TAG, "could not delete stale shell file $name: ${it.message}") }
+            }
+        }
+    }
+
+    /** <16 hex>.out|.err|.code — exactly what dispatches create. */
+    internal val STALE_SHELL_NAME = Regex("^[0-9a-f]{16}\\.(out|err|code)$")
+
+    /** Age gate for the sweep: 10 minutes, vs a 120 s max poll window. */
+    internal const val STALE_SHELL_FILE_MS = 10 * 60_000L
+
+    /**
+     * Single-quote for shell, escaping embedded quotes: ' → '\''
+     * H-1 (code review, 2026-11): now a delegation to the single shared copy
+     * [ShellQuote.sh] — the healer and the Termux probe quote through the
+     * same helper, so the escaping discipline cannot drift between call sites.
+     */
+    private fun shQuote(s: String): String = ShellQuote.sh(s)
 
     /**
      * H2 (code review, 2026-11): capped streaming read of a workspace file.

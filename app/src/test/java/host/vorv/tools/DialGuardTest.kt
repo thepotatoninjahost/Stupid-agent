@@ -88,4 +88,21 @@ class DialGuardTest {
         assertNotNull(DialGuard.validate("0900123456"))
         assertNotNull(DialGuard.validate("09001234567".dropLast(1))) // 10 digits, not JP-shaped
     }
+
+    // ------------------------------------------------ L-2: HK 166 anchor
+
+    @Test fun `us area codes 660-669 in international form are accepted`() {
+        // The exact L-2 false positive: "1-660-…" normalized to "1660…"
+        // matched the old '^166\d' prefix and was refused as HK adult.
+        assertNull(DialGuard.validate("1-660-555-0123"))
+        assertNull(DialGuard.validate("1-669-555-0123"))
+        assertNull(DialGuard.validate("16605550123"))
+        assertNull(DialGuard.validate("+1 660 555 0123"))
+    }
+
+    @Test fun `real eight-digit HK 166 adult numbers are still refused`() {
+        // HK numbers are 8 digits: 166xxxxx stays blocked after the anchor.
+        assertNotNull(DialGuard.validate("16681234"))
+        assertNotNull(DialGuard.validate("166 812 34"))
+    }
 }
