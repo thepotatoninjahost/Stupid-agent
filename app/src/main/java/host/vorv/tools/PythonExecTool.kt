@@ -67,7 +67,19 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
      */
     private val runMutex = Mutex()
 
-    /** Per-task one-shot consent (audit C-1): the first call prompts. */
+    /**
+     * Per-task one-shot consent (audit C-1): the first call prompts.
+     *
+     * M-8 (code review, 2026-11): FAIL-CLOSED tri-state. The old
+     * `putIfAbsent(taskId, true)` marked the task consented BEFORE the
+     * dialog even opened — if `confirm()` threw (UI bridge glitch) or the
+     * tool timed out mid-dialog, the leftover `true` meant the model's
+     * plain RETRY skipped the gate entirely and ran the code unconsented.
+     * Now: `false` = asked/pending (a concurrent parallel call fails
+     * closed honestly), `true` = granted (written only AFTER an explicit
+     * allow), absent = not asked (denials, exceptions and cancellations
+     * all clean up so the next call re-asks — never silently runs).
+     */
     private val consentedTasks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
@@ -79,27 +91,62 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
             .coerceIn(500, 30_000)
 
         // ---- audit C-1: user consent on the first execution of this task ----
-        if (consentedTasks.putIfAbsent(ctx.taskId, true) == null) {
-            val confirm = ctx.confirm
-                ?: return@withContext ToolResult(
-                    ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
-                    error = "User confirmation bridge unavailable — refusing to run " +
-                        "python_exec (fail closed).",
-                )
-            // N-I4: the COMPLETE program is shown — never truncated, no
-            // matter how long. The user approves exactly what they see.
-            val allowed = confirm(
-                "Vorv wants to run PYTHON CODE in-app (first run for this task; later " +
-                    "runs in the same task won't re-prompt). The sandbox blocks files, " +
-                    "network and processes — but an in-process sandbox is hardening, " +
-                    "not a security barrier.\n\n$code\n\nAllow?")
-            if (!allowed) {
-                consentedTasks.remove(ctx.taskId)
+        when (consentedTasks.putIfAbsent(ctx.taskId, false)) {
+            null -> {
+                // First call for this task: we own the ask.
+                val confirm = ctx.confirm
+                if (confirm == null) {
+                    consentedTasks.remove(ctx.taskId)
+                    return@withContext ToolResult(
+                        ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                        error = "User confirmation bridge unavailable — refusing to run " +
+                            "python_exec (fail closed).",
+                    )
+                }
+                // N-I4: the COMPLETE program is shown — never truncated, no
+                // matter how long. The user approves exactly what they see.
+                val allowed = try {
+                    confirm(
+                        "Vorv wants to run PYTHON CODE in-app (first run for this task; later " +
+                            "runs in the same task won't re-prompt). The sandbox blocks files, " +
+                            "network and processes — but an in-process sandbox is hardening, " +
+                            "not a security barrier.\n\n$code\n\nAllow?")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // User STOP or tool timeout mid-dialog: clean the pending
+                    // entry so a retry re-asks, then propagate the cancellation.
+                    consentedTasks.remove(ctx.taskId)
+                    throw e
+                } catch (e: Exception) {
+                    // The bridge itself failed: clean up and FAIL CLOSED —
+                    // the old code left the task marked consented here, so
+                    // the model's plain retry ran the code unconsented.
+                    consentedTasks.remove(ctx.taskId)
+                    return@withContext ToolResult(
+                        ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                        error = "The consent dialog failed (${e.message}) — refusing to run " +
+                            "python_exec (fail closed). Nothing was executed.",
+                    )
+                }
+                if (!allowed) {
+                    consentedTasks.remove(ctx.taskId)
+                    return@withContext ToolResult(
+                        ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                        error = "User DENIED python execution. Do not claim it ran.",
+                    )
+                }
+                // Granted — and ONLY now does the task count as consented.
+                consentedTasks[ctx.taskId] = true
+            }
+            false -> {
+                // A parallel call for the same task while the dialog is up:
+                // fail closed honestly instead of racing the pending ask.
                 return@withContext ToolResult(
                     ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
-                    error = "User DENIED python execution. Do not claim it ran.",
+                    error = "The python consent dialog for this task is already open — wait " +
+                        "for the user's answer, then retry.",
                 )
             }
+            // true → already granted for this task; proceed.
         }
 
         if (started.compareAndSet(false, true)) {
