@@ -141,24 +141,35 @@ val healerAssetsDir = layout.buildDirectory.dir("generated/healer/assets")
  * healer extracts this jar once and stages it into the workspace so
  * kotlinc can resolve the app's own types (Tool, ToolContext, ...).
  *
- * The output DIRECTORY is the generated assets root, and the nested
- * archive name ("healer/app_classes.jar") places the jar one level below
- * it — the APK still ships assets/healer/app_classes.jar, the exact path
- * HealingAgent reads. The root-level output directory is required by the
- * addGeneratedSourceDirectory wiring below.
+ * L-7 (code review, 2026-11): the jar is PER-VARIANT. The old single task
+ * always packaged `tmp/kotlin-classes/DEBUG` and registered it as a
+ * generated asset for EVERY variant — the RELEASE APK shipped
+ * debug-compiled bytecode as its healer classpath, so a release-side
+ * self-repair compiled patches against debug classes (different
+ * BuildConfig, no R8 keep-rule alignment) while PatchVerifier compared
+ * against the release originals. Each variant now embeds ITS OWN compiled
+ * classes; the archive name and asset path ("healer/app_classes.jar") are
+ * unchanged, so HealingAgent reads the same path in both builds.
+ *
+ * The output DIRECTORY is the per-variant generated assets root, and the
+ * nested archive name ("healer/app_classes.jar") places the jar one level
+ * below it — the APK still ships assets/healer/app_classes.jar, the exact
+ * path HealingAgent reads. The root-level output directory is required by
+ * the addGeneratedSourceDirectory wiring below.
  */
-tasks.register<Jar>("packageHealerClasspath") {
-    archiveFileName.set("healer/app_classes.jar")
-    destinationDirectory.set(healerAssetsDir)
-    // The compiled app classes (Kotlin output + generated BuildConfig) so a
-    // patch can compile against every app type it references.
-    from(layout.buildDirectory.dir("tmp/kotlin-classes/debug"))
-    from(layout.buildDirectory.dir("generated/source/buildConfig/debug"))
-    dependsOn("compileDebugKotlin")
-}
-
 androidComponents {
     onVariants { variant ->
+        val v = variant.name
+        val capitalized = v.replaceFirstChar { it.uppercase() }
+        val packageHealerClasspathVariant = tasks.register<Jar>("packageHealerClasspath$capitalized") {
+            archiveFileName.set("healer/app_classes.jar")
+            destinationDirectory.set(healerAssetsDir.map { it.dir("$v/") })
+            // The compiled app classes (Kotlin output + generated BuildConfig)
+            // of THIS variant, so a patch compiles against what actually runs.
+            from(layout.buildDirectory.dir("tmp/kotlin-classes/$v"))
+            from(layout.buildDirectory.dir("generated/source/buildConfig/$v"))
+            dependsOn("compile${capitalized}Kotlin")
+        }
         // Register the jar task as a GENERATED asset producer through the
         // variant API. AGP then threads a provider-based dependency into
         // EVERY consumer of the variant's assets — merge<Variant>Assets,
@@ -171,7 +182,7 @@ androidComponents {
         // code passed three other runs. A build-ordering coin flip, now
         // structurally impossible.
         variant.sources.assets?.addGeneratedSourceDirectory(
-            tasks.named("packageHealerClasspath", Jar::class.java),
+            packageHealerClasspathVariant,
             // Lambda (not Jar::destinationDirectory — a synthetic Java
             // property reference, which needs Kotlin 2.1).
             { it.destinationDirectory },
@@ -187,11 +198,20 @@ androidComponents {
 // the concrete consumer task types as well — a duplicate dependsOn is
 // idempotent, so both mechanisms can coexist, and the build order becomes
 // deterministic instead of a task-scheduling coin flip.
+// L-7: each consumer task is mapped to the jar of ITS OWN variant, so a
+// debug build never compiles release classes or vice versa.
+val knownVariants = listOf("debug", "release")
 tasks.withType<com.android.build.gradle.tasks.MergeSourceSetFolders>().configureEach {
-    dependsOn("packageHealerClasspath")
+    val v = knownVariants.firstOrNull {
+        name.equals("merge${it.replaceFirstChar(Char::uppercase)}Assets", ignoreCase = true)
+    }
+    if (v != null) dependsOn("packageHealerClasspath${v.replaceFirstChar { it.uppercase() }}")
 }
 tasks.withType<com.android.build.gradle.internal.lint.LintModelWriterTask>().configureEach {
-    dependsOn("packageHealerClasspath")
+    val v = knownVariants.firstOrNull {
+        name.contains(it.replaceFirstChar(Char::uppercase), ignoreCase = true)
+    }
+    if (v != null) dependsOn("packageHealerClasspath${v.replaceFirstChar { it.uppercase() }}")
 }
 
 dependencies {
