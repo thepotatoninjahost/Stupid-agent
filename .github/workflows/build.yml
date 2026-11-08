@@ -2,7 +2,20 @@ name: Build Vorv APK
 
 on:
   push:
-    branches: [main, 'feature/**', 'fix/**']
+    # I-2 (code review, 2026-11): dependabot/** added — dependabot pushes
+    # branches named "dependabot/gradle/…" in THIS repo, which matched
+    # neither feature/** nor fix/**: every dependency-bump PR used to get
+    # ZERO CI (no tests, no compile) before being mergeable.
+    branches: [main, 'feature/**', 'fix/**', 'dependabot/**']
+  # I-2: pull requests targeting main now run the FULL test + compile gate.
+  # Fork PRs used to get nothing at all (their branches live in the fork,
+  # where this workflow doesn't exist); same-repo PRs only got push CI by
+  # accident of branch naming. PR runs are read-token-safe: keystore
+  # decode is skipped (secrets never reach fork PRs → HAS_KEYSTORE=false),
+  # and the artifact deletion/upload/rolling-release steps are gated to
+  # push events below — a read-only fork token can never be asked to write.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # Superseded runs on the same ref are cancelled (no wasted minutes, no
@@ -158,6 +171,10 @@ jobs:
       # Both artifacts remain real artifacts (7-day retention kept for CI
       # consumers); nothing was removed.
       - name: Delete this repo's artifacts from previous runs
+        # I-2: push runs only — on pull_request runs (especially from
+        # forks) the token is read-only and deletion is neither possible
+        # nor needed; PR runs upload no artifacts to begin with.
+        if: github.event_name == 'push'
         run: |
           gh api --paginate "repos/$GH_REPO/actions/artifacts" \
             -q '.artifacts[] | select(.expired == false) | .id' \
@@ -179,6 +196,10 @@ jobs:
       # rolling release, the run goes red. A broken build can never hide.
       - name: Upload debug APK artifact
         continue-on-error: true
+        # I-2: artifacts are a push-run deliverable; pull_request runs gate
+        # on tests + compile and upload nothing (no quota, no fork-token
+        # writes).
+        if: github.event_name == 'push'
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -188,6 +209,7 @@ jobs:
 
       - name: Upload release APK artifact
         continue-on-error: true
+        if: github.event_name == 'push'
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -197,7 +219,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload signed release APK artifact
-        if: env.HAS_KEYSTORE == 'true'
+        if: github.event_name == 'push' && env.HAS_KEYSTORE == 'true'
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
