@@ -318,7 +318,7 @@ jobs:
       - name: Publish Release
         if: env.HAS_KEYSTORE == 'true'
         # softprops/action-gh-release v3.0.3
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3
         with:
           tag_name: v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}
           name: Vorv build ${{ env.SHORT_SHA }}
