@@ -51,7 +51,8 @@ class ShellQuoteTest {
 
     @Test
     fun `double quotes and dollar signs are inert`() {
-        assertEquals("'\"$HOME\"'", ShellQuote.sh("\"$HOME\""))
+        // \$ — literal "$HOME" text; unescaped it would be a Kotlin template.
+        assertEquals("'\"\$HOME\"'", ShellQuote.sh("\"\$HOME\""))
     }
 
     @Test
