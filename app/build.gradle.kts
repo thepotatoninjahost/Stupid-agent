@@ -1,6 +1,10 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // Dependency wave 2026-11-09 / AGP 9: Kotlin support is BUILT IN to AGP
+    // 9.0+ — the kotlin-android plugin is removed (applying it alongside
+    // AGP 9 is a hard error, not a warning). The Kotlin toolchain version
+    // is resolved from the KGP-based plugins still on the classpath
+    // (kotlin-compose below), so the catalog's kotlin pin stays meaningful.
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.chaquopy)
@@ -8,14 +12,21 @@ plugins {
 
 android {
     namespace = "host.vorv"
-    compileSdk = 35
+    // Dependency wave 2026-11-09: compileSdk 35 → 37 (Android 17) — the floor
+    // demanded by navigation-compose 2.10.2 and the Compose 1.12 BOM
+    // (compileSdk 37, AGP 9.1+ per their AAR metadata). targetSdk stays 35
+    // this wave deliberately: a target bump changes RUNTIME behaviors
+    // (notification trampolines, FGS rules, broadcast delivery) and would
+    // contaminate the owner's first on-device acceptance pass of the v0.7.6
+    // remediation. It rides the NEXT wave, on its own, with its own tests.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.7.6"
+        versionCode = 36
+        versionName = "0.7.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -85,7 +96,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    // AGP 9 built-in Kotlin: kotlinOptions is gone with kotlin-android; the
+    // JVM target follows compileOptions above (Java 17).
     buildFeatures {
         compose = true
         buildConfig = true

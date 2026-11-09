@@ -1,3 +1,33 @@
+# Changelog — the dependency wave (v0.7.7, 2026-11-09)
+
+The coordinated major-stack migration from the DEVELOPMENT.md roadmap,
+executed as ONE verified wave so the five open dependabot PRs (#6, #7, #8,
+#9, #10) land green together instead of red one at a time — their failures
+were each one HALF of this wave (KSP without AGP 9; okhttp 5's Kotlin 2.2
+bytecode against a Kotlin 2.0 compiler; Compose 1.12 against compileSdk 35).
+
+- Gradle 8.9 → 9.8.2 (dependabot's PR #9 pin; mirror URL + official sha256)
+- AGP 8.7.3 → 9.5.1 — Kotlin support is now BUILT IN: the kotlin-android
+  plugin is REMOVED (required by AGP 9, not a downgrade — the Compose
+  compiler plugin still pins the 2.4.21 toolchain); `kotlinOptions` → gone
+  with it, JVM target follows `compileOptions` (17)
+- Kotlin 2.0.21 → 2.4.21, KSP → 2.3.13, coroutines → 1.11.0 (PR #6)
+- compileSdk 35 → 37 (floor demanded by navigation 2.10.2 / Compose 1.12
+  AAR metadata); targetSdk stays 35 on purpose — a target bump changes
+  runtime behavior and rides its own wave with its own tests
+- androidx: coreKtx 1.19.1, composeBom 2026.09.00, navigation 2.10.2,
+  room 2.8.5, datastore 1.3.0, work 2.12.0, documentfile 1.1.0 (PR #10)
+- okhttp/mockwebserver 4.12.1 → 5.5.1 (PR #7; also the cert-blocklist
+  security line), chaquopy 15.0.1 → 17.2.0 (PR #8)
+- versionCode 36 / versionName 0.7.7
+
+Verified BEFORE the push, on the exact commit: 369 unit tests, 0 failures;
+Python sandbox self-test ALL PASSED; source mirror 60 files / 0 problems;
+debug APK (182.6 MB) and R8-minified release APK (107.5 MB) both assemble
+with version pins 36/0.7.7.
+
+---
+
 # Changelog — full code-review remediation (released as v0.7.6)
 
 Shipped in the `ci-latest` APK built from `main` on 2026-11-09: the fix

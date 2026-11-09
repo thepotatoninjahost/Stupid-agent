@@ -1,38 +1,37 @@
 [versions]
-# I-3 (code review, 2026-11) — verified dependency upgrades. Every version
-# below was confirmed to EXIST on Google Maven / Maven Central (HEAD-checked)
-# and to sit INSIDE the current build envelope (Gradle 8.9 / AGP 8.7.x /
-# Kotlin 2.0.21 / compileSdk 35), so CI stays green by construction:
-#   - agp 8.7.0 → 8.7.3 (bug-fix patch; same Gradle 8.9 minimum)
-#   - ksp 2.0.21-1.0.27 → 2.0.21-1.0.28 (patch)
-#   - okhttp 4.12.0 → 4.12.1 (security backport: refreshed certificate
-#     blocklist for the compromised eMudhra intermediates — the same fix
-#     OkHttp shipped in 5.5.1, backported to 4.x) + mockwebserver to match
-#   - coroutines 1.9.0 → 1.10.2 (+ coroutinesTest)
-#   - gson 2.11.0 → 2.13.2
-#   - lifecycle 2.8.6 → 2.8.7 (patch)
-#   - coreKtx 1.13.1 → 1.15.0 (compileSdk 35 ✓)
-#   - datastore 1.1.1 → 1.1.7 (patch line)
-#   - composeBom 2024.10.01 → 2025.04.01 (Compose 1.8.0, compileSdk 35 ✓;
-#     NOT the 2025.08+/2026.x BOMs — Compose 1.9+ targets newer SDK levels)
-#   - work 2.9.1 → 2.10.0 (compileSdk 35 ✓)
-# The MAJOR jumps (AGP 9.5 + Gradle 9.6 + Kotlin 2.4 + KSP-for-2.4 +
-# Compose BOM 2026.09 + OkHttp 5.5.1 + Room 2.7 + a Chaquopy release that
-# supports them) are a separate coordinated migration — see the upgrade
-# roadmap in DEVELOPMENT.md. "Never downgrade" includes not shipping a
-# blind major bump that breaks the build.
-agp = "8.7.3"
-kotlin = "2.0.21"
-ksp = "2.0.21-1.0.28"
-chaquopy = "15.0.1"
-coreKtx = "1.15.0"
+# Dependency wave 2026-11-09 — the coordinated major migration from the
+# DEVELOPMENT.md roadmap (I-3), executed as one verified wave so the five
+# open dependabot PRs land together instead of red:
+#   PR #9  Gradle 8.9 → 9.8.2 (wrapper; mirror URL + official sha256)
+#   PR #6  Kotlin 2.0.21 → 2.4.21, KSP 2.0.21-1.0.28 → 2.3.13,
+#          coroutines 1.10.2 → 1.11.0 (+test)
+#   PR #10 androidx: coreKtx 1.19.1, composeBom 2026.09.00,
+#          navigationCompose 2.10.2, room 2.8.5 (+testing), datastore 1.3.0,
+#          work 2.12.0, documentfile 1.1.0
+#   PR #7  mockwebserver 4.12.1 → 5.5.1 (+ okhttp main dep to match;
+#          okhttp 5.x is Kotlin-2.2-built, which is also why the old stack
+#          could not even compile the test classpath)
+#   PR #8  chaquopy 15.0.1 → 17.2.0 (already green on the old stack)
+# Toolchain floor raised to match, per the AAR metadata errors that failed
+# PR #10 on the old stack (navigation-compose 2.10.2 requires compileSdk 37;
+# compose 1.12.1 requires AGP 9.1.0+): AGP 8.7.3 → 9.5.1, compileSdk 37,
+# versionCode 36 / versionName 0.7.7. Every pin below was verified to exist
+# (HEAD-checked on Google Maven / the mirrors this build actually uses) and
+# the full 369-test suite + both APK assembles pass on this stack locally
+# before the push. "Never downgrade" includes never shipping a blind major
+# bump — this one ships verified.
+agp = "9.5.1"
+kotlin = "2.4.21"
+ksp = "2.3.13"
+chaquopy = "17.2.0"
+coreKtx = "1.19.1"
 lifecycle = "2.8.7"
 activityCompose = "1.9.3"
-composeBom = "2025.04.01"
-navigationCompose = "2.8.3"
-room = "2.6.1"
-okhttp = "4.12.1"
-coroutines = "1.10.2"
+composeBom = "2026.09.00"
+navigationCompose = "2.10.2"
+room = "2.8.5"
+okhttp = "5.5.1"
+coroutines = "1.11.0"
 # Rhino 1.7.15.1 — the CVE-2025-66453 (toFixed DoS) fix release (audit M-3).
 # The existing JsExecToolTest attack suite is the safety net for the upgrade.
 rhino = "1.7.15.1"
@@ -49,9 +48,9 @@ rhino = "1.7.15.1"
 #   - libnpu_jni.so                                             → Java JNI bindings
 # Hexagon HTP v81 = the S25's Snapdragon 8 Elite for Galaxy NPU version.
 geniexAndroid = "0.10.0"
-datastore = "1.1.7"
-work = "2.10.0"
-documentfile = "1.0.1"
+datastore = "1.3.0"
+work = "2.12.0"
+documentfile = "1.1.0"
 # At-rest encryption for the stored API key (Android Keystore-backed master key).
 securityCrypto = "1.1.0"
 # Robust HTML parsing for web_fetch (replaces regex-based stripping).
@@ -64,9 +63,9 @@ gson = "2.13.2"
 junit = "4.13.2"
 robolectric = "4.17"
 androidxTestCore = "1.7.0"
-coroutinesTest = "1.10.2"
-mockwebserver = "4.12.1"
-roomTesting = "2.6.1"
+coroutinesTest = "1.11.0"
+mockwebserver = "5.5.1"
+roomTesting = "2.8.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
