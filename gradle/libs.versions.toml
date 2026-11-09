@@ -58,7 +58,7 @@ jsoup = "1.23.2"
 # JSON — used directly by the kernel, tools and LLM layer. Was previously a
 # transitive dependency via Retrofit's converter; now declared explicitly
 # because Retrofit was removed (audit L-5).
-gson = "2.13.2"
+gson = "2.15.0"
 # Test-only
 junit = "4.13.2"
 robolectric = "4.17"
