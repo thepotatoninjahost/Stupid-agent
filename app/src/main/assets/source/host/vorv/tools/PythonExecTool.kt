@@ -146,7 +146,10 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
                         "for the user's answer, then retry.",
                 )
             }
-            // true → already granted for this task; proceed.
+            true -> {
+                // Already granted earlier in this task — no gate to run;
+                // proceed straight to execution below.
+            }
         }
 
         if (started.compareAndSet(false, true)) {

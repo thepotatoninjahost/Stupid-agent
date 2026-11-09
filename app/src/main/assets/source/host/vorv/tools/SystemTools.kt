@@ -551,7 +551,7 @@ class ShellTool(private val appContext: Context) : Tool {
     internal val STALE_SHELL_NAME = Regex("^[0-9a-f]{16}\\.(out|err|code)$")
 
     /** Age gate for the sweep: 10 minutes, vs a 120 s max poll window. */
-    internal const val STALE_SHELL_FILE_MS = 10 * 60_000L
+    internal val STALE_SHELL_FILE_MS = 10 * 60_000L
 
     /**
      * Single-quote for shell, escaping embedded quotes: ' → '\''
