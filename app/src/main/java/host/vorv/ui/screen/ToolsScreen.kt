@@ -22,9 +22,12 @@ fun ToolsScreen(state: AgentState) {
     // wired in v0.7.0) was missing from this inventory — the screen showed
     // "16 tools" while the agent actually has 17. The list now matches
     // AgentViewModel's tool list one-for-one (memory_write … self_fix).
+    // v0.8.0: memory_web (the 18th registered tool) — the agent's window
+    // into its own knowledge web, added with the graph memory itself.
     val ready = listOf(
         "memory_write" to "Persist a fact for future sessions (Room + FTS4)",
         "memory_recall" to "FTS4 keyword search + LIKE fallback",
+        "memory_web" to "Inspect the associative knowledge web: stats, keyword query, one node by id — the graph that grows from every chat and task",
         "js_exec" to "Rhino sandbox: ClassShutter, no Java interop, 5s budget",
         "file_read" to "Read a file from granted workspace (SAF, 50KB cap)",
         "file_write" to "Write/overwrite a file in workspace (SAF, 1MB cap)",

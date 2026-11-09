@@ -29,6 +29,7 @@ import host.vorv.tools.FileReadTool
 import host.vorv.tools.FileWriteTool
 import host.vorv.tools.JsExecTool
 import host.vorv.tools.MemoryRecallTool
+import host.vorv.tools.MemoryWebTool
 import host.vorv.tools.MemoryWriteTool
 import host.vorv.tools.NotifyTool
 import host.vorv.tools.PermissionBridge
@@ -172,6 +173,7 @@ class AgentViewModel(
     private val tools = listOf(
         MemoryWriteTool(db),
         MemoryRecallTool(db),
+        MemoryWebTool(db.knowledgeGraphDao()),
         JsExecTool(),
         FileReadTool(appContext),
         FileWriteTool(appContext),
@@ -190,6 +192,12 @@ class AgentViewModel(
     )
 
     private val outputDir = File(appContext.cacheDir, "tool_outputs")
+
+    // v0.8.0 — the knowledge web's learning half: every chat message and
+    // every task outcome feeds the associative graph (owner spec,
+    // 2026-11-09). All ingestion is wrapped in runCatching by the callers —
+    // a failure to learn must NEVER fail a task.
+    private val memoryLearner = host.vorv.knowledge.MemoryLearner(db.knowledgeGraphDao())
 
     // v0.6.8 dispatch: the kernel is created through PatchRegistry so a
     // verified, approved patch of CognitiveKernel actually RUNS (same-FQCN
@@ -873,6 +881,12 @@ class AgentViewModel(
         }
         persistChat(userMsg)   // M1
 
+        // v0.8.0 — learn from EVERY message: operator identity, preferences,
+        // taught facts. Learning failure must never break the task.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { memoryLearner.ingestUserMessage(trimmed) }
+        }
+
         currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
             db.taskDao().insert(task)
@@ -956,6 +970,13 @@ class AgentViewModel(
                 }
                 persistChat(assistantMsg)   // M1
                 db.taskDao().complete(task.id, result.answer.take(500), if (result.ok) "completed" else "failed")
+
+                // v0.8.0 — the task's outcome becomes a lesson node wired
+                // into the knowledge web, with the REAL tool roster.
+                runCatching {
+                    val toolNames = db.toolCallDao().forTask(task.id).map { it.toolName }
+                    memoryLearner.ingestOutcome(trimmed, result.ok, toolNames, result.iterations)
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // v0.6.16: the user pressed STOP (header button or "stop" in
                 // chat). Honest, immediate, final. DB write needs
@@ -1003,9 +1024,16 @@ class AgentViewModel(
      * for the full story and the frozen-signature constraint). The pure
      * builder lives in the kernel package so it is unit-testable without
      * Android; this wrapper just feeds it the live chat state.
+     *
+     * v0.8.0 — SUSPEND: the knowledge web is now woven in here too. The
+     * associative activation (KnowledgeGraph.activate) runs over the learned
+     * graph, its section (KnowledgePrompt.section) is appended after the
+     * conversation window, and the woken nodes get touched (use strengthens
+     * memory). runCatching guards the whole wake-up: a brain that fails to
+     * wake must never kill the task — the prompt ships without the web.
      */
-    internal fun buildPromptWithContext(newMessage: String, localEngine: Boolean): String =
-        host.vorv.kernel.ConversationPrompt.build(
+    internal suspend fun buildPromptWithContext(newMessage: String, localEngine: Boolean): String {
+        val base = host.vorv.kernel.ConversationPrompt.build(
             newMessage = newMessage,
             // The current user message was ALREADY appended to state by
             // send() before this runs — drop it; it is delivered as the
@@ -1015,6 +1043,44 @@ class AgentViewModel(
                 .map { host.vorv.kernel.ConversationPrompt.Turn(it.role, it.content) },
             localEngine = localEngine,
         )
+        val web = runCatching { knowledgeSection(newMessage, localEngine) }.getOrDefault("")
+        return if (web.isBlank()) base else "$base\n\n$web"
+    }
+
+    /**
+     * Wake the knowledge web for [message]: activate, strengthen the woken
+     * nodes, format the section. Blank when nothing associates.
+     */
+    private suspend fun knowledgeSection(message: String, localEngine: Boolean): String {
+        val dao = db.knowledgeGraphDao()
+        val nodeRows = dao.recentNodes(500)
+        if (nodeRows.isEmpty()) return ""
+        val edgeRows = dao.recentEdges(1000)
+        val activation = host.vorv.knowledge.KnowledgeGraph.activate(
+            message,
+            nodeRows.map {
+                host.vorv.knowledge.KnowledgeGraph.Node(it.id, it.kind, it.topic, it.content, it.salience, it.accessCount)
+            },
+            edgeRows.map {
+                host.vorv.knowledge.KnowledgeGraph.Edge(it.fromId, it.toId, it.relation, it.weight)
+            },
+            maxNodes = if (localEngine) 8 else 16,
+            maxEdges = if (localEngine) 6 else 12,
+        )
+        if (activation.nodes.isEmpty()) return ""
+
+        // Use strengthens: each woken node's salience is decay-adjusted
+        // then bumped; accessCount++ and lastAccessedAt=now via touch().
+        val now = System.currentTimeMillis()
+        for (n in activation.nodes) {
+            val lastAccess = nodeRows.firstOrNull { it.id == n.id }?.lastAccessedAt
+            val decayed = host.vorv.knowledge.KnowledgeGraph.decay(n.salience, lastAccess, now)
+            runCatching { dao.touch(n.id, (decayed + 0.05f).coerceAtMost(1f), now) }
+        }
+
+        val operator = dao.operator()?.name
+        return host.vorv.kernel.KnowledgePrompt.section(activation, operator, localEngine)
+    }
 
     // ------------------------------------------------------- boot self-diagnosis
 
@@ -1152,6 +1218,14 @@ class AgentViewModel(
                 }
                 persistChat(assistantMsg)
                 db.taskDao().complete(task.id, result.answer.take(500), if (result.ok) "completed" else "failed")
+                // v0.8.0 — boot-diagnosis outcomes learn too (they are the
+                // richest lessons: what crashed and what fixed it).
+                runCatching {
+                    val toolNames = db.toolCallDao().forTask(task.id).map { it.toolName }
+                    memoryLearner.ingestOutcome(
+                        task.prompt, result.ok, toolNames, result.iterations,
+                    )
+                }
                 // The agent has reported on this crash — mark the evidence
                 // handled so the raw-report dialog never resurfaces it on a
                 // later boot (files stay on disk for crash_logs).

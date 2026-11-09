@@ -17,8 +17,11 @@ import host.vorv.data.entity.*
         ToolCall::class,
         Artifact::class,
         ChatMessageEntity::class,
+        KnowledgeNodeEntity::class,
+        KnowledgeEdgeEntity::class,
+        OperatorProfileEntity::class,
     ],
-    version = 3,
+    version = 4,
     // Schema JSON export is deliberately OFF: it's tooling sugar, and the
     // KSP arg-based export path is flaky across variants in clean CI
     // environments (Room 2.6.1 "Empty schema file" in kspReleaseKotlin).
@@ -35,6 +38,7 @@ abstract class VorvDatabase : RoomDatabase() {
     abstract fun toolCallDao(): ToolCallDao
     abstract fun artifactDao(): ArtifactDao
     abstract fun chatMessageDao(): ChatMessageDao
+    abstract fun knowledgeGraphDao(): KnowledgeGraphDao
 
     companion object {
         /**
@@ -80,6 +84,63 @@ abstract class VorvDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        /**
+         * v3 → v4 (owner spec, 2026-11-09): the knowledge web — nodes, edges,
+         * and the single-operator profile. Fresh CREATEs on upgrade; existing
+         * tables (including the flat `knowledge` memory) are untouched — the
+         * web is a new associative layer, not a replacement.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `knowledge_nodes` (
+                        `id` TEXT NOT NULL,
+                        `ts` INTEGER NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `topic` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `citationType` TEXT NOT NULL,
+                        `citationRef` TEXT NOT NULL,
+                        `salience` REAL NOT NULL,
+                        `accessCount` INTEGER NOT NULL,
+                        `lastAccessedAt` INTEGER,
+                        PRIMARY KEY(`id`)
+                    )""".trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_nodes_kind` ON `knowledge_nodes` (`kind`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_nodes_topic` ON `knowledge_nodes` (`topic`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_nodes_ts` ON `knowledge_nodes` (`ts`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_nodes_salience` ON `knowledge_nodes` (`salience`)")
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `knowledge_edges` (
+                        `id` TEXT NOT NULL,
+                        `fromId` TEXT NOT NULL,
+                        `toId` TEXT NOT NULL,
+                        `relation` TEXT NOT NULL,
+                        `weight` REAL NOT NULL,
+                        `ts` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )""".trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_edges_fromId` ON `knowledge_edges` (`fromId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_knowledge_edges_toId` ON `knowledge_edges` (`toId`)")
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_knowledge_edges_fromId_toId_relation` " +
+                        "ON `knowledge_edges` (`fromId`, `toId`, `relation`)"
+                )
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `operator_profile` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `learnedFrom` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )""".trimIndent()
+                )
+            }
+        }
+
+        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     }
 }

@@ -1,3 +1,54 @@
+# Changelog — the knowledge web (v0.8.0, 2026-11-09)
+
+The non-linear brain (owner spec, 2026-11-09): "a memory and knowledge web
+type brain and thought process… learn from every chat, project, every
+experience, and interaction… 100% honest and 100% loyal to me and me only."
+
+What that means in shipped code — no mysticism, all of it tested:
+
+- **The web itself** — `knowledge_nodes` + `knowledge_edges` (Room v3→v4
+  migration, existing data untouched; the flat `knowledge` table stays for
+  memory_write/memory_recall). Nodes are facts, preferences, events,
+  lessons, skills, and the operator; edges are typed weighted associations.
+- **Associative retrieval** (`KnowledgeGraph`, pure Kotlin): bounded
+  spreading activation — seed by token overlap, spread one hop (0.45·weight)
+  and a second (0.15·weight), cut by activation. A message about the porch
+  light wakes the evening-routine node it is connected to even though that
+  node matched ZERO tokens. That is the non-linear property, pinned by test.
+- **Learning from every interaction** (`MemoryLearner`): each chat message
+  mines operator identity / preferences / taught facts; each finished task
+  (chat AND boot-diagnosis paths) becomes a lesson node carrying the real
+  tool roster and iteration count. Re-learning STRENGTHENS the node instead
+  of stacking a copy; new nodes wire up to three `related` edges by keyword
+  overlap. Failure to learn never fails a task (runCatching everywhere).
+- **Thought process** (`KnowledgePrompt` + prompt weave): the activated
+  subgraph rides in every task prompt after the conversation window —
+  labeled associative (never "history"), each node citable by short id,
+  budgets honest per engine (local 6 nodes/550 chars, cloud 12/1600),
+  omissions announced. Use strengthens: woken nodes' salience is
+  decay-adjusted then bumped; idle nodes forget at −0.02/day after a grace
+  week, floor 0.05.
+- **The agent reading its own brain** — `memory_web` tool (18th registered,
+  ToolsScreen inventory updated one-for-one): stats / keyword query / node
+  by id, fail-closed errors, citation-backed so web-grounded statements
+  carry tappable proof chips.
+- **Loyalty as an enforceable property, not a promise** — a single
+  `operator_profile` row, learned from the owner's own words ("my name
+  is…"). Every non-empty knowledge section pins: "Single operator: <name>.
+  You serve this operator only. Honesty rules are absolute: cite evidence
+  or say you don't know." One principal, recorded and repeated — that is
+  what "loyal to me and me only" can honestly mean in code.
+- **"His own computer"** — unchanged and already true: Vorv runs entirely
+  on-device (local LLM via GenieX/NPU, Room, Termux, SAF) — the phone IS
+  the computer; nothing about this brain requires a server.
+
+Honest limits, stated in place: learning is heuristic pattern extraction
+from the operator's real words and real task records — never invented
+content, never mind-reading. It is a growing associative memory, not
+sentience.
+
+---
+
 # Changelog — the dependency wave (v0.7.7, 2026-11-09)
 
 The coordinated major-stack migration from the DEVELOPMENT.md roadmap,
