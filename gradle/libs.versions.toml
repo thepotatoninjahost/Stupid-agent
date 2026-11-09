@@ -65,7 +65,7 @@ junit = "4.13.2"
 robolectric = "4.17"
 androidxTestCore = "1.7.0"
 coroutinesTest = "1.10.2"
-mockwebserver = "4.12.1"
+mockwebserver = "5.5.1"
 roomTesting = "2.6.1"
 
 [libraries]
