@@ -1,4 +1,9 @@
-# Changelog — full code-review remediation (2026-11-08, on top of v0.7.5)
+# Changelog — full code-review remediation (released as v0.7.6)
+
+Shipped in the `ci-latest` APK built from `main` on 2026-11-09: the fix
+series below (14 commits on top of v0.7.5) plus this version bump, so the
+remediated build is distinguishable on-device (Settings → Apps → Vorv →
+0.7.6, versionCode 35).
 
 Every code defect from the line-by-line code review, fixed — no downgrades,
 no removed guards. 2 High, 9 Medium, 6 Low, 3 Info, plus regression tests
