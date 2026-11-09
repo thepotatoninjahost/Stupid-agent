@@ -88,13 +88,18 @@ class WebFetchToolTest {
         assertTrue(r.error!!.contains("too large", ignoreCase = true))
     }
 
-    @Test fun `output is capped at 8000 chars`() {
+    @Test fun `output is capped at 8000 chars with an honest marker`() {
         val big = "a".repeat(100_000)
         server.enqueue(MockResponse().setBody("<html><body>$big</body></html>")
             .setHeader("Content-Type", "text/html"))
         val r = fetch(server.url("/big").toString())
         assertTrue(r.ok)
-        assertTrue(r.output.length <= 8000)
+        // M-2 (code review, 2026-11): the cap bounds the CONTENT at 8 000
+        // chars; the marker announcing the cut follows it.
+        assertTrue("content past the cap is dropped (got ${r.output.length})",
+            r.output.length <= 8_200)
+        assertTrue("the cut must be announced, not silent",
+            r.output.contains("truncated at 8000 chars"))
     }
 
     @Test fun `citation is the fetched url`() {

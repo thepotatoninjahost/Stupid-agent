@@ -132,23 +132,26 @@ class CognitiveKernelTest {
     @Test
     fun `unbacked inline citation is stripped to uncited and logged as forged`() = runTest {
         val sink = FakeSink()
-        val tool = FakeTool("memory_recall", ToolResult(true, "[id=42] topic: porch light", 1))
+        // Real memory ids are UUIDs — memory_recall prints "[id=<first 8
+        // chars>]". M-4's evidence gate requires >= 4 chars, so the toy id
+        // "42" of the pre-fix version would now (correctly) be unbackable.
+        val tool = FakeTool("memory_recall", ToolResult(true, "[id=f81d4fae] topic: porch light", 1))
         val llm = FakeLlm(listOf(
             toolUse("memory_recall", """{"x":"porch"}"""),
-            Llm.LlmResponse.Text("Porch light [cite:memory:42], and Mars [cite:memory:99] too.", done = true),
+            Llm.LlmResponse.Text("Porch light [cite:memory:f81d4fae], and Mars [cite:memory:deadbeef] too.", done = true),
         ))
         val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
 
         assertTrue(result.ok)
         assertEquals("only the backed cite survives", 1, result.citations.size)
-        assertEquals("42", result.citations[0].ref)
+        assertEquals("f81d4fae", result.citations[0].ref)
         assertTrue("backed cite is numbered", result.answer.contains("[1]"))
         assertTrue("forged cite becomes the honesty marker",
             result.answer.contains("Mars [uncited]"))
         assertFalse("one valid cite means the answer is not uncited-flagged",
             result.answer.startsWith("[uncited]"))
         assertTrue("the forgery is in the verifiable log",
-            sink.episodes.any { it.first == "citation_forged" && it.second.contains("memory:99") })
+            sink.episodes.any { it.first == "citation_forged" && it.second.contains("memory:deadbeef") })
     }
 
     @Test
