@@ -21,6 +21,7 @@ import host.vorv.llm.Llm
 import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
 import host.vorv.llm.ModelRepository
+import host.vorv.tools.Tool
 import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrowserAutomateTool
 import host.vorv.tools.CrashLogsTool
@@ -160,6 +161,14 @@ data class AgentState(
     val toolCallsForTask: List<ToolCall> = emptyList(),
 )
 
+/** Drop retained data while preserving the user's settings and selected screen. */
+internal fun AgentState.withoutAgentData() = copy(
+    messages = emptyList(), liveTrace = emptyList(), busy = false,
+    fullOutputView = null, expandedTaskId = null, toolCallsForTask = emptyList(),
+    recentTasks = emptyList(), episodes = emptyList(), skills = emptyList(),
+    memoryCount = 0, skillCount = 0,
+)
+
 class AgentViewModel(
     private val db: VorvDatabase,
     private val prefs: VorvPrefs,
@@ -170,25 +179,28 @@ class AgentViewModel(
 
     private val reminderRegistry = ReminderRegistry(prefs)
 
+    private fun patchedTool(original: Tool, vararg args: Any?): Tool =
+        host.vorv.watchdog.PatchRegistry.create(Tool::class.java, original.javaClass.name, *args) ?: original
+
     private val tools = listOf(
-        MemoryWriteTool(db),
-        MemoryRecallTool(db),
+        patchedTool(MemoryWriteTool(db), db),
+        patchedTool(MemoryRecallTool(db), db),
         MemoryWebTool(db.knowledgeGraphDao()),
-        JsExecTool(),
-        FileReadTool(appContext),
-        FileWriteTool(appContext),
-        FileListTool(appContext),
-        CrashLogsTool(appContext),
-        PythonExecTool(appContext),
-        WebSearchTool(secrets),
-        WebFetchTool(),
-        AppIntentTool(appContext),
-        ShellTool(appContext),
-        NotifyTool(appContext),
-        ScheduleTool(appContext, reminderRegistry),
-        ScheduleCancelTool(appContext, reminderRegistry),
-        BrowserAutomateTool(appContext),
-        SelfFixTool(appContext, prefs),
+        patchedTool(JsExecTool()),
+        patchedTool(FileReadTool(appContext), appContext),
+        patchedTool(FileWriteTool(appContext), appContext),
+        patchedTool(FileListTool(appContext), appContext),
+        patchedTool(CrashLogsTool(appContext), appContext),
+        patchedTool(PythonExecTool(appContext), appContext),
+        patchedTool(WebSearchTool(secrets), secrets, "https://api.z.ai/api/paas/v4", null),
+        patchedTool(WebFetchTool(), null),
+        patchedTool(AppIntentTool(appContext), appContext),
+        patchedTool(ShellTool(appContext), appContext),
+        patchedTool(NotifyTool(appContext), appContext),
+        patchedTool(ScheduleTool(appContext, reminderRegistry), appContext, reminderRegistry),
+        patchedTool(ScheduleCancelTool(appContext, reminderRegistry), appContext, reminderRegistry),
+        patchedTool(BrowserAutomateTool(appContext), appContext),
+        patchedTool(SelfFixTool(appContext, prefs), appContext, prefs),
     )
 
     private val outputDir = File(appContext.cacheDir, "tool_outputs")
@@ -224,6 +236,8 @@ class AgentViewModel(
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
+    private val dataSession = AgentDataSession(viewModelScope)
+
     /** Serializes consent dialogs so only one is visible at a time. */
     private val confirmMutex = Mutex()
 
@@ -247,7 +261,7 @@ class AgentViewModel(
      * appears; the honest trade-off is logged, not thrown.
      */
     private fun persistChat(msg: ChatMessage) {
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             runCatching {
                 db.chatMessageDao().insert(
                     host.vorv.data.entity.ChatMessageEntity(
@@ -354,7 +368,7 @@ class AgentViewModel(
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             // M1 (code review, 2026-11): chat history is PERSISTENT. Reload
             // the conversation on startup — a restart used to lose every
             // message while tool-call logs survived. Guarded with
@@ -401,7 +415,7 @@ class AgentViewModel(
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             db.episodeDao().insert(Episode(kind = "boot", summary = "Vorv booted — ${tools.size} tools ready"))
             bootstrapSkills()
             runMaintenance()
@@ -449,7 +463,15 @@ class AgentViewModel(
      */
     fun setApiKey(key: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            secrets.setZaiApiKey(key)
+            val cleanKey = key.trim()
+            try {
+                secrets.setZaiApiKey(cleanKey)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(keyTesting = false, keyTestResult = "Could not save API key: ${e.message}") }
+                return@launch
+            }
             // B-1 (code review, 2026-11): publish key presence IMMEDIATELY.
             // The hot SecretsStore flow also carries this update now, but
             // send()'s engineAvailable gate reads AgentState.hasApiKey —
@@ -458,10 +480,10 @@ class AgentViewModel(
             // This one line is the difference between "paste a key, get told
             // to paste a key" (the four-year first-run loop) and a working
             // default cloud mode.
-            _state.update { it.copy(hasApiKey = key.isNotBlank()) }
+            _state.update { it.copy(hasApiKey = cleanKey.isNotBlank()) }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
             val modelId = prefs.cloudModelId.first()
-            val probe = CloudLlm.probe(key, modelId)
+            val probe = CloudLlm.probe(cleanKey, modelId)
             val cm = CloudModel.fromId(modelId)
             if (probe.isSuccess) {
                 _state.update {
@@ -828,6 +850,7 @@ class AgentViewModel(
      * enabled while busy for exactly this).
      */
     fun send(message: String) {
+        if (dataSession.clearing) return
         val trimmed = message.trim()
         if (trimmed.isEmpty()) return
 
@@ -883,11 +906,11 @@ class AgentViewModel(
 
         // v0.8.0 — learn from EVERY message: operator identity, preferences,
         // taught facts. Learning failure must never break the task.
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             runCatching { memoryLearner.ingestUserMessage(trimmed) }
         }
 
-        currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+        currentTaskJob = dataSession.scope.launch(Dispatchers.IO) {
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
             db.taskDao().insert(task)
 
@@ -908,7 +931,7 @@ class AgentViewModel(
                 // REAL reason in the episode log — a fallback is visible,
                 // never a silent engine swap.
                 (llm as? FallbackLlm)?.onEngineSwitch = { from, to, reason ->
-                    viewModelScope.launch(Dispatchers.IO) {
+                    dataSession.scope.launch(Dispatchers.IO) {
                         runCatching {
                             db.episodeDao().insert(
                                 Episode(
@@ -1109,6 +1132,7 @@ class AgentViewModel(
         previousBootCrashed: Boolean,
         rolledBackPatches: List<String> = emptyList(),
     ): Boolean {
+        if (dataSession.clearing) return false
         if (bootDiagnosisStarted) return true
         val s = _state.value
         if (s.busy) return false
@@ -1171,7 +1195,7 @@ class AgentViewModel(
         }
         persistChat(kickoff)
 
-        currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+        currentTaskJob = dataSession.scope.launch(Dispatchers.IO) {
             val task = AgentTask(
                 prompt = "[boot self-diagnosis] $situation",
                 status = "in_progress",
@@ -1255,12 +1279,13 @@ class AgentViewModel(
 
     /** Expand a task card and load its verifiable tool-call log (M-7 + acceptance test #8 UI). */
     fun toggleTaskDetails(taskId: String) {
+        if (dataSession.clearing) return
         if (_state.value.expandedTaskId == taskId) {
             _state.update { it.copy(expandedTaskId = null, toolCallsForTask = emptyList()) }
             return
         }
         _state.update { it.copy(expandedTaskId = taskId) }
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             val calls = db.toolCallDao().forTask(taskId)
             _state.update { if (it.expandedTaskId == taskId) it.copy(toolCallsForTask = calls) else it }
         }
@@ -1268,7 +1293,8 @@ class AgentViewModel(
 
     /** Load a persisted full tool output into the viewer dialog (M-7). */
     fun viewFullOutput(title: String, path: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        if (dataSession.clearing) return
+        dataSession.scope.launch(Dispatchers.IO) {
             val content = try {
                 File(path).readText().take(200_000)
             } catch (e: Exception) {
@@ -1290,8 +1316,9 @@ class AgentViewModel(
      * (audit finding M-10).
      */
     fun teach(topic: String, content: String) {
+        if (dataSession.clearing) return
         if (topic.isBlank() || content.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
+        dataSession.scope.launch(Dispatchers.IO) {
             val t0 = System.currentTimeMillis()
             val tool = tools.firstOrNull { it.name == "memory_write" } ?: return@launch
             val input = com.google.gson.JsonObject().apply {
@@ -1301,7 +1328,7 @@ class AgentViewModel(
             val teachTaskId = "teach-${java.util.UUID.randomUUID()}"
             val result = tool.run(
                 input,
-                host.vorv.tools.ToolContext(teachTaskId, 0, _state.value.workspaceUri)
+                host.vorv.tools.ToolContext(teachTaskId, 0, _state.value.workspaceUri, confirm = ::requestConfirmation, userAuthoredMemory = true)
             )
             db.toolCallDao().insert(ToolCall(
                 taskId = teachTaskId,
@@ -1313,7 +1340,7 @@ class AgentViewModel(
                 durationMs = System.currentTimeMillis() - t0,
                 errorMessage = result.error,
             ))
-            db.episodeDao().insert(Episode(kind = "lesson", summary = "User taught: $topic"))
+            db.episodeDao().insert(Episode(kind = "lesson", summary = if (result.ok) "User taught: $topic" else "Memory was not stored: ${result.error}"))
         }
     }
 
@@ -1326,8 +1353,8 @@ class AgentViewModel(
      * tools use.
      */
     fun clearAllData() {
-        if (_state.value.busy) return
-        viewModelScope.launch(Dispatchers.IO) {
+        if (_state.value.busy || dataSession.clearing) return
+        viewModelScope.launch {
             val allowed = requestConfirmation(
                 "Delete ALL Vorv data — every memory, task, tool-call log and skill stat, " +
                     "all scheduled reminders, tool output files and crash diagnostics? " +
@@ -1336,24 +1363,38 @@ class AgentViewModel(
             )
             if (!allowed) return@launch
 
-            // 1. Cancel every registered reminder's WorkManager unique work.
-            runCatching {
-                val wm = androidx.work.WorkManager.getInstance(appContext)
-                reminderRegistry.takeForCancel(null).forEach { wm.cancelUniqueWork(it.name) }
+            try {
+                dataSession.clear {
+                    // All old readers/writers have finished, including startup restore.
+                    _state.update {
+                        it.withoutAgentData()
+                    }
+                    withContext(Dispatchers.IO) {
+                        // 1. Cancel every registered reminder's WorkManager unique work.
+                        runCatching {
+                            val wm = androidx.work.WorkManager.getInstance(appContext)
+                            reminderRegistry.takeForCancel(null).forEach { wm.cancelUniqueWork(it.name) }
+                        }
+                        // 2. Clear the reminder registry preference itself.
+                        runCatching { prefs.setScheduledReminders("[]") }
+                        // 3. Recursively delete persisted tool outputs.
+                        runCatching { outputDir.deleteRecursively() }
+                        // 4. Purge crash logs + watchdog diagnostics.
+                        runCatching {
+                            File(appContext.getExternalFilesDir(null), "crash_logs").deleteRecursively()
+                            File(appContext.getExternalFilesDir(null), "watchdog").deleteRecursively()
+                            File(appContext.getExternalFilesDir(null), "healer").deleteRecursively()
+                        }
+                        // 5. Wipe every table.
+                        db.clearAllTables()
+                        db.episodeDao().insert(Episode(kind = "boot", summary = "All data cleared by user"))
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(setupError = "Could not clear all data: ${e.message}") }
             }
-            // 2. Clear the reminder registry preference itself.
-            runCatching { prefs.setScheduledReminders("[]") }
-            // 3. Recursively delete persisted tool outputs.
-            runCatching { outputDir.deleteRecursively() }
-            // 4. Purge crash logs + watchdog diagnostics.
-            runCatching {
-                File(appContext.getExternalFilesDir(null), "crash_logs").deleteRecursively()
-                File(appContext.getExternalFilesDir(null), "watchdog").deleteRecursively()
-                File(appContext.getExternalFilesDir(null), "healer").deleteRecursively()
-            }
-            // 5. Wipe every table.
-            runCatching { withContext(Dispatchers.IO) { db.clearAllTables() } }
-            db.episodeDao().insert(Episode(kind = "boot", summary = "All data cleared by user"))
         }
     }
 
@@ -1370,7 +1411,7 @@ class AgentViewModel(
             SessionGrants.auditSink = null
         }
         // Release native memory + the headless WebView (audit L-7).
-        tools.filterIsInstance<BrowserAutomateTool>().forEach { it.destroy() }
+        tools.forEach { it.close() }
         modelRepository.markBusy(false)
         // shutdown() is suspend — run it on the application scope, which
         // outlives the ViewModel.

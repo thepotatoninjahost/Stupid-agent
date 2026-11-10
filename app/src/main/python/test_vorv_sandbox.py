@@ -52,6 +52,13 @@ def expect_timeout(label, code):
         FAILURES.append(label)
 
 
+# An output flood must fail without retaining an unbounded capture.
+for flood in ("print('x' * 100000)", "for i in range(100000): print('x' * 100)",
+              "try:\n print('x' * 100000)\nexcept Exception: pass"):
+    r = vorv_runner.run_code(flood)
+    assert not r["ok"] and "output limit" in r["error"].lower()
+    assert len(r["stdout"]) <= 65536 and len(r["stderr"]) <= 65536
+
 print("== Vorv python sandbox self-test ==")
 
 # ---------------------------------------------------------------- file I/O

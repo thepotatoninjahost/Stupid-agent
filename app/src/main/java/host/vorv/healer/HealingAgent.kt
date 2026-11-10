@@ -117,27 +117,23 @@ class HealingAgent(
         private const val ASSET_CLASSES_JAR = "healer/app_classes.jar"
 
         /**
-         * H-1 (code review, 2026-11): the bash -c payload that runs the
-         * compile script and captures its output/exit code, as a PURE
-         * function. Every path is [ShellQuote.sh]-quoted: the old
-         * hand-written single quotes let a workspace folder name carrying
-         * a quote, `$()`, backtick or semicolon break out of the quoting
-         * and execute arbitrary text inside Termux. Internal and pure so
-         * the injection regression tests pin it without a device.
+         * Run the generated compiler instructions from trusted command arguments,
+         * never from a script in the workspace: other workspace writers could
+         * replace that file before Bash opens it. Paths and the nested bash -c
+         * argument are quoted independently to preserve their literal contents.
          */
         internal fun dispatchCommand(
             rawDir: String,
             dirName: String,
-            scriptName: String,
+            script: String,
             outName: String,
             errName: String,
             codeName: String,
         ): String {
-            val scriptPath = ShellQuote.sh("$rawDir/$dirName/$scriptName")
             val outPath = ShellQuote.sh("$rawDir/$dirName/$outName")
             val errPath = ShellQuote.sh("$rawDir/$dirName/$errName")
             val codePath = ShellQuote.sh("$rawDir/$dirName/$codeName")
-            return "bash $scriptPath > $outPath 2> $errPath; echo \$? > $codePath"
+            return "bash -c ${ShellQuote.sh(script)} > $outPath 2> $errPath; echo \$? > $codePath"
         }
     }
 
@@ -254,7 +250,7 @@ class HealingAgent(
 
             val prompt = buildFixPrompt(
                 problem, request.diagnostics.take(MAX_DIAGNOSTICS_CHARS),
-                targetClass, buggySource!!, lastCompilerError, lastVerifierFeedback,
+                targetClass, buggySource, lastCompilerError, lastVerifierFeedback,
             )
             val llmResponse = callLlm(prompt)
                 ?: continue  // LLM transport failure — honest retry
@@ -272,7 +268,7 @@ class HealingAgent(
                 }
                 candidate.compileError != null -> {
                     lastCompilerError = candidate.compileError
-                    Log.w(TAG, "compile failed: ${candidate.compileError!!.take(200)}")
+                    Log.w(TAG, "compile failed: ${candidate.compileError.take(200)}")
                 }
                 candidate.verification != null && !candidate.verification.ok -> {
                     lastVerifierFeedback = candidate.verification.asFeedback()
@@ -296,7 +292,7 @@ class HealingAgent(
 
         // ---- 4. sign (C-2) ----
         val sha256 = HotPatcher.sha256Hex(compiled.dexBytes!!)
-        val signature = PatchKeys.sign(context, compiled.dexBytes!!)
+        val signature = PatchKeys.sign(context, compiled.dexBytes)
             ?: return HealResult(false, targetClass = targetClass,
                 error = "patch signing unavailable — refusing to register an unsigned patch",
                 attempts = attempts)
@@ -327,7 +323,7 @@ class HealingAgent(
             context = context,
             patchId = patchId,
             targetClass = targetClass,
-            dexBytes = compiled.dexBytes!!,
+            dexBytes = compiled.dexBytes,
             sha256 = sha256,
             signature = signature,
             description = proposal.description,
@@ -441,7 +437,7 @@ class HealingAgent(
         // M8 (code review, 2026-11): the verifier's candidate dex is scratch
         // — deleted on EVERY path (success included). It used to leak one
         // cacheDir/healer/candidate_*.dex per heal attempt, forever.
-        val verifierDex = File(writeTempDex(compiled.dexBytes!!))
+        val verifierDex = File(writeTempDex(compiled.dexBytes))
         val verification = try {
             PatchVerifier.verify(
                 patchDex = verifierDex,
@@ -540,15 +536,18 @@ class HealingAgent(
         val cpDoc = healDir.findFile("app_classes.jar")
             ?: healDir.createFile("application/java-archive", "app_classes.jar")
             ?: return@withContext null
-        if (stagedVersion != currentVersion) {
+        val apiDoc = healDir.findFile("android_api.jar")
+            ?: healDir.createFile("application/java-archive", "android_api.jar")
+            ?: return@withContext null
+        if (stagedVersion != currentVersion || apiDoc.length() == 0L || cpDoc.length() == 0L) {
             writeDoc(cpDoc, appClasses.readBytes())
+            context.assets.open("healer/android_api.jar").use { writeDoc(apiDoc, it.readBytes()) }
             val stampDoc = versionDoc
                 ?: healDir.createFile("text/plain", "app_classes.version")
                 ?: return@withContext null
             writeDoc(stampDoc, currentVersion.toByteArray())
         }
 
-        val scriptName = "compile_$runId.sh"
         val outName = "out_$runId.txt"
         val errName = "err_$runId.txt"
         val codeName = "code_$runId.txt"
@@ -568,9 +567,9 @@ class HealingAgent(
             appendLine("STDLIB=\"\"")
             appendLine("S=\$(ls /data/data/com.termux/files/usr/lib/kotlin/lib/kotlin-stdlib.jar 2>/dev/null || true)")
             appendLine("[ -n \"\$S\" ] && STDLIB=\":\$S\"")
-            appendLine("CP=\"/system/framework/framework.jar:\$H/app_classes.jar\$STDLIB\"")
+            appendLine("CP=\"\$H/android_api.jar:\$H/app_classes.jar\$STDLIB\"")
             appendLine("mkdir -p \"\$H/dex_$runId\"")
-            appendLine("if kotlinc -cp \"\$CP\" -no-stdlib -no-reflect \"\$H/fix_$runId.kt\" -d \"\$H/fix_$runId.jar\" 2>\"\$H/err_compile_$runId\"; then")
+            appendLine("if kotlinc -jvm-target 17 -Xfriend-paths=\"\$H/app_classes.jar\" -cp \"\$CP\" -no-stdlib -no-reflect \"\$H/fix_$runId.kt\" -d \"\$H/fix_$runId.jar\" 2>\"\$H/err_compile_$runId\"; then")
             appendLine("  if \$D8 --lib /system/framework/framework.jar --output \"\$H/dex_$runId\" \"\$H/fix_$runId.jar\"; then")
             appendLine("    mv \"\$H/dex_$runId/classes.dex\" \"\$H/patch_$runId.dex\"")
             appendLine("    echo COMPILE_OK")
@@ -578,17 +577,13 @@ class HealingAgent(
             appendLine("else echo KOTLINC_FAILED; cat \"\$H/err_compile_$runId\"; fi")
         }
 
-        val scriptDoc = healDir.createFile("text/x-shellscript", scriptName)
-            ?: return@withContext null
-        writeDoc(scriptDoc, script.toByteArray())
-
         // Dispatch via Termux RUN_COMMAND with output capture (ShellTool's
         // proven wrapper pattern: base64-transport, code file poll).
         // H-1 (code review, 2026-11): every path is ShellQuote.sh-quoted —
         // the old hand-written single quotes let a folder name containing
         // a quote break out and inject commands into Termux.
         val b64 = android.util.Base64.encodeToString(
-            dispatchCommand(rawDir, HEAL_DIR, scriptName, outName, errName, codeName).toByteArray(),
+            dispatchCommand(rawDir, HEAL_DIR, script, outName, errName, codeName).toByteArray(),
             android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
         val wrapper = "printf '%s' '$b64' | base64 -d | bash"
 
@@ -639,7 +634,7 @@ class HealingAgent(
         val dexBytes = if (dexDoc != null && dexDoc.isFile) readDocBytes(dexDoc) else null
 
         // Clean up the workspace artifacts.
-        listOf(outName, errName, codeName, scriptName, "fix_$runId.kt",
+        listOf(outName, errName, codeName, "fix_$runId.kt",
             "fix_$runId.jar", "err_compile_$runId", "patch_$runId.dex")
             .forEach { n -> runCatching { healDir.findFile(n)?.delete() } }
         runCatching { healDir.findFile("dex_$runId")?.delete() }

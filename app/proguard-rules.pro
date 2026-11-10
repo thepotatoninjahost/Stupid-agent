@@ -56,3 +56,7 @@
 
 # Keep line numbers for readable crash reports.
 -keepattributes SourceFile,LineNumberTable
+
+# Runtime patch dispatch and verification use these names and public APIs.
+-keep class host.vorv.healer.** { *; }
+-keep class host.vorv.watchdog.** { *; }

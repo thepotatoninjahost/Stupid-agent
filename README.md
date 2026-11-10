@@ -64,8 +64,14 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ### Install
 
-1. From the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases), download **`app-debug.apk`** from the latest **`ci-latest` pre-release** — CI deletes and rebuilds it on every push to `main`, and the debug keystore is committed since v0.7.0, so it installs and updates in place. The `app-release-unsigned.apk` asset is for developers only. A signed release build is **not** published yet (it requires the `RELEASE_KEYSTORE_*` secrets — see DEVELOPMENT.md).
-2. On your S25: tap the APK → Settings → allow install from Chrome.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:74dba41991c774267b09949089a4e6d7ba293f6b90eb8afbb7c9aaaeacc742cc -->
+
+1. Download [the latest test APK](https://github.com/thepotatoninjahost/Stupid-agent/releases/download/ci-latest/app-debug.apk) from the `ci-latest` prerelease. It is a debuggable build using a publicly known legacy test key; see [the signing caveat](SECURITY.md#secrets). For a particular fix, use its workflow run's Artifacts section (see [Build and APK downloads](#build-and-apk-downloads)). An unsigned release APK cannot be installed directly.
+
+
+<!-- /coderabbit-ai-generated:v1 -->2. On your S25: tap the APK → Settings → allow install from Chrome.
 3. Open **Vorv**.
 4. Grant the notification permission when prompted (needed by `notify` and `schedule`).
 
@@ -88,8 +94,14 @@ The key is stored with AndroidX Security (EncryptedSharedPreferences, AES-256-GC
 ### Enable shell access (optional, used by the `shell` tool)
 
 1. Install [Termux](https://github.com/termux/termux-app/releases) from F-Droid or GitHub releases (Play Store version is deprecated).
-2. Open Termux once and run `termux-setup-storage` (allows Termux to write to shared storage — required for output capture).
-3. Android Settings → Apps → Vorv → Permissions → Additional permissions → **Run commands in Termux environment**.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4467df1232c3818b2b9a7e465e732557215e64b8d0f2f783f1fcb2a29d96353f -->
+
+2. Open Termux once and run `termux-setup-storage`, then `pkg install python`. Storage access enables output capture; Python supervises the command deadline, output limits, and cleanup.
+
+
+<!-- /coderabbit-ai-generated:v1 -->3. Android Settings → Apps → Vorv → Permissions → Additional permissions → **Run commands in Termux environment**.
 4. Ensure `~/.termux/termux.properties` contains `allow-external-apps=true`.
 5. Grant a Vorv workspace folder (see above) on internal shared storage — shell output round-trips through `.vorv-shell/` inside it.
 
@@ -146,28 +158,35 @@ Before declaring "done", all 8 must pass on a real S25:
 
 ---
 
-## Build
+<!-- coderabbit-ai-generated:v1 -->
 
-GitHub Actions on every push to `main`, `feature/**`, `fix/**`:
-1. **test** — unit tests (JUnit + Robolectric) + the Python sandbox self-test.
-2. **build** — debug APK + R8-minified unsigned release APK (7-day artifacts).
-3. **publish** (main only) — the rolling **`ci-latest` pre-release** is deleted and rebuilt with `app-debug.apk` (debug-signed — the honest installable build) and `app-release-unsigned.apk`, and the step hard-fails if either asset is missing. A separately **signed** release is published only when the `RELEASE_KEYSTORE_*` secrets are configured (see DEVELOPMENT.md).
+<!-- coderabbit-ai-generated-section:v1:3bb2d7668ef063f1979e9953f62267effd39525d2a40426f6c14c72765e744c7 -->
 
-Local build (JDK 17, Android SDK 35, Python 3.11 for Chaquopy):
+## Build and APK downloads
+
+APKs are build outputs. They are not attached to Git commits or source ZIPs.
+
+- **Latest main build:** [download the test APK](https://github.com/thepotatoninjahost/Stupid-agent/releases/download/ci-latest/app-debug.apk). This is a debuggable testing build; read the signing caveat in SECURITY.md before installing.
+- **A particular fix or PR:** open its **Checks**, select **Build Vorv APK**, then download `Vorv-debug-APK-<run number>` from **Artifacts**. Extract the ZIP and tap the APK. GitHub requires sign-in for artifact downloads; artifacts expire after seven days.
+- **Permanent main-build downloads:** each successful main build publishes a `build-<commit>` prerelease. Its commit identifies exactly which fixes it contains. The rolling `ci-latest` link is also updated.
+- `app-release-unsigned.apk` cannot be installed directly. `app-release.apk` is published when private release-signing secrets are configured.
+
+CI runs Python sandbox checks, unit tests, Android lint, and debug/release assembly on branch pushes, PRs to main, and manual dispatches. Every successful build uploads APKs; old runs' artifacts are retained until expiry. Signing secrets are used only for trusted main runs.
+
+Local requirements: JDK 17, Android platform 37.0 and build-tools 37.0.0, Python 3.11; Gradle 9.8.2 comes from the checksum-pinned wrapper.
+
+```bash
+./gradlew test assembleDebug assembleRelease lint --no-daemon
+python3 app/src/main/python/test_vorv_sandbox.py
 ```
-cd Stupid-agent
-./gradlew assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk
 
-./gradlew test          # unit tests
-python3 app/src/main/python/test_vorv_sandbox.py   # sandbox self-test
-```
-
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the full environment setup, release-signing secret configuration, and how to add a tool.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for setup and signing. Hardware acceptance remains a separate gate; a successful build does not verify S25/NPU behavior.
 
 ---
 
-## Security
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Security
 
 See [SECURITY.md](SECURITY.md) — threat model, per-tool sandbox guarantees and residual limits, and how to report a vulnerability.
 

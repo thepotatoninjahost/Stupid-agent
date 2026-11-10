@@ -1,7 +1,7 @@
 package host.vorv.healer
 
 import android.util.Log
-import dalvik.system.PathClassLoader
+import host.vorv.watchdog.PatchClassLoader
 import java.io.File
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
@@ -87,10 +87,12 @@ object PatchVerifier {
 
         // --- isolated loader: patch dex FIRST, app classes on the parent ---
         val loader = try {
-            PathClassLoader(
+            check(patchDex.setReadOnly()) { "Cannot make candidate DEX read-only" }
+            PatchClassLoader(
                 patchDex.absolutePath,
-                appClasspath.joinToString(":") { it.absolutePath },
-                originalClass.classLoader,
+                patchDex.parentFile!!.absolutePath,
+                originalClass.classLoader!!,
+                setOf(fqcn),
             )
         } catch (e: Exception) {
             return Verification(false, emptyList(), emptyList(), emptyList(),
@@ -132,7 +134,7 @@ object PatchVerifier {
         val patchedMethodSigs = patched.methods.map { it.signature() }.toSet()
         for (m in originalClass.methods) {
             // Skip Object's own methods; every class has them.
-            if (m.declaringClass == java.lang.Object::class.java) continue
+            if (m.declaringClass == Any::class.java) continue
             if (m.signature() !in patchedMethodSigs) {
                 missingMethods.add("method ${m.signature()}")
             }
@@ -151,7 +153,7 @@ object PatchVerifier {
             val patchedType = patchedFields[f.name]
             if (patchedType == null) {
                 missingFields.add("field ${f.type.simpleName} ${f.name}")
-            } else if (patchedType != f.type) {
+            } else if (patchedType.name != f.type.name) {
                 missingFields.add(
                     "field ${f.name} changed type: ${f.type.simpleName} → " +
                         "${patchedType.simpleName} — keep the original type ${f.type.simpleName}")
@@ -170,13 +172,13 @@ object PatchVerifier {
 
     // ------------------------------------------------------------------
     private fun Constructor<*>.signature(): String {
-        val params = parameterTypes.joinToString(", ") { it.simpleName }
+        val params = parameterTypes.joinToString(", ") { it.name }
         return "$parameterCount params ($params)"
     }
 
     private fun Method.signature(): String {
-        val params = parameterTypes.joinToString(", ") { it.simpleName }
+        val params = parameterTypes.joinToString(", ") { it.name }
         val static = if (Modifier.isStatic(modifiers)) "static " else ""
-        return "$static${returnType.simpleName} $name($params)"
+        return "$static${returnType.name} $name($params)"
     }
 }

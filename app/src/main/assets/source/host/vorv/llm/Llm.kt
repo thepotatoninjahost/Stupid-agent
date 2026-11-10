@@ -186,7 +186,7 @@ class CloudLlm(
                         .build()
 
                     client.newCall(req).execute().use { res ->
-                        val responseBody = res.body?.string().orEmpty()
+                        val responseBody = res.body.string()
                         if (res.code == 429 || res.code >= 500) {
                             lastErr = "HTTP ${res.code}: ${responseBody.take(200)}"
                             if (attempt < MAX_ATTEMPTS - 1) {
@@ -305,7 +305,7 @@ class CloudLlm(
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(req).execute().use { res ->
-                        val text = res.body?.string().orEmpty()
+                        val text = res.body.string()
                         if (!res.isSuccessful) {
                             return@withContext Result.failure(
                                 RuntimeException("HTTP ${res.code}: ${text.take(200)}")

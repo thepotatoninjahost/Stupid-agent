@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * At-rest-encrypted storage for the Z.ai API key (audit finding C-5).
@@ -86,6 +88,8 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
      *  never overwrite a newer save or migration with a stale read. */
     @Volatile private var savedDuringSeed = false
 
+    private val writeMutex = Mutex()
+
     private val _zaiApiKey = kotlinx.coroutines.flow.MutableStateFlow("")
 
     init {
@@ -98,7 +102,7 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
             // First access builds EncryptedSharedPreferences here too.
             seedScope.launch {
                 val stored = runCatching { prefs.getString(KEY_ZAI, "") ?: "" }.getOrDefault("")
-                if (!savedDuringSeed) _zaiApiKey.value = stored
+                writeMutex.withLock { if (!savedDuringSeed) _zaiApiKey.value = stored }
                 seedScope.cancel()
             }
         }
@@ -114,16 +118,13 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
      */
     val zaiApiKey: StateFlow<String> = _zaiApiKey.asStateFlow()
 
-    suspend fun setZaiApiKey(key: String) {
-        val trimmed = key.trim()
-        // M5: a seed read still in flight must not overwrite this save.
-        savedDuringSeed = true
-        withContext(Dispatchers.IO) {
-            prefs.edit().putString(KEY_ZAI, trimmed).apply()
+    suspend fun setZaiApiKey(key: String) = withContext(Dispatchers.IO) {
+        writeMutex.withLock {
+            val trimmed = key.trim()
+            savedDuringSeed = true
+            check(prefs.edit().putString(KEY_ZAI, trimmed).commit()) { "Could not persist API key" }
+            _zaiApiKey.value = trimmed
         }
-        // Publish AFTER the disk write succeeded — the flow never claims a
-        // value the encrypted file does not hold.
-        _zaiApiKey.value = trimmed
     }
 
     /**
@@ -134,16 +135,15 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
     suspend fun migrateFromLegacy(legacy: VorvPrefs) {
         val legacyKey = legacy.readLegacyApiKeyOnce()
         if (legacyKey.isBlank()) return
-        val current = withContext(Dispatchers.IO) { prefs.getString(KEY_ZAI, "") ?: "" }
-        if (current.isBlank()) {
-            // M5: same seed guard as setZaiApiKey.
-            savedDuringSeed = true
-            withContext(Dispatchers.IO) {
-                prefs.edit().putString(KEY_ZAI, legacyKey).apply()
+        withContext(Dispatchers.IO) {
+            writeMutex.withLock {
+                val current = prefs.getString(KEY_ZAI, "") ?: ""
+                if (current.isBlank()) {
+                    savedDuringSeed = true
+                    check(prefs.edit().putString(KEY_ZAI, legacyKey).commit()) { "Could not migrate API key" }
+                    _zaiApiKey.value = legacyKey
+                }
             }
-            // B-1: a migrated key must reach collectors too, not only the
-            // next process launch.
-            _zaiApiKey.value = legacyKey
         }
         // Either way the plaintext copy must go.
         legacy.eraseLegacyApiKey()

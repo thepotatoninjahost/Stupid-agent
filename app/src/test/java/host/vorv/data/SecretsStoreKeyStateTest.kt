@@ -115,6 +115,27 @@ class SecretsStoreKeyStateTest {
     }
 
     @Test
+    fun `failed disk writes cannot publish a successful save`() = runTest {
+        val real = newPrefs()
+        val failing = object : android.content.SharedPreferences by real {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val editor = real.edit()
+                return object : android.content.SharedPreferences.Editor by editor {
+                    override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor {
+                        editor.putString(key, value)
+                        return this
+                    }
+                    override fun commit() = false
+                }
+            }
+        }
+        val store = SecretsStore(context, prefsOverride = failing)
+        val result = runCatching { store.setZaiApiKey("synthetic-unsaved-key") }
+        assertTrue(result.isFailure)
+        assertEquals("", store.zaiApiKey.value)
+    }
+
+    @Test
     fun `value is whitespace-trimmed on save`() = runTest {
         val store = SecretsStore(context, prefsOverride = newPrefs())
         store.setZaiApiKey("  sk-padded  \n")

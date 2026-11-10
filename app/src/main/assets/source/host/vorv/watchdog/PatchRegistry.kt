@@ -91,6 +91,7 @@ object PatchRegistry {
     fun <T : Any> create(iface: Class<T>, fqcn: String, vararg args: Any?): T? {
         if (!isPatchableClass(fqcn)) return null
         for (loader in patchLoaders) {
+            if (loader is PatchClassLoader && !loader.handles(fqcn)) continue
             val patched: Class<*> = try {
                 loader.loadClass(fqcn)
             } catch (e: ClassNotFoundException) {

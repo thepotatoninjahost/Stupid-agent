@@ -13,9 +13,13 @@ local.properties
 *.keystore
 
 # v0.7.0 field finding #9: the DEBUG keystore is committed on purpose
-(stable sideload signature — see app/build.gradle.kts). RELEASE keystores
-stay ignored forever.
+# (stable sideload signature — see app/build.gradle.kts). RELEASE keystores
+# stay ignored forever.
 
 # Module build output (audit hygiene — was missing; build/ artifacts must never be committed)
 /app/build/
 .kotlin/
+
+# Python interpreter caches
+__pycache__/
+*.py[cod]

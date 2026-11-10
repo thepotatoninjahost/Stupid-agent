@@ -161,21 +161,34 @@ class CrashLogsTool(private val appContext: Context) : Tool {
             }
         }
 
-        // Real files: ONLY inside crash_logs/ or watchdog/ — never arbitrary
-        // paths. Reject traversal explicitly; File canonical-path check is
-        // the belt, the prefix allow-list is the suspenders.
+        // Validate the resolved file against the evidence directories, not just
+        // the broader external-files root. Read that same canonical file.
         val rel = path.trim('/')
-        val allowed = rel.startsWith("crash_logs/") || rel.startsWith("watchdog/")
-        val target = File(extDir, rel)
-        val canonicalInside = runCatching {
-            target.canonicalFile.startsWith(extDir.canonicalFile)
-        }.getOrDefault(false)
-        if (!allowed || !canonicalInside || !target.isFile) {
+        val allowed = (rel.startsWith("crash_logs/") || rel.startsWith("watchdog/")) &&
+            rel.split('/').none { it == "." || it == ".." }
+        val target = if (allowed) runCatching {
+            val root = extDir.canonicalFile
+            val file = File(root, rel).canonicalFile
+            val evidenceDirs = listOf("crash_logs", "watchdog").map { File(root, it).canonicalFile }
+            file.takeIf {
+                it.startsWith(root) && evidenceDirs.any { dir -> it != dir && it.startsWith(dir) }
+            }
+        }.getOrNull() else null
+        if (target == null || !target.isFile) {
             return ToolResult(ok = false, output = "", error = "Not a readable crash path: $path (use action=list to see valid paths)", durationMs = System.currentTimeMillis() - t0)
         }
 
         return try {
-            val content = target.readText()
+            val content = target.bufferedReader().use { reader ->
+                val buffer = CharArray(MAX_READ_CHARS + 1)
+                var count = 0
+                while (count < buffer.size) {
+                    val n = reader.read(buffer, count, buffer.size - count)
+                    if (n < 0) break
+                    count += n
+                }
+                String(buffer, 0, count)
+            }
             ToolResult(
                 ok = true,
                 output = if (content.length > MAX_READ_CHARS) {

@@ -167,6 +167,49 @@ class JsExecToolTest {
         assertTrue("watchdog took ${elapsed}ms", elapsed < 15_000)
     }
 
+    @Test fun `stdout and stderr share an output budget`() {
+        val r = runJs("var s = 'x'.repeat(20000); console.log(s); console.warn(s); console.error(s); console.info(s);")
+        assertFalse(r.describe(), r.ok)
+        assertTrue(r.describe(), r.error!!.contains("output limit"))
+        assertTrue(r.describe(), r.output.length + r.stderr.length <= 65536)
+    }
+
+    @Test fun `caught console failures cannot resume output collection`() {
+        val r = runJs("""
+            for (var i = 0; i < 100; i++) {
+                try { console.log('x'.repeat(10000)); } catch (e) { }
+            }
+        """.trimIndent())
+        assertFalse(r.describe(), r.ok)
+        assertTrue(r.describe(), r.error!!.contains("output limit"))
+        assertTrue(r.describe(), r.output.length <= 65536)
+    }
+
+    @Test fun `oversized lazy string and return value are rejected`() {
+        for (code in listOf("console.log('x'.repeat(1000000));", "'x'.repeat(1000000)")) {
+            val r = runJs(code)
+            assertFalse(r.describe(), r.ok)
+            assertTrue(r.describe(), r.error!!.contains("output limit"))
+            assertTrue(r.describe(), r.output.length < 66000)
+        }
+    }
+
+    @Test fun `combined stdout and return value have a separate persistence cap`() {
+        val r = runJs("console.log('x'.repeat(60000)); 'y'.repeat(60000)")
+        assertTrue(r.describe(), r.ok)
+        assertTrue(r.describe(), r.output.length < 66000)
+        assertTrue(r.describe(), r.output.contains("truncated at 65536 chars"))
+    }
+
+    @Test fun `unicode output and large errors stay bounded`() {
+        val r = runJs("for (var i = 0; i < 1000; i++) console.log('界'.repeat(1000));")
+        assertFalse(r.describe(), r.ok)
+        assertTrue(r.describe(), r.output.toByteArray(Charsets.UTF_8).size <= 196608)
+        val error = runJs("throw new Error('x'.repeat(1000000));")
+        assertFalse(error.describe(), error.ok)
+        assertTrue(error.describe(), error.error!!.length < 66000)
+    }
+
     @Test fun `missing code argument is an honest error`() {
         val r = runBlocking {
             tool.run(JsonObject(), ctx)

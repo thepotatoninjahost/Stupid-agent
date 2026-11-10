@@ -39,6 +39,8 @@ data class ToolContext(
     val iteration: Int,
     val workspaceUri: String?,       // SAF URI — null if no folder granted
     val confirm: (suspend (message: String) -> Boolean)? = null,
+    /** Set only by the direct teaching UI, never from model tool arguments. */
+    val userAuthoredMemory: Boolean = false,
 )
 
 /**
@@ -83,6 +85,9 @@ interface Tool {
 
     /** Wall-clock budget for one call, enforced by the kernel. */
     val timeoutMs: Long get() = 60_000L
+
+    /** Release per-instance resources when the owning ViewModel is cleared. */
+    fun close() = Unit
 
     /** Max invocations within a single task, enforced by the kernel. */
     val maxCallsPerTask: Int get() = 20

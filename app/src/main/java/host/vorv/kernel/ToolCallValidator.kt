@@ -32,7 +32,7 @@ object ToolCallValidator {
             val v = input.get(name) ?: continue
             if (v.isJsonNull) continue
             val expected = (def as? JsonObject)?.get("type")?.takeIf { !it.isJsonNull }?.asString ?: continue
-            val actual = jsonTypeOf(v) ?: continue   // arrays/objects aren't type-checked deeply
+            val actual = jsonTypeOf(v) ?: continue
             if (!typesCompatible(expected, actual)) {
                 return "argument '$name' for tool '${tool.name}' must be $expected, got $actual"
             }
@@ -41,6 +41,8 @@ object ToolCallValidator {
     }
 
     private fun jsonTypeOf(v: com.google.gson.JsonElement): String? = when {
+        v.isJsonArray -> "array"
+        v.isJsonObject -> "object"
         v.isJsonPrimitive -> {
             val p = v.asJsonPrimitive
             when {

@@ -35,7 +35,7 @@ class WebFetchToolTest {
     }
 
     private fun fetch(url: String): ToolResult = runBlocking {
-        tool.run(JsonObject().apply { addProperty("url", url) }, ToolContext("t", 1, null))
+        tool.run(JsonObject().apply { addProperty("url", url) }, ToolContext("t", 1, null, confirm = { true }))
     }
 
     @Test fun `fetches html and strips to text`() {
@@ -108,6 +108,42 @@ class WebFetchToolTest {
         val r = fetch(url)
         assertEquals("web", r.citation?.type)
         assertEquals(url, r.citation?.ref)
+    }
+
+    @Test fun `missing or denied consent sends no request`() = runBlocking {
+        val input = JsonObject().apply { addProperty("url", server.url("/private?memory=secret").toString()) }
+        for (ctx in listOf(ToolContext("t", 1, null), ToolContext("t", 1, null, confirm = { false }))) {
+            assertFalse(tool.run(input, ctx).ok)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun `approval shows full destination and data for each request`() = runBlocking {
+        val url = server.url("/disclose?memory=operator-secret").toString()
+        val prompts = mutableListOf<String>()
+        val ctx = ToolContext("t", 1, null, confirm = { prompts.add(it); true })
+        repeat(2) {
+            server.enqueue(MockResponse().setBody("ok"))
+            assertTrue(tool.run(JsonObject().apply { addProperty("url", url) }, ctx).ok)
+        }
+        assertEquals(2, prompts.size)
+        assertTrue(prompts.all { it.contains(url) })
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `redirect requires a separate approval and denial sends no second request`() {
+        server.enqueue(MockResponse().setResponseCode(302)
+            .setHeader("Location", server.url("/unapproved?memory=secret")))
+        var approvals = 0
+        val result = runBlocking {
+            WebFetchTool(OkHttpClient()).run(
+                JsonObject().apply { addProperty("url", server.url("/approved").toString()) },
+                ToolContext("t", 1, null, confirm = { ++approvals == 1 }),
+            )
+        }
+        assertEquals(2, approvals)
+        assertFalse(result.ok)
+        assertEquals(1, server.requestCount)
     }
 
     // ---------------------------------------------- M4: byte-true cap

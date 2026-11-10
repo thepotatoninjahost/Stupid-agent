@@ -27,32 +27,23 @@ Therefore every tool treats its input as hostile data. The defense is layered:
 
 2. **Sandboxing (code-execution tools):** see below.
 
-3. **User consent (side-effecting tools):** every tool with device-visible
-   effects routes through the Allow/Deny consent bridge. That is `app_intent`
-   (all four actions), `shell` (the complete command text is shown in the
-   dialog), `python_exec` (first execution per task; the complete program is
-   shown), and every self-repair patch — on BOTH approval surfaces: the
-   in-chat `self_fix` consent and the crash-repair dialog (patch id, target
-   class, the full SHA-256 and verification status are shown before anything
-   is registered). A denied confirmation is reported back to the model as a
-   failure — the model cannot retry its way around the user.
+<!-- coderabbit-ai-generated:v1 -->
 
-   **A consent prompt is never truncated — on any of the five approval
-   surfaces.** The complete, exact content the model wants to run is always
-   shown in full — every line of a shell command, the whole Python program,
-   the whole share text, the whole 64-character patch hash, the whole patch
-   description. The dialogs scroll (and the patch dialog's text is
-   selectable, so the hash can be copied and verified outside the app), so
-   length is never a reason to cut anything off. If a prompt ever shows you
-   less than everything, treat that as a bug and report it.
+<!-- coderabbit-ai-generated-section:v1:887f0fc41e42368c6ab8ac0c91de3312c9e1d3826872a0c5864a94b91def81fe -->
 
-4. **Egress control (network tools):** `web_fetch` resolves through an OkHttp
-   `Dns` implementation that refuses loopback, link-local, site-local,
-   unique-local, any-local and multicast addresses; `browser_automate`
-   pre-checks hosts the same way. Localhost services, router admin panels and
-   cloud metadata endpoints are unreachable.
+3. **User consent:** intents, notifications, reminders, workspace writes, model-proposed memory writes, web requests, every browser action, shell commands and self-repair patches require the consent bridge. Python asks once per task. The full action payload is disclosed; missing or denied consent fails closed. A folder grant scopes access but does not approve each model-proposed write. Direct teaching uses the same confirmation path.
 
-## Per-tool sandbox guarantees
+4. **Network destinations:** numeric IP destinations and DNS results are checked. Web fetch follows redirects only after separate approval of each destination. Browser requests are proxied through the guarded client; failures return a blocked response, never an unguarded WebView retry. Cross-origin proxy redirects are refused because their response would otherwise inherit the original WebView origin. Same-origin browser redirects remain supported.
+
+5. **Resource budgets:** JavaScript console capture and returned values are bounded; Python stdout/stderr are capped before buffering. A Python worker that survives its deadline blocks subsequent executions until it stops or the app restarts. Native code can still allocate memory before these output limits apply; in-process execution is not a process isolation boundary.
+
+6. **Shell supervision:** Termux requires Python (`pkg install python`) for deadline, output, cancellation and descendant-process supervision. Captured stdout is capped at 400000 bytes and stderr at 80000 bytes. Shell remains explicitly authorized native execution with Termux's permissions, not a sandbox against malicious approved code.
+
+7. **Private backup data:** reminders, patch keys, patch approvals and DEX files are excluded from backup/transfer, along with the database, API key and crash diagnostics. Patches must retain their local device identity.
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Per-tool sandbox guarantees
 
 ### js_exec (Rhino)
 
@@ -141,17 +132,14 @@ participate in cloud backup or device transfer; only non-secret settings do).
 - The pre-0.6.0 plaintext copy (DataStore) is migrated once and erased.
 - No secrets are committed to the repository. Release key material is
   never committed; release signing uses GitHub Actions secrets only.
-- One deliberate non-secret exception, stated honestly (H-2, code review
-  2026-11): `app/vorv-debug.keystore` — the DEBUG signing key — IS
-  committed, pinned since v0.7.0 so CI-built debug APKs install and update
-  in place over each other. It is not used for release signing, it grants
-  no capabilities (a debug signature cannot update a release install, and
-  anyone can build their own debug-signed APK of any open-source app),
-  and removing it would force reinstall cycles on every `ci-latest`
-  update. Earlier prose here claimed the committed debug keystore "was
-  removed" — that was false and is now corrected. The v1.0-era RELEASE
-  keystore removal claim stands and is accurate.
+<!-- coderabbit-ai-generated:v1 -->
 
+<!-- coderabbit-ai-generated-section:v1:3e13b15dea5eedb9b3f1de074a4958e95fa43e10f03a5b69e671c9b8d566b382 -->
+
+- The legacy debug signing key is publicly committed to preserve updates of existing test installations. This is an exposed update identity: anyone with that key can sign an APK Android accepts as an update to an installation using it. A debug signature is not a production trust boundary. Install only builds obtained through the repository's verified build/release path. Migrating existing installations to a private key requires an explicit data-preserving migration decision; changing a signing key cannot transparently update the old app.
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 ## Data
 
 **Backup posture (v0.6.9, audit M-7):** `vorv.db` — prompts, tool inputs and

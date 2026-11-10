@@ -1,19 +1,26 @@
 # Developing Vorv
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:95dc55b75407e36ad00425c11061fd87f5cc94edb0e77db3bfd84d92940ca677 -->
+
 ## Environment requirements
 
-| Tool | Version | Why |
-|---|---|---|
-| JDK | 17 | AGP 8.7 requires it |
-| Android SDK | platform 35, build-tools 34+ | compileSdk 35 |
-| Python | 3.11 | Chaquopy embeds 3.11; CI pins the same |
-| Gradle | 8.9 | Via wrapper or `gradle/actions/setup-gradle` |
-| Device | Galaxy S25 (or arm64 device with Hexagon NPU) | The GenieX AAR ships only `arm64-v8a` Hexagon libs; x86_64 emulators cannot run the local engine |
+| Tool | Version |
+|---|---|
+| JDK | 17 |
+| Android platform | 37.0 (compile SDK 37; target SDK remains 35) |
+| Android build-tools | 37.0.0 |
+| Python | 3.11 |
+| Gradle | 9.8.2, supplied by the checksum-pinned wrapper |
+| Build plugins | AGP 9.5.1, Kotlin 2.4.21, KSP 2.3.13, Chaquopy 17.2.0 |
+| Device | ARM64 Android; Galaxy S25 required for Hexagon acceptance |
 
-No Android Studio project files are committed. Open the repo root in Android
-Studio and let it import the Gradle project.
+Open the repository root in Android Studio. Set `JAVA_HOME` and `ANDROID_HOME`, and put Python 3.11 on PATH. The dependency catalog is the authoritative version list. x86_64 emulators cannot run the bundled ARM64 native engine.
 
-## Building
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Building
 
 ```bash
 cd Stupid-agent
@@ -76,11 +83,15 @@ keytool -genkeypair -v -keystore vorv-release.keystore -alias vorvrelease \
 base64 -w0 vorv-release.keystore   # paste into RELEASE_KEYSTORE_BASE64
 ```
 
-Without the secrets, CI still builds and tests everything; it just skips the
-GitHub Release (with a visible warning) instead of publishing an unsigned or
-debuggable build.
+<!-- coderabbit-ai-generated:v1 -->
 
-## Adding a tool
+<!-- coderabbit-ai-generated-section:v1:391f7dea6cf49455a67ca1e7d9f66a9cf149ecaa69ebdcbba3ecdd4c08678f49 -->
+
+Without the secrets, CI builds and tests the app and publishes testing APKs. Main runs also publish the rolling `ci-latest` prerelease and a permanent commit-specific prerelease. These debug APKs are debuggable test builds, not private-key-signed production releases. PRs and branch runs provide APK downloads through their workflow Artifacts section. See README.md for installation instructions and SECURITY.md for the legacy debug-key caveat.
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Adding a tool
 
 1. Create `app/src/main/java/host/vorv/tools/MyTool.kt` implementing the
    `Tool` interface:
@@ -109,52 +120,15 @@ debuggable build.
   the files live BEFORE committing them (audit L-2: the old text instructed
   committing schemas that the build never produced).
 
-## Dependency upgrade roadmap (I-3, code review 2026-11)
+<!-- coderabbit-ai-generated:v1 -->
 
-The catalog currently holds **verified, envelope-safe** upgrades (see the
-comment block in `gradle/libs.versions.toml`): every version was
-existence-checked against Google Maven / Maven Central and sits inside the
-Gradle 8.9 / AGP 8.7.x / Kotlin 2.0.21 / compileSdk 35 envelope, so CI
-stays green by construction. OkHttp 4.12.1 in particular carries the
-security backport of the refreshed certificate blocklist (the compromised
-eMudhra intermediates — same fix as OkHttp 5.5.1).
+<!-- coderabbit-ai-generated-section:v1:603be46fb352c4dde9ba22a6c84f9b5ed2f7ba592030e99b5d7dfaebcbcba68f -->
 
-The **major stack migration** is a separate, coordinated change that MUST be
-done on a machine that can run the full build + connected tests, in this
-order (compatibility verified against the official release notes,
-2026-11):
+## Dependency upgrades
 
-| Step | From → To | Requires first |
-| --- | --- | --- |
-| 1 | Gradle 8.9 → 9.6.x (wrapper + new `distributionSha256Sum`) | — |
-| 2 | AGP 8.7.3 → 9.5.0 | Gradle 9.6, JDK 17 ✓ already |
-| 3 | Kotlin 2.0.21 → 2.4.21 + matching KSP | AGP step (KGP 2.2.10+ is AGP 9.x's baseline) |
-| 4 | Chaquopy 15.0.1 → an AGP-9-compatible release | AGP step (check the Chaquopy changelog first — this is the usual blocker) |
-| 5 | Compose BOM 2025.04.01 → 2026.09.x | compileSdk 36 (AGP 8.9.1+ handles 36) |
-| 6 | OkHttp 4.12.1 → 5.5.1 | review the 5.5.0 DNS API additions (`NetworkGuard.PublicDns` still compiles — the old single-address `lookup` remains supported — but re-run `NetworkGuardTest`) |
-| 7 | Room 2.6.1 → 2.7.x | KSP step (KSP2) |
+The coordinated Gradle/AGP/Kotlin/AndroidX migration is already present in the catalog. Do not merge revert PRs #32 or #33 as a build workaround: they downgrade jsoup and Rhino. Diagnose failing checks while retaining current versions.
 
-Rules for whoever executes it: one step per PR, CI green (now including
-`pull_request` runs) before the next, `test_vorv_sandbox.py` green, and no
-step is ever rolled back by deleting a feature to make it compile —
-"never go backwards" applies to the toolchain too.
+After a dependency upgrade, run `./gradlew test assembleDebug assembleRelease lint` and the Python sandbox self-test. Test both build variants and inspect the healer classpath asset. S25 offline inference, Termux dispatch, DEX loading, background work, and install/update behavior require device validation.
 
-## CI pipeline
 
-`.github/workflows/build.yml`:
-
-1. **test** — `./gradlew test` + Python sandbox self-test. SHA-pinned actions.
-2. **build** — assembleDebug + assembleRelease (signed when secrets exist).
-   Artifact uploads and the rolling release run on **push** only.
-3. **publish** (main only, keystore required) — GitHub Release with the signed
-   APK. Feature branches build and test only, so you can verify CI is green
-   before merging — same flow the project has always used.
-
-I-2 (code review, 2026-11): the workflow ALSO runs on `pull_request`
-targeting main — fork PRs used to get zero CI — and on `dependabot/**`
-pushes — dependency-bump PRs used to get zero CI. PR runs are read-token
-safe: no secrets, no artifact writes, publish/rolling-release steps are
-main-ref gated.
-
-Dependabot watches Gradle deps and GitHub Actions weekly
-(`.github/dependabot.yml`).
+<!-- /coderabbit-ai-generated:v1 -->

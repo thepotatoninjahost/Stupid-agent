@@ -327,14 +327,14 @@ fun SettingsScreen(
         }
 
         if (state.keyTestResult != null) {
-            val ok = state.keyTestResult!!.startsWith("✓")
+            val ok = state.keyTestResult.startsWith("✓")
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = if (ok) Success.copy(alpha = 0.12f) else Error.copy(alpha = 0.12f),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    state.keyTestResult!!,
+                    state.keyTestResult,
                     color = if (ok) Success else Error,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -459,13 +459,13 @@ fun SettingsScreen(
                 if (state.termuxTestResult != null) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (state.termuxTestResult!!.startsWith("ALL GOOD"))
+                        color = if (state.termuxTestResult.startsWith("ALL GOOD"))
                             Success.copy(alpha = 0.12f) else Warning.copy(alpha = 0.12f),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            state.termuxTestResult!!,
-                            color = if (state.termuxTestResult!!.startsWith("ALL GOOD")) Success else OnBackground,
+                            state.termuxTestResult,
+                            color = if (state.termuxTestResult.startsWith("ALL GOOD")) Success else OnBackground,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(10.dp),
                         )

@@ -450,6 +450,32 @@ exec(compile(_TRACER_SRC, "<vorv-tracer>", "exec"), _TRACER_NS)
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
+_MAX_OUTPUT_CHARS = 65536
+
+
+class _CappedOutput(io.StringIO):
+    """Bound captured output before retaining it, even if code catches the error."""
+    def __init__(self):
+        super().__init__()
+        self.remaining = _MAX_OUTPUT_CHARS
+        self.exhausted = False
+        self.frozen = False
+        self.lock = threading.Lock()
+
+    def write(self, text):
+        with self.lock:
+            if self.frozen or self.exhausted or len(text) > self.remaining:
+                self.exhausted = True
+                raise RuntimeError("Python output limit exceeded (65536 chars)")
+            self.remaining -= len(text)
+            return super().write(text)
+
+    def finish(self):
+        with self.lock:
+            self.frozen = True
+            return self.getvalue()
+
+
 def run_code(code, timeout_ms=_TIMEOUT_DEFAULT_MS):
     """Execute user Python code with captured stdout/stderr and a time budget."""
     try:
@@ -471,8 +497,8 @@ def run_code(code, timeout_ms=_TIMEOUT_DEFAULT_MS):
         result["error"] = "SyntaxError: %s" % e
         return result
 
-    buf_out = io.StringIO()
-    buf_err = io.StringIO()
+    buf_out = _CappedOutput()
+    buf_err = _CappedOutput()
     old_out, old_err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = buf_out, buf_err
 
@@ -512,8 +538,11 @@ def run_code(code, timeout_ms=_TIMEOUT_DEFAULT_MS):
         result["error"] = state["error"]
 
     sys.stdout, sys.stderr = old_out, old_err
-    result["stdout"] = buf_out.getvalue()
-    result["stderr"] = buf_err.getvalue()
+    result["stdout"] = buf_out.finish()
+    result["stderr"] = buf_err.finish()
+    if buf_out.exhausted or buf_err.exhausted:
+        result["ok"] = False
+        result["error"] = "Python output limit exceeded (65536 chars)"
     return result
 
 

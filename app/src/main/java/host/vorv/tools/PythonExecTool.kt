@@ -41,7 +41,7 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
             "confirmation (in-process sandboxing is hardening, not a barrier). " +
             "Use print() to capture output. 30s max timeout."
 
-    override val timeoutMs: Long get() = 35_000L
+    override val timeoutMs: Long get() = 100_000L
     override val maxCallsPerTask: Int get() = 30
 
     override fun schema() = JsonObject().apply {
@@ -66,6 +66,7 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
      * executions would interleave their output. Every run is serialized.
      */
     private val runMutex = Mutex()
+    @Volatile private var activeWorker: Thread? = null
 
     /**
      * Per-task one-shot consent (audit C-1): the first call prompts.
@@ -163,6 +164,10 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
         }
 
         runMutex.withLock {
+            if (activeWorker?.isAlive == true) return@withContext ToolResult(
+                ok = false, output = "", error = "A previous Python execution is still stopping; restart Vorv before retrying.",
+                durationMs = System.currentTimeMillis() - t0,
+            )
             try {
                 val py = Python.getInstance()
                 val runner = py.getModule("vorv_runner")
@@ -183,6 +188,7 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
                     }
                 }.apply { isDaemon = true; start() }
 
+                activeWorker = worker
                 worker.join((timeoutMs + 3_000).toLong())
                 if (worker.isAlive) {
                     return@withContext ToolResult(
@@ -222,6 +228,8 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("exec", ctx.taskId, "python iter ${ctx.iteration}"),
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 ToolResult(
                     ok = false,

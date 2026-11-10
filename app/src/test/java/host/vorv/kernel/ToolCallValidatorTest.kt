@@ -65,6 +65,13 @@ class ToolCallValidatorTest {
         assertNotNull(ToolCallValidator.validate(tool, json("""{"path":"a","flag":"yes"}""")))
     }
 
+    @Test fun `structured values cannot bypass primitive type validation`() {
+        for (value in listOf("{}", "[]", "[1]")) {
+            assertNotNull(ToolCallValidator.validate(tool, json("""{"path":$value}""")))
+            assertNotNull(ToolCallValidator.validate(tool, json("""{"path":"a","count":$value}""")))
+        }
+    }
+
     @Test fun `extra unknown fields are allowed`() {
         assertNull(ToolCallValidator.validate(tool, json("""{"path":"a","surprise":123}""")))
     }

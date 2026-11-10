@@ -2,10 +2,15 @@
 
 ## Requirements
 
-JDK 17, Android SDK 35, Python 3.11, and ideally a Galaxy S25 (the local
-engine needs the Hexagon NPU). See [DEVELOPMENT.md](DEVELOPMENT.md).
+<!-- coderabbit-ai-generated:v1 -->
 
-## Ground rules
+<!-- coderabbit-ai-generated-section:v1:e6a428ac6e56af6556f4491c8cd391cd4a33a7d2c710722574644f3e143805c0 -->
+
+JDK 17, Android platform 37.0, build-tools 37.0.0, Python 3.11, and ideally a Galaxy S25. See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Ground rules
 
 1. **Honesty over marketing.** Commit messages, tool descriptions, README and
    in-app copy must describe what the code actually does. The v0.5.x README
@@ -20,17 +25,15 @@ engine needs the Hexagon NPU). See [DEVELOPMENT.md](DEVELOPMENT.md).
 4. **Sensitive actions need consent.** Anything that leaves the app, dials,
    shares, launches, or spends the user's money goes through the confirmation
    bridge (`ctx.confirm`) — fail closed when it's absent.
-5. **Release secrets never get committed.** API keys, tokens and RELEASE
-   key material — no exceptions. One documented, deliberate non-secret
-   exception exists (H-2, code review 2026-11): the DEBUG signing key at
-   `app/vorv-debug.keystore`, pinned since v0.7.0 so CI-built debug APKs
-   update in place — see SECURITY.md ("Secrets") for the full rationale.
-   It signs debug builds only, grants no capabilities, and is never used
-   for release signing. If you catch yourself force-adding anything else
-   with "it's just a debug key", stop — that is exactly what this rule
-   exists to prevent.
+<!-- coderabbit-ai-generated:v1 -->
 
-## Workflow
+<!-- coderabbit-ai-generated-section:v1:aa698b588acacdf1f42491fc393cc37fa09f49c6edc54bb909a4280933ad8c86 -->
+
+5. **Release secrets never get committed.** API keys, tokens and private release signing keys belong in private secret storage. The existing publicly committed debug key is a legacy compatibility exception, not a secure update identity; see SECURITY.md. Do not introduce another committed signing key.
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Workflow
 
 - Branch from `main` using `feature/**` or `fix/**` — CI builds and tests
   every push to those branches, so you can verify green before merging.

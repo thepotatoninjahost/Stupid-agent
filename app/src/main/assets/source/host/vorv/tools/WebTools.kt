@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import host.vorv.BuildConfig
 import host.vorv.data.SecretsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -34,9 +35,9 @@ class WebSearchTool(
     override val description =
         "Search the live web via Z.ai's Web Search API. Returns results with URL, " +
         "title, and a content snippet. Requires a Z.ai API key (Setup tab) and internet. " +
-        "Use to answer questions about current events or facts you don't know."
+        "Requires approval of the destination and query before sending."
 
-    override val timeoutMs: Long get() = 30_000L
+    override val timeoutMs: Long get() = 90_000L
     override val maxCallsPerTask: Int get() = 10
 
     override fun schema() = JsonObject().apply {
@@ -54,7 +55,11 @@ class WebSearchTool(
         add("required", com.google.gson.JsonArray().apply { add("query") })
     }
 
-    private val client: OkHttpClient = client ?: defaultClient()
+    // Approval covers one destination only; redirects require a separate request.
+    private val client: OkHttpClient = (client ?: defaultClient()).newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -88,8 +93,13 @@ class WebSearchTool(
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
 
+            if (!approveWebRequest(ctx, req.url.toString(), body)) {
+                return@withContext ToolResult(ok = false, output = "",
+                    error = "Web request denied: explicit user approval is required.",
+                    durationMs = System.currentTimeMillis() - t0)
+            }
             client.newCall(req).execute().use { res ->
-                val responseBody = res.body?.string().orEmpty()
+                val responseBody = res.body.string()
                 if (!res.isSuccessful) {
                     return@withContext ToolResult(
                         ok = false,
@@ -133,6 +143,8 @@ class WebSearchTool(
                     citation = if (firstUrl.isNotBlank()) Citation("web", firstUrl, "web") else null,
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "web_search failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
@@ -152,7 +164,7 @@ class WebSearchTool(
  * v0.6.0 hardening:
  *  - response size capped (2 MB streamed; Content-Length precheck) — the old
  *    res.body?.string() could OOM the process on a huge body (audit H-8)
- *  - private/loopback/link-local egress blocked via NetworkGuard.PublicDns
+ *  - private/loopback/link-local egress blocked for literals and DNS results on every redirect
  *    (SSRF guard: no localhost, LAN, or metadata endpoints)
  *  - content-type allowlist — binary bodies are refused with an honest error
  *  - HTML-to-text via jsoup instead of regex (audit L-4)
@@ -163,9 +175,9 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
     override val description =
         "Fetch an http/https URL and return its text content (HTML stripped via jsoup). " +
         "Text and JSON content types only; responses over 2 MB are refused. " +
-        "Private/localhost addresses are blocked. Use after web_search to read page content."
+        "Private/localhost addresses are blocked. Requires approval of the full URL before sending; each redirect requires separate approval."
 
-    override val timeoutMs: Long get() = 45_000L
+    override val timeoutMs: Long get() = 120_000L
     override val maxCallsPerTask: Int get() = 8
 
     override fun schema() = JsonObject().apply {
@@ -179,7 +191,10 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         add("required", com.google.gson.JsonArray().apply { add("url") })
     }
 
-    private val client: OkHttpClient = client ?: defaultClient()
+    private val client: OkHttpClient = (client ?: publicWebFetchClient()).newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -198,7 +213,8 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
             val req = Request.Builder().url(url)
                 .addHeader("User-Agent", "Vorv/${BuildConfig.VERSION_NAME} (Android; local-first agent)")
                 .build()
-            client.newCall(req).execute().use { res ->
+            val response = approvedFetch(req, ctx)
+            response.use { res ->
                 if (!res.isSuccessful) {
                     return@withContext ToolResult(ok = false, output = "",
                         error = "HTTP ${res.code}",
@@ -218,7 +234,7 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
                         durationMs = System.currentTimeMillis() - t0)
                 }
 
-                val raw = readCapped(res.body?.byteStream(), MAX_BYTES)
+                val raw = readCapped(res.body.byteStream(), MAX_BYTES)
                 val isHtml = contentType.contains("html") ||
                     (contentType.isBlank() && raw.trimStart().startsWith("<"))
                 val clean = if (isHtml) htmlToText(raw) else raw
@@ -229,23 +245,37 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
                     // COMPLETE text to the model.
                     output = capWithMarker(clean, MAX_OUTPUT_CHARS),
                     durationMs = System.currentTimeMillis() - t0,
-                    citation = Citation("web", url, "url"),
+                    citation = Citation("web", res.request.url.toString(), "url"),
                 )
             }
         } catch (e: IOException) {
             ToolResult(ok = false, output = "", error = "web_fetch failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "web_fetch failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
         }
     }
 
-    private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .dns(NetworkGuard.PublicDns)
-        .build()
+    private suspend fun approvedFetch(initial: Request, ctx: ToolContext): okhttp3.Response {
+        var request = initial
+        repeat(21) { hop ->
+            if (!approveWebRequest(ctx, request.url.toString())) {
+                throw IOException("Web request denied: explicit user approval is required.")
+            }
+            val response = client.newCall(request).execute()
+            if (response.code !in setOf(300, 301, 302, 303, 307, 308)) return response
+            request = response.use {
+                if (hop == 20) throw IOException("Too many redirects")
+                val target = response.header("Location")?.let { request.url.resolve(it) }
+                    ?: throw IOException("Invalid redirect destination")
+                request.newBuilder().url(target).build()
+            }
+        }
+        error("Unreachable redirect state")
+    }
 
     /** Streams at most [MAX_BYTES] bytes as UTF-8 text — see the top-level
      *  [readCappedUtf8] (M4) for the byte-true budget and tail trimming. */
@@ -341,4 +371,32 @@ internal fun trimPartialUtf8Tail(bytes: ByteArray): ByteArray {
     // Degenerate all-continuation tail — leave it; the decoder will do the
     // honest replacement-char thing.
     return bytes
+}
+
+/** Guard every fetch destination before OkHttp can open a connection, including redirects. */
+internal fun publicWebFetchClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .dns(NetworkGuard.PublicDns)
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .addInterceptor { chain ->
+        NetworkGuard.checkLiteralHostAllowed(chain.request().url.host)
+        chain.proceed(chain.request())
+    }
+    .build()
+/**
+ * Memory is available even in the initial task prompt, so every model-selected
+ * web request needs consent, regardless of tool order or apparent URL contents.
+ * Show the complete payload, JSON escaped, rather than model-authored rationale.
+ */
+private suspend fun approveWebRequest(ctx: ToolContext, url: String, body: String? = null): Boolean {
+    val disclosure = JsonObject().apply {
+        addProperty("url", url)
+        if (body != null) addProperty("body", body)
+    }
+    return ctx.confirm?.invoke(
+        "Allow sending this web request? The URL and search data may contain private memory. " +
+            "Approve only if you authorize disclosing the data below to this destination.\n$disclosure"
+    ) == true
 }

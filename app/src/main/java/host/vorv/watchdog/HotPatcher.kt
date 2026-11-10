@@ -2,7 +2,6 @@ package host.vorv.watchdog
 
 import android.content.Context
 import android.util.Log
-import dalvik.system.DexClassLoader
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -139,16 +138,17 @@ object HotPatcher {
 
                     // All gates passed — load and register.
                     val odexDir = File(context.codeCacheDir, "hotpatch_odex").apply { mkdirs() }
-                    val loader = DexClassLoader(
+                    check(dexFile.setReadOnly()) { "Cannot make patch DEX read-only" }
+                    val loader = PatchClassLoader(
                         dexFile.absolutePath,
                         odexDir.absolutePath,
-                        null,
                         context.classLoader,
+                        classNames.toSet(),
                     )
                     // Gate 6: the patch class must really implement its dispatch
                     // interface before the loader is trusted.
-                    val dispatchable = classNames.any { fqcn ->
-                        val base = PatchRegistry.dispatchBaseFor(fqcn) ?: return@any false
+                    val dispatchable = classNames.all { fqcn ->
+                        val base = PatchRegistry.dispatchBaseFor(fqcn) ?: return@all false
                         runCatching {
                             base.isAssignableFrom(loader.loadClass(fqcn))
                         }.getOrDefault(false)
@@ -233,7 +233,6 @@ object HotPatcher {
             true
         }.onFailure {
             Log.e(TAG, "registerApprovedPatch failed: ${it.message}", it)
-            false
         }.getOrDefault(false)
     }
 

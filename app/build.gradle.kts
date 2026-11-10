@@ -1,3 +1,64 @@
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+import com.android.build.api.artifact.ScopedArtifact
+import com.android.build.api.variant.ScopedArtifacts
+import org.gradle.api.file.Directory
+import org.gradle.api.file.RegularFile
+import org.gradle.api.provider.ListProperty
+
+abstract class HealerClasspathJar : Jar() {
+    @get:InputFiles
+    abstract val classJars: ListProperty<RegularFile>
+    @get:InputFiles
+    abstract val classDirectories: ListProperty<Directory>
+
+    init {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        include("**/*.class", "META-INF/*.kotlin_module", "META-INF/LICENSE*", "META-INF/NOTICE*")
+        from(classDirectories)
+        from(classJars.map { jars -> jars.map { project.zipTree(it.asFile) } })
+        eachFile {
+            if (path.startsWith("META-INF/LICENSE") || path.startsWith("META-INF/NOTICE")) {
+                val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+                    .joinToString("") { "%02x".format(it) }
+                path = "META-INF/healer-notices/$digest/$name"
+            }
+        }
+        exclude("META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA", "META-INF/MANIFEST.MF")
+    }
+}
+
+abstract class HealerApiAssets : DefaultTask() {
+    @get:InputFile
+    abstract val apiJar: RegularFileProperty
+    @get:InputFile
+    abstract val apiNotice: RegularFileProperty
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+    @TaskAction
+    fun packageApi() {
+        val target = outputDirectory.file("healer/android_api.jar").get().asFile
+        target.parentFile.mkdirs()
+        ZipFile(apiJar.get().asFile).use { source ->
+            ZipOutputStream(target.outputStream()).use { output ->
+                output.putNextEntry(ZipEntry("META-INF/NOTICE.txt").apply { time = 0L })
+                apiNotice.get().asFile.inputStream().use { it.copyTo(output) }
+                output.closeEntry()
+                source.entries().asSequence().filter {
+                    !it.isDirectory && (it.name.endsWith(".class") ||
+                        it.name.contains("NOTICE") || it.name.contains("LICENSE"))
+                }.forEach { entry ->
+                    output.putNextEntry(ZipEntry(entry.name).apply { time = 0L })
+                    source.getInputStream(entry).use { it.copyTo(output) }
+                    output.closeEntry()
+                }
+            }
+        }
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application)
     // Dependency wave 2026-11-09 / AGP 9: Kotlin support is BUILT IN to AGP
@@ -20,13 +81,14 @@ android {
     // contaminate the owner's first on-device acceptance pass of the v0.7.6
     // remediation. It rides the NEXT wave, on its own, with its own tests.
     compileSdk = 37
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.8.0"
+        versionCode = 38
+        versionName = "0.8.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -173,15 +235,26 @@ androidComponents {
     onVariants { variant ->
         val v = variant.name
         val capitalized = v.replaceFirstChar { it.uppercase() }
-        val packageHealerClasspathVariant = tasks.register<Jar>("packageHealerClasspath$capitalized") {
+        val packageHealerClasspathVariant = tasks.register<HealerClasspathJar>("packageHealerClasspath$capitalized") {
             archiveFileName.set("healer/app_classes.jar")
             destinationDirectory.set(healerAssetsDir.map { it.dir("$v/") })
             // The compiled app classes (Kotlin output + generated BuildConfig)
             // of THIS variant, so a patch compiles against what actually runs.
-            from(layout.buildDirectory.dir("tmp/kotlin-classes/$v"))
-            from(layout.buildDirectory.dir("generated/source/buildConfig/$v"))
-            dependsOn("compile${capitalized}Kotlin")
+
         }
+        variant.artifacts.forScope(ScopedArtifacts.Scope.ALL)
+            .use(packageHealerClasspathVariant)
+            .toGet(ScopedArtifact.CLASSES, { it.classJars }, { it.classDirectories })
+        val apiAssets = tasks.register<HealerApiAssets>("packageHealerApiAssets$capitalized") {
+            apiJar.set(androidComponents.sdkComponents.bootClasspath.map { files ->
+                files.first { it.asFile.name == "android.jar" }
+            })
+            apiNotice.set(apiJar.map { jar ->
+                layout.projectDirectory.file(jar.asFile.parentFile.resolve("data/NOTICE.txt").absolutePath)
+            })
+            outputDirectory.set(layout.buildDirectory.dir("generated/healer/api-assets/$v"))
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(apiAssets, { it.outputDirectory })
         // Register the jar task as a GENERATED asset producer through the
         // variant API. AGP then threads a provider-based dependency into
         // EVERY consumer of the variant's assets — merge<Variant>Assets,

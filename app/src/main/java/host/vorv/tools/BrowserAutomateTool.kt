@@ -54,9 +54,9 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
     override val description =
         "Automate a real in-app browser (http/https pages only). Actions: 'load' a URL, " +
         "'click' a CSS selector, 'type' text into a CSS selector, 'extract' text from the " +
-        "page or a selector, 'run' JavaScript. Local file and private-network addresses are blocked."
+        "page or a selector, 'run' JavaScript. Every action requires user confirmation. Local file and private-network addresses are blocked."
 
-    override val timeoutMs: Long get() = 35_000L
+    override val timeoutMs: Long get() = 95_000L
     override val maxCallsPerTask: Int get() = 15
 
     override fun schema() = JsonObject().apply {
@@ -104,8 +104,8 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .dns(NetworkGuard.PublicDns)
-            .followRedirects(true)
-            .followSslRedirects(true)
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build()
     }
 
@@ -143,7 +143,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             // EXACTLY the addresses that were checked.
             return try {
                 val req = okhttp3.Request.Builder().url(url.toString()).build()
-                val resp = proxyClient.newCall(req).execute()
+                val resp = executeBrowserRequest(proxyClient, req)
                 val contentType = resp.header("Content-Type") ?: "application/octet-stream"
                 val (mime, charset) = contentType.split(";", limit = 2)
                     .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
@@ -153,7 +153,11 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     ?: java.io.ByteArrayInputStream(ByteArray(0))
                 WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
             } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
+                // Never let WebView retry outside the guarded proxy.
+                lastBlockReason = e.message ?: "browser proxy request failed"
+                WebResourceResponse("text/plain", "utf-8", 403, "Blocked by Vorv",
+                    java.util.Collections.emptyMap(),
+                    java.io.ByteArrayInputStream("blocked by network guard".toByteArray()))
             }
         }
 
@@ -166,7 +170,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             }
             val host = url.host ?: ""
             return try {
-                NetworkGuard.checkHostAllowed(host)
+                NetworkGuard.checkLiteralHostAllowed(host)
                 true
             } catch (e: java.net.UnknownHostException) {
                 lastBlockReason = e.message ?: "host blocked: $host"
@@ -198,14 +202,33 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.Main) {
         val t0 = System.currentTimeMillis()
-        val action = input.get("action")?.asString
+        // Bind approval and execution to the same snapshot, including after suspension.
+        val arguments = input.deepCopy()
+        val action = arguments.get("action")?.asString
             ?: return@withContext ToolResult(ok = false, output = "", error = "missing action",
                 durationMs = System.currentTimeMillis() - t0)
 
         try {
+            // Tool results can contain attacker instructions; neither a public
+            // address nor model-selected arguments establish user authorization.
+            // Even extract passes its selector into page-controlled JavaScript.
+            // Gate every action on every call (no task grant).
+            if (action.lowercase() in setOf("load", "click", "type", "extract", "run")) {
+                val allowed = ctx.confirm?.invoke(
+                    "Allow this browser action? It may send local/private data to websites. " +
+                        "Approve only destinations and data you intend to share.\n\n" +
+                        "Current page: ${gson.toJson(webViewRef.get()?.url)}\n" +
+                        "Complete action arguments (URLs include any data being sent):\n" +
+                        gson.toJson(arguments)
+                ) == true
+                if (!allowed) return@withContext ToolResult(
+                    ok = false, output = "", error = "Browser action DENIED: user confirmation required (fail closed)",
+                    durationMs = System.currentTimeMillis() - t0,
+                )
+            }
             val output: String = when (action.lowercase()) {
                 "load" -> {
-                    val url = input.get("url")?.asString
+                    val url = arguments.get("url")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing url for load", durationMs = System.currentTimeMillis() - t0)
                     val uri = android.net.Uri.parse(url)
@@ -217,7 +240,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     }
                     // Initial pre-check (fast, honest failure before any load).
                     try {
-                        NetworkGuard.checkHostAllowed(uri.host ?: "")
+                        NetworkGuard.checkLiteralHostAllowed(uri.host ?: "")
                     } catch (e: java.net.UnknownHostException) {
                         return@withContext ToolResult(ok = false, output = "",
                             error = e.message, durationMs = System.currentTimeMillis() - t0)
@@ -235,7 +258,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     "Loaded $url. Page title: ${wv.title ?: "(none)"}"
                 }
                 "click" -> {
-                    val selector = input.get("selector")?.asString
+                    val selector = arguments.get("selector")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing selector for click", durationMs = System.currentTimeMillis() - t0)
                     val wv = obtainWebView()
@@ -243,10 +266,10 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     evalJs(wv, "(function(){var el=document.querySelector($sel);if(!el){return 'NOT_FOUND'};el.click();return 'CLICKED';})()")
                 }
                 "type" -> {
-                    val selector = input.get("selector")?.asString
+                    val selector = arguments.get("selector")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing selector for type", durationMs = System.currentTimeMillis() - t0)
-                    val text = input.get("text")?.asString
+                    val text = arguments.get("text")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing text for type", durationMs = System.currentTimeMillis() - t0)
                     val wv = obtainWebView()
@@ -256,7 +279,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                 }
                 "extract" -> {
                     val wv = obtainWebView()
-                    val selector = input.get("selector")?.takeIf { !it.isJsonNull }?.asString
+                    val selector = arguments.get("selector")?.takeIf { !it.isJsonNull }?.asString
                     val js = if (selector.isNullOrBlank()) {
                         "document.body.innerText"
                     } else {
@@ -268,7 +291,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     capWithMarker(evalJs(wv, js), MAX_OUTPUT_CHARS)
                 }
                 "run" -> {
-                    val js = input.get("js")?.asString
+                    val js = arguments.get("js")?.asString
                         ?: return@withContext ToolResult(ok = false, output = "",
                             error = "missing js for run", durationMs = System.currentTimeMillis() - t0)
                     val wv = obtainWebView()
@@ -284,6 +307,8 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                 durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("exec", ctx.taskId, "browser iter ${ctx.iteration}"),
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "browser_automate failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
@@ -326,6 +351,8 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             cont.invokeOnCancellation { /* evaluateJavascript has no cancel; timeout leaves it inert */ }
         }
     }
+
+    override fun close() = destroy()
 
     /** Release the WebView. Called from ViewModel.onCleared(). */
     fun destroy() {

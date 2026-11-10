@@ -67,17 +67,8 @@ object NetworkGuard {
      */
     @Throws(UnknownHostException::class)
     fun checkHostAllowed(host: String) {
-        if (isBlockedHost(host)) {
-            throw UnknownHostException("Vorv network guard: host '$host' is not allowed")
-        }
-        // IP literal?
-        val literal = parseLiteral(host)
-        if (literal != null) {
-            if (isBlockedAddress(literal)) {
-                throw UnknownHostException("Vorv network guard: address '$host' is private/loopback")
-            }
-            return
-        }
+        checkLiteralHostAllowed(host)
+        if (parseLiteral(host) != null) return
         val addrs = try {
             InetAddress.getAllByName(host)
         } catch (e: UnknownHostException) {
@@ -88,6 +79,20 @@ object NetworkGuard {
             throw UnknownHostException(
                 "Vorv network guard: '$host' resolves to a private/loopback address (${bad.hostAddress})"
             )
+        }
+    }
+
+    /** Check canonical URL hosts without resolving names; PublicDns checks DNS results. */
+    internal fun checkLiteralHostAllowed(host: String) {
+        if (isBlockedHost(host)) {
+            throw UnknownHostException("Vorv network guard: host '$host' is not allowed")
+        }
+        // IP literal?
+        val literal = parseLiteral(host)
+        if (literal != null) {
+            if (isBlockedAddress(literal)) {
+                throw UnknownHostException("Vorv network guard: address '$host' is private/loopback")
+            }
         }
     }
 
@@ -124,7 +129,7 @@ object NetworkGuard {
     /**
      * OkHttp Dns implementation: system resolution, then reject if ANY
      * returned address is private/loopback. Wiring this into an OkHttpClient
-     * makes SSRF-to-LAN impossible for every request through that client.
+     * guards resolved hostnames; IP literals require a separate destination check.
      */
     object PublicDns : Dns {
         override fun lookup(hostname: String): List<InetAddress> {
