@@ -64,7 +64,18 @@ Vorv is an Android app that does real multi-step work — it plans, picks a tool
 
 ### Install
 
-1. From the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases), download **`app-debug.apk`** from the latest **`ci-latest` pre-release** — CI deletes and rebuilds it on every push to `main`, and the debug keystore is committed since v0.7.0, so it installs and updates in place. The `app-release-unsigned.apk` asset is for developers only. A signed release build is **not** published yet (it requires the `RELEASE_KEYSTORE_*` secrets — see DEVELOPMENT.md).
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:cca0e9f56b87ee21de96e5eb13ec63d54716fcd7a0957f008cb02960e3461d5e -->
+
+1. From the [Releases page](https://github.com/thepotatoninjahost/Stupid-agent/releases), download **`app-release.apk`** from a signed release published after the signing-key remediation. End-user releases require the maintainer's private `RELEASE_KEYSTORE_*` secrets (see DEVELOPMENT.md). If none is available, wait for a signed release. Do not install old `ci-latest` APKs: their signing key is public. Debug workflow artifacts are for development only, use `host.vorv.debug`, and cannot update the production app.
+
+**Existing debug installations (`host.vorv`):** the old signing identity is compromised and cannot be revoked by deleting it from Git. Do not accept further updates signed with that key. Save any needed information manually before uninstalling: uninstalling deletes private conversations, memories, settings and keys, and the app has no supported automatic migration. Its database is excluded from Android backup and device transfer. Uninstall the old app, install the new privately signed release from the official repository, re-enter credentials, and grant permissions/workspace access again. A signature-mismatch error is expected if you try an in-place update; do not bypass it. Development builds have separate data and cannot recover the old app's data.
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->
+
 2. On your S25: tap the APK → Settings → allow install from Chrome.
 3. Open **Vorv**.
 4. Grant the notification permission when prompted (needed by `notify` and `schedule`).
@@ -150,9 +161,14 @@ Before declaring "done", all 8 must pass on a real S25:
 
 GitHub Actions on every push to `main`, `feature/**`, `fix/**`:
 1. **test** — unit tests (JUnit + Robolectric) + the Python sandbox self-test.
-2. **build** — debug APK + R8-minified unsigned release APK (7-day artifacts).
-3. **publish** (main only) — the rolling **`ci-latest` pre-release** is deleted and rebuilt with `app-debug.apk` (debug-signed — the honest installable build) and `app-release-unsigned.apk`, and the step hard-fails if either asset is missing. A separately **signed** release is published only when the `RELEASE_KEYSTORE_*` secrets are configured (see DEVELOPMENT.md).
+<!-- coderabbit-ai-generated:v1 -->
 
+<!-- coderabbit-ai-generated-section:v1:33a56c7e895b377ac8b75a16e4e118253b34d7e2a54fdc7f758afbd069dc05d9 -->
+
+2. **build** — development debug APK + R8-minified release APK (unsigned without secrets; 7-day artifacts).
+3. **publish** (main only, signing secrets required) — publishes `app-release.apk` signed with a private distribution key. No rolling `ci-latest` release is published.
+
+<!-- /coderabbit-ai-generated:v1 -->
 Local build (JDK 17, Android SDK 35, Python 3.11 for Chaquopy):
 ```
 cd Stupid-agent

@@ -68,7 +68,13 @@ RELEASE_KEY_ALIAS
 RELEASE_KEY_PASSWORD
 ```
 
-Generate a keystore locally:
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:45cfd42ee7e336a268c79f555a5944d10c8c03143d48526505759ba4d065e8e8 -->
+
+Generate a new private distribution keystore locally, outside the checkout. Never reuse the formerly committed debug key, whose identity is compromised. Back up the new key securely: future production updates must use the same private identity. Debug builds use machine-local keys with application ID `host.vorv.debug`; they are development artifacts, not end-user releases.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ```bash
 keytool -genkeypair -v -keystore vorv-release.keystore -alias vorvrelease \
@@ -76,9 +82,13 @@ keytool -genkeypair -v -keystore vorv-release.keystore -alias vorvrelease \
 base64 -w0 vorv-release.keystore   # paste into RELEASE_KEYSTORE_BASE64
 ```
 
-Without the secrets, CI still builds and tests everything; it just skips the
-GitHub Release (with a visible warning) instead of publishing an unsigned or
-debuggable build.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ece2d0853b9f46aef0a8e637bcc26b18b50b59ce3643550845f1362f962183f5 -->
+
+Without the secrets, CI still builds and tests everything and uploads development artifacts; it skips the GitHub Release with a visible warning. The rolling `ci-latest` release is no longer published. Before distributing a new signed release, remove historical APKs signed with the exposed debug key from releases (including `ci-latest`) and follow the existing-user reinstall instructions in README.md.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Adding a tool
 
