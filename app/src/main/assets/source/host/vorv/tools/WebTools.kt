@@ -152,7 +152,7 @@ class WebSearchTool(
  * v0.6.0 hardening:
  *  - response size capped (2 MB streamed; Content-Length precheck) — the old
  *    res.body?.string() could OOM the process on a huge body (audit H-8)
- *  - private/loopback/link-local egress blocked via NetworkGuard.PublicDns
+ *  - private/loopback/link-local egress blocked for literals and DNS results on every redirect
  *    (SSRF guard: no localhost, LAN, or metadata endpoints)
  *  - content-type allowlist — binary bodies are refused with an honest error
  *  - HTML-to-text via jsoup instead of regex (audit L-4)
@@ -179,7 +179,7 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         add("required", com.google.gson.JsonArray().apply { add("url") })
     }
 
-    private val client: OkHttpClient = client ?: defaultClient()
+    private val client: OkHttpClient = client ?: publicWebFetchClient()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -240,12 +240,6 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
                 durationMs = System.currentTimeMillis() - t0)
         }
     }
-
-    private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .dns(NetworkGuard.PublicDns)
-        .build()
 
     /** Streams at most [MAX_BYTES] bytes as UTF-8 text — see the top-level
      *  [readCappedUtf8] (M4) for the byte-true budget and tail trimming. */
@@ -342,3 +336,31 @@ internal fun trimPartialUtf8Tail(bytes: ByteArray): ByteArray {
     // honest replacement-char thing.
     return bytes
 }
+
+/** Guard every fetch destination before OkHttp can open a connection, including redirects. */
+internal fun publicWebFetchClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .dns(NetworkGuard.PublicDns)
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .addInterceptor { chain ->
+        var request = chain.request()
+        var redirects = 0
+        while (true) {
+            // HttpUrl has canonicalized IPv4, IPv6 and mapped IPv6 literals.
+            // Do not pre-resolve names: PublicDns checks the actual connection lookup.
+            NetworkGuard.checkLiteralHostAllowed(request.url.host)
+            val response = chain.proceed(request)
+            val destination = if (response.code in setOf(300, 301, 302, 303, 307, 308)) {
+                response.header("Location")?.let { response.request.url.resolve(it) }
+            } else null
+            if (destination == null) return@addInterceptor response
+            response.close()
+            if (++redirects > 20) throw IOException("Too many redirects")
+            request = request.newBuilder().url(destination).build()
+        }
+        @Suppress("UNREACHABLE_CODE")
+        throw AssertionError()
+    }
+    .build()
