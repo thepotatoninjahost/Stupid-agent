@@ -20,9 +20,8 @@ import java.util.Locale
  *   already contains "about to do step N" as its last line — telling us exactly
  *   which step killed the process.
  *
- *   On the next launch, [MainActivity] reads boot_trace.txt. If the last line
- *   isn't "BOOT_COMPLETE", the previous launch crashed — and the last breadcrumb
- *   tells us where.
+ *   On the next launch, [MainActivity] reads boot_trace.txt. A missing
+ *   "BOOT_COMPLETE" marks an incomplete boot; it does not prove a crash.
  *
  * USAGE:
  *   BootTracer.start(ctx)          // clears previous trace, writes "boot started"
@@ -79,8 +78,8 @@ object BootTracer {
 
     /**
      * Mark the boot as complete. Called at the end of MainActivity.onCreate
-     * after the UI is up. If this line is missing from the trace, the previous
-     * launch crashed.
+     * after the UI is up. A missing line means the launch did not complete;
+     * it does not identify why.
      */
     fun complete(ctx: Context) {
         writeStep(ctx, "BOOT_COMPLETE", "ui is up")
@@ -99,7 +98,7 @@ object BootTracer {
     }
 
     /**
-     * Increment the crash counter. Called when a previous-boot crash is detected
+     * Increment the crash counter. Called when a previous boot was incomplete
      * (boot_trace.txt exists without a BOOT_COMPLETE marker).
      */
     fun incrementCrashCount(ctx: Context): Int {
@@ -125,33 +124,52 @@ object BootTracer {
      *
      * The trace file accumulates multiple boots separated by "====" lines.
      * This function returns the second-to-last section (the previous boot),
-     * or the only section if there's just one.
+     * and returns null if there is no previous main-process boot.
      */
     fun readPreviousTrace(ctx: Context): String? {
         val full = runCatching {
             traceFile(ctx).takeIf { it.exists() }?.readText()
         }.getOrNull() ?: return null
 
-        val sections = full.split("\n${"=".repeat(60)}\n")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        // The last section is the current boot. The one before is the previous.
-        return when {
-            sections.size >= 2 -> sections[sections.size - 2]
-            sections.size == 1 -> sections[0]
-            else -> null
+        val sections = mainBootSections(full)
+        return sections.getOrNull(sections.size - 2)
+    }
+
+    /** Repair traces written by older versions which started a section in the
+     * watchdog process too. Main-process callbacks could follow that marker,
+     * so preserve those lines as part of the preceding main boot. */
+    internal fun mainBootSections(full: String): List<String> {
+        val sections = mutableListOf<String>()
+        val pidPattern = Regex("pid=(\\d+)")
+        for (raw in full.split("\n${"=".repeat(60)}\n")) {
+            val lines = raw.trim().lines().filter { it.isNotBlank() }
+            if (lines.isEmpty()) continue
+            val start = lines.firstOrNull { it.contains(" BOOT_STARTED") }
+            val pid = start?.let { pidPattern.find(it)?.groupValues?.get(1) }
+            val skip = lines.firstOrNull {
+                it.contains(" watchdog_process_skip") &&
+                    pid != null && pidPattern.find(it)?.groupValues?.get(1) == pid
+            }
+            if (start != null && skip != null) {
+                val remaining = lines.filter { it !== start && it !== skip }.joinToString("\n")
+                if (sections.isNotEmpty() && remaining.isNotEmpty()) {
+                    sections[sections.lastIndex] += "\n$remaining"
+                }
+            } else {
+                sections.add(lines.joinToString("\n"))
+            }
         }
+        return sections
     }
 
     /**
      * Check if the previous boot completed successfully.
-     * Returns true if the previous trace ends with BOOT_COMPLETE.
+     * Returns true if the previous trace contains BOOT_COMPLETE. Asynchronous
+     * callbacks can append breadcrumbs after completion.
      */
     fun previousBootCompleted(ctx: Context): Boolean {
         val prev = readPreviousTrace(ctx) ?: return true // no previous = first boot
-        // Look at the last non-empty line of the previous trace.
-        val lastLine = prev.lines().filter { it.isNotBlank() }.lastOrNull() ?: return true
-        return lastLine.contains("BOOT_COMPLETE")
+        return prev.lines().any { it.contains(" BOOT_COMPLETE") }
     }
 
     @Synchronized

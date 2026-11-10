@@ -1121,14 +1121,12 @@ class AgentViewModel(
 
         val situation = when {
             hasJavaReport ->
-                "A Java crash report was written by CrashReportWorker — it is in crash_logs/."
+                "A Java crash report exists in crash_logs/; check its time and PID before associating it with this event."
             previousBootCrashed ->
-                "The previous boot died WITHOUT completing and no Java report was written — " +
-                    "consistent with a NATIVE crash (e.g. the GenieX/NPU layer) or an external " +
-                    "process kill. A synthesized report from the breadcrumbs may be in " +
-                    "crash_logs/, and watchdog detections may be in watchdog/."
+                "The previous boot has no completion marker. A synthesized report may be in " +
+                    "crash_logs/; this does not establish why the process stopped."
             else ->
-                "The watchdog detected a mid-session process death (watchdog/ has the detection)."
+                "A crash evidence file was found. Check its type, time and PID before drawing conclusions."
         }
 
         val prompt = buildString {
@@ -1150,7 +1148,7 @@ class AgentViewModel(
             appendLine("Steps:")
             appendLine("1. crash_logs action=list — see every report that exists.")
             appendLine("2. Read the newest relevant report(s) in full.")
-            appendLine("3. State the root cause as precisely as the evidence allows. If the evidence only supports \"native crash, no Java stack\", say exactly that — never invent a stack trace, class name, or line number.")
+            appendLine("3. Read process_exit_history and compare process name, PID and time with the reports. Android may not retain an entry or may report an ambiguous reason. A binder death or missing Java report does not prove a native crash. Do not attribute a cause or layer without evidence.")
             appendLine("4. If a code fix is possible, use self_fix. The patch still needs the user's approval — describe it clearly when the consent dialog appears.")
             appendLine("5. If no fix applies, say plainly what you found and what evidence would be needed.")
             appendLine()

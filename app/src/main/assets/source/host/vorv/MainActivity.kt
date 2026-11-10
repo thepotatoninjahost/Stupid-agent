@@ -248,7 +248,9 @@ class MainActivity : ComponentActivity() {
                     // to the dialog.
                     repeat(5) {
                         if (vm.selfDiagnoseOnBoot(
-                                hasJavaReport = crashLogFile != null,
+                                hasJavaReport = crashLogFile?.parentFile?.name == "crash_logs" &&
+                                    crashLogFile.name.startsWith("crash_") &&
+                                    !crashLogFile.name.startsWith("crash_synthesized_"),
                                 bootTrace = previousTrace ?: "",
                                 previousBootCrashed = previousBootCrashed,
                                 rolledBackPatches = rolledBack,

@@ -40,7 +40,7 @@ class CrashLogsTool(private val appContext: Context) : Tool {
     override val description =
         "List or read Vorv's OWN crash and boot evidence: Java crash reports (crash_logs/), " +
             "watchdog crash detections (watchdog/), and boot traces (boot_trace_current, " +
-            "boot_trace_previous). For ANY question about Vorv crashing, restarting, or " +
+            "boot_trace_previous), and Android process_exit_history. For ANY question about Vorv crashing, restarting, or " +
             "misbehaving — check this BEFORE saying you don't have the information. " +
             "action=list returns paths; action=read returns a file's content."
 
@@ -102,7 +102,7 @@ class CrashLogsTool(private val appContext: Context) : Tool {
 
         val wdDir = File(extDir, "watchdog")
         val wd = wdDir.listFiles()
-            ?.filter { it.isFile && it.name.startsWith("crash_detected") }
+            ?.filter { it.isFile && (it.name.startsWith("crash_detected") || it.name.startsWith("handled_crash_detected")) }
             ?.sortedByDescending { it.lastModified() }
             .orEmpty()
         if (wd.isEmpty()) {
@@ -115,12 +115,13 @@ class CrashLogsTool(private val appContext: Context) : Tool {
             if (wd.size > MAX_LIST) sb.appendLine("    …(${wd.size - MAX_LIST} older omitted)")
         }
 
-        sb.appendLine("  boot_trace_previous  — previous boot's breadcrumbs (null after a clean shutdown)")
-        sb.appendLine("  boot_trace_current   — current boot's breadcrumbs")
+        sb.appendLine("  boot_trace_previous  — previous main-process boot's breadcrumbs")
+        sb.appendLine("  boot_trace_current   — complete stored boot trace")
+        sb.appendLine("  process_exit_history — Android's recent main-process exit records")
 
         val newest = reports.firstOrNull()?.let { "  Newest crash: ${it.name}" }
             ?: wd.firstOrNull()?.let { "  Newest detection: ${it.name}" }
-            ?: "  No crash artifacts on disk — if a crash was observed, it left no Java stack (native crash or process kill)."
+            ?: "  No crash artifacts on disk. Absence of a report does not identify the cause."
         sb.appendLine(newest)
 
         return ToolResult(
@@ -149,7 +150,7 @@ class CrashLogsTool(private val appContext: Context) : Tool {
             "boot_trace_previous" -> {
                 val trace = host.vorv.BootTracer.readPreviousTrace(appContext)
                 return if (trace.isNullOrBlank()) {
-                    ToolResult(ok = false, output = "", error = "No previous boot trace — either first boot or the previous boot shut down cleanly", durationMs = System.currentTimeMillis() - t0)
+                    ToolResult(ok = false, output = "", error = "No previous main-process boot trace available", durationMs = System.currentTimeMillis() - t0)
                 } else {
                     ToolResult(
                         ok = true,
@@ -158,6 +159,18 @@ class CrashLogsTool(private val appContext: Context) : Tool {
                         citation = Citation("file", "boot_trace_previous", "previous boot trace"),
                     )
                 }
+            }
+            "process_exit_history" -> {
+                return host.vorv.ProcessExitHistory.read(appContext).fold(
+                    onSuccess = { history -> ToolResult(
+                        ok = true, output = history, durationMs = System.currentTimeMillis() - t0,
+                        citation = Citation("file", "process_exit_history", "Android process exit history"),
+                    ) },
+                    onFailure = { error -> ToolResult(
+                        ok = false, output = "", error = "Android process exit history unavailable: ${error.message}",
+                        durationMs = System.currentTimeMillis() - t0,
+                    ) },
+                )
             }
         }
 

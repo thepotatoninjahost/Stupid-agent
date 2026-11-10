@@ -32,8 +32,8 @@ import java.io.StringWriter
  *     handler and returns — the service lives on its own.
  *   - heartbeats are written exclusively from the main process.
  *
- * AUDIT L-7 FIX — BOOT MARKER FIRST: BootTracer.start() (the separator +
- * BOOT_STARTED breadcrumb) is now the FIRST thing onCreate does, BEFORE the
+ * AUDIT L-7 FIX — BOOT MARKER FIRST: in the main process BootTracer.start()
+ * (the separator + BOOT_STARTED breadcrumb) runs BEFORE the
  * hot-patch step. Previously the hotpatch breadcrumbs were appended to the
  * PREVIOUS boot's section, so a crash during hot-patching was
  * misclassified as a crash of the previous boot.
@@ -73,7 +73,10 @@ class VorvApplication : Application() {
     override fun onCreate() {
         // L-7: the boot marker must exist BEFORE any step that can crash —
         // including the crash handler install and the hot-patch load.
-        BootTracer.start(this)
+        // Only the main process owns the boot trace. A watchdog start must
+        // not create a second, incomplete main boot in the shared file.
+        val watchdogProcess = isWatchdogProcess()
+        if (!watchdogProcess) BootTracer.start(this)
 
         // L5 (code review, 2026-11): SECOND, not first — the boot marker
         // above must already exist so a crash in here is attributable to
@@ -82,11 +85,10 @@ class VorvApplication : Application() {
         installCrashHandler()
         super.onCreate()
 
-        if (isWatchdogProcess()) {
+        if (watchdogProcess) {
             // H-1: the watchdog process gets NO app initialization. It must
             // not init Room/GenieX, and above all it must not write
             // heartbeats — that poisoned the crash detection for good.
-            BootTracer.step(this, "watchdog_process_skip", "pid=${Process.myPid()}")
             Log.i(TAG, "Watchdog process detected — application init skipped")
             return
         }
@@ -319,30 +321,15 @@ class VorvApplication : Application() {
     /**
      * Returns the most recent crash evidence file, or null if none exists.
      *
-     * Order of preference (night session 2026-11-08):
-     *   1. newest report in crash_logs/ — a real Java crash log from
-     *      CrashReportWorker, or a synthesized native-crash report;
-     *   2. newest watchdog/crash_detected_*.txt — the watchdog's own
-     *      detection (heartbeat + boot trace). This fallback catches the
-     *      mid-session native crash: the app died after boot completed, the
-     *      watchdog wrote its file and relaunched, the new boot "completed"
-     *      cleanly — so nothing else would ever surface it.
+     * Compare the newest unhandled report and watchdog detection by time;
+     * an older Java report cannot describe a later process death by itself.
      *
      * Called by [MainActivity] to display the crash on next launch, by the
      * probation gate, and indirectly by the agent's crash_logs tool.
      */
     fun getLatestCrashLog(): java.io.File? {
         val extDir = getExternalFilesDir(null) ?: return null
-        val crashDir = java.io.File(extDir, "crash_logs")
-        val newestReport = crashDir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
-            ?.maxByOrNull { it.lastModified() }
-        if (newestReport != null) return newestReport
-
-        val wdDir = java.io.File(extDir, "watchdog")
-        return wdDir.listFiles()
-            ?.filter { it.isFile && it.name.startsWith("crash_detected") && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
-            ?.maxByOrNull { it.lastModified() }
+        return newestCrashEvidence(extDir)
     }
 
     /**
@@ -416,12 +403,11 @@ class VorvApplication : Application() {
         sb.appendLine("Vorv crash report (SYNTHESIZED — no Java stack trace)")
         sb.appendLine("========================================")
         sb.appendLine("Synthesized at: ${java.util.Date()}")
-        sb.appendLine("Reason: the previous boot did not complete, but no Java crash")
-        sb.appendLine("report was written — consistent with a NATIVE crash (e.g. the")
-        sb.appendLine("GenieX/NPU layer) or the process being killed externally.")
-        sb.appendLine("There is NO exception class, NO stack trace, and NO line number")
-        sb.appendLine("below — the breadcrumbs are all that survived. Treat any")
-        sb.appendLine("diagnosis as inference, not fact.")
+        sb.appendLine("The previous boot has no completion marker. This alone does not")
+        sb.appendLine("establish a crash or its cause; the process may have stopped for")
+        sb.appendLine("other reasons, and a Java report may be delayed or unavailable.")
+        sb.appendLine("No exception or stack trace is present in this synthesized report.")
+        sb.appendLine("Check Android's process exit history and correlate its PID and time.")
         sb.appendLine("========================================")
         sb.appendLine("Previous boot trace (breadcrumbs, last steps before death):")
         sb.appendLine("========================================")
@@ -429,7 +415,7 @@ class VorvApplication : Application() {
         sb.appendLine()
         if (watchdogReport != null && watchdogReport.isFile) {
             sb.appendLine("========================================")
-            sb.appendLine("Watchdog detection (embedded verbatim, may repeat the trace):")
+            sb.appendLine("Most recent watchdog detection (not necessarily the same event):")
             sb.appendLine("========================================")
             sb.appendLine(runCatching { watchdogReport.readText() }.getOrDefault("(watchdog report unreadable: path=${watchdogReport.name})"))
         } else {

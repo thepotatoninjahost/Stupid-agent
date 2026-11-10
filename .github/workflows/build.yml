@@ -6,7 +6,7 @@ on:
     # branches named "dependabot/gradle/…" in THIS repo, which matched
     # neither feature/** nor fix/**: every dependency-bump PR used to get
     # ZERO CI (no tests, no compile) before being mergeable.
-    branches: [main, 'feature/**', 'fix/**', 'dependabot/**']
+    branches: [main, 'feature/**', 'fix/**', 'dependabot/**', 'coderabbit/**']
   # I-2: pull requests targeting main now run the FULL test + compile gate.
   # Fork PRs used to get nothing at all (their branches live in the fork,
   # where this workflow doesn't exist); same-repo PRs only got push CI by
