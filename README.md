@@ -101,11 +101,21 @@ The key is stored with AndroidX Security (EncryptedSharedPreferences, AES-256-GC
 2. Open Termux once and run `termux-setup-storage`, then `pkg install python`. Storage access enables output capture; Python supervises the command deadline, output limits, and cleanup.
 
 
-<!-- /coderabbit-ai-generated:v1 -->3. Android Settings → Apps → Vorv → Permissions → Additional permissions → **Run commands in Termux environment**.
+<!-- /coderabbit-ai-generated:v1 -->
+
+3. Android Settings → Apps → Vorv → Permissions → Additional permissions → **Run commands in Termux environment**.
 4. Ensure `~/.termux/termux.properties` contains `allow-external-apps=true`.
 5. Grant a Vorv workspace folder (see above) on internal shared storage — shell output round-trips through `.vorv-shell/` inside it.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:0a2339c71f736e636e6d4884c37b9262dc9ac8d69e9bd0a3015bcbebb0d6818a -->
+
 Without any of these, `shell` returns an honest error explaining exactly what's missing — it never fakes output.
+
+The optional `self_fix` compiler additionally needs a Termux JDK, Kotlin compiler compatible with Kotlin 2.4 metadata (2.4.21 is used by this app), and Android D8 supporting JVM 17 bytecode. The app supplies Android API stubs and its compiler classpath. Legacy `dx` is not compatible with this pipeline. Device installation of this toolchain still needs an on-phone check.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ---
 
