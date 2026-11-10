@@ -745,11 +745,12 @@ class ShellTool(private val appContext: Context) : Tool {
 class NotifyTool(private val appContext: Context) : Tool {
     override val name = "notify"
     override val description =
-        "Post a system notification. Requires the notification permission — if it " +
+        "Post a system notification after user confirmation of its full title and text. " +
+        "Requires the notification permission — if it " +
         "isn't granted, ask the user to enable it in Android Settings → Apps → Vorv → " +
         "Notifications. Use when long tasks complete or the user asked to be reminded."
 
-    override val timeoutMs: Long get() = 5_000L
+    override val timeoutMs: Long get() = 70_000L // confirmation dialog + notification dispatch
     override val maxCallsPerTask: Int get() = 10
 
     override fun schema() = JsonObject().apply {
@@ -779,6 +780,17 @@ class NotifyTool(private val appContext: Context) : Tool {
                         "Notifications, then try again.",
                     durationMs = System.currentTimeMillis() - t0)
             }
+        }
+
+        val confirm = ctx.confirm
+            ?: return@withContext ToolResult(ok = false, output = "",
+                error = "User confirmation bridge unavailable — refusing to post notification (fail closed).",
+                durationMs = System.currentTimeMillis() - t0)
+        val allowed = confirm("Vorv wants to post a system notification.\n\nTitle:\n$title\n\nText:\n$text\n\nAllow?")
+        if (!allowed) {
+            return@withContext ToolResult(ok = false, output = "",
+                error = "User DENIED the notification. It was not posted.",
+                durationMs = System.currentTimeMillis() - t0)
         }
 
         try {
