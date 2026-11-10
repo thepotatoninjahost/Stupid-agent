@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import host.vorv.BuildConfig
 import host.vorv.data.SecretsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -34,7 +35,7 @@ class WebSearchTool(
     override val description =
         "Search the live web via Z.ai's Web Search API. Returns results with URL, " +
         "title, and a content snippet. Requires a Z.ai API key (Setup tab) and internet. " +
-        "Use to answer questions about current events or facts you don't know."
+        "Requires approval of the destination and query before sending."
 
     override val timeoutMs: Long get() = 30_000L
     override val maxCallsPerTask: Int get() = 10
@@ -54,7 +55,11 @@ class WebSearchTool(
         add("required", com.google.gson.JsonArray().apply { add("query") })
     }
 
-    private val client: OkHttpClient = client ?: defaultClient()
+    // Approval covers one destination only; redirects require a separate request.
+    private val client: OkHttpClient = (client ?: defaultClient()).newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -88,6 +93,11 @@ class WebSearchTool(
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
 
+            if (!approveWebRequest(ctx, req.url.toString(), body)) {
+                return@withContext ToolResult(ok = false, output = "",
+                    error = "Web request denied: explicit user approval is required.",
+                    durationMs = System.currentTimeMillis() - t0)
+            }
             client.newCall(req).execute().use { res ->
                 val responseBody = res.body?.string().orEmpty()
                 if (!res.isSuccessful) {
@@ -133,6 +143,8 @@ class WebSearchTool(
                     citation = if (firstUrl.isNotBlank()) Citation("web", firstUrl, "web") else null,
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "web_search failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
@@ -163,7 +175,7 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
     override val description =
         "Fetch an http/https URL and return its text content (HTML stripped via jsoup). " +
         "Text and JSON content types only; responses over 2 MB are refused. " +
-        "Private/localhost addresses are blocked. Use after web_search to read page content."
+        "Private/localhost addresses are blocked. Requires approval of the full URL before sending; redirects are refused."
 
     override val timeoutMs: Long get() = 45_000L
     override val maxCallsPerTask: Int get() = 8
@@ -179,7 +191,11 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         add("required", com.google.gson.JsonArray().apply { add("url") })
     }
 
-    private val client: OkHttpClient = client ?: defaultClient()
+    // Approval covers one destination only; redirects require a separate request.
+    private val client: OkHttpClient = (client ?: defaultClient()).newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     override suspend fun run(input: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -198,6 +214,11 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
             val req = Request.Builder().url(url)
                 .addHeader("User-Agent", "Vorv/${BuildConfig.VERSION_NAME} (Android; local-first agent)")
                 .build()
+            if (!approveWebRequest(ctx, req.url.toString())) {
+                return@withContext ToolResult(ok = false, output = "",
+                    error = "Web request denied: explicit user approval is required.",
+                    durationMs = System.currentTimeMillis() - t0)
+            }
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) {
                     return@withContext ToolResult(ok = false, output = "",
@@ -235,6 +256,8 @@ class WebFetchTool(client: OkHttpClient? = null) : Tool {
         } catch (e: IOException) {
             ToolResult(ok = false, output = "", error = "web_fetch failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "web_fetch failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
@@ -341,4 +364,20 @@ internal fun trimPartialUtf8Tail(bytes: ByteArray): ByteArray {
     // Degenerate all-continuation tail — leave it; the decoder will do the
     // honest replacement-char thing.
     return bytes
+}
+
+/**
+ * Memory is available even in the initial task prompt, so every model-selected
+ * web request needs consent, regardless of tool order or apparent URL contents.
+ * Show the complete payload, JSON escaped, rather than model-authored rationale.
+ */
+private suspend fun approveWebRequest(ctx: ToolContext, url: String, body: String? = null): Boolean {
+    val disclosure = JsonObject().apply {
+        addProperty("url", url)
+        if (body != null) addProperty("body", body)
+    }
+    return ctx.confirm?.invoke(
+        "Allow sending this web request? The URL and search data may contain private memory. " +
+            "Approve only if you authorize disclosing the data below to this destination.\n$disclosure"
+    ) == true
 }
