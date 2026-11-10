@@ -139,19 +139,16 @@ Five layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
 logs and healer diagnostics entirely — conversation and tool-call data never
 participate in cloud backup or device transfer; only non-secret settings do).
 - The pre-0.6.0 plaintext copy (DataStore) is migrated once and erased.
-- No secrets are committed to the repository. Release key material is
-  never committed; release signing uses GitHub Actions secrets only.
-- One deliberate non-secret exception, stated honestly (H-2, code review
-  2026-11): `app/vorv-debug.keystore` — the DEBUG signing key — IS
-  committed, pinned since v0.7.0 so CI-built debug APKs install and update
-  in place over each other. It is not used for release signing, it grants
-  no capabilities (a debug signature cannot update a release install, and
-  anyone can build their own debug-signed APK of any open-source app),
-  and removing it would force reinstall cycles on every `ci-latest`
-  update. Earlier prose here claimed the committed debug keystore "was
-  removed" — that was false and is now corrected. The v1.0-era RELEASE
-  keystore removal claim stands and is accurate.
+<!-- coderabbit-ai-generated:v1 -->
 
+<!-- coderabbit-ai-generated-section:v1:270b5dacda2bb3fbbfd298e78307ba9a844e6939c7a27797794c077112e6b8eb -->
+
+- Signing private keys must remain outside the repository. Release signing uses GitHub Actions secrets; debug builds use AGP's machine-local key and the separate `host.vorv.debug` application ID.
+- The formerly committed debug key is compromised: it authenticated updates to the documented `host.vorv` debug installations. Anyone holding it can sign replacement code which, after user-approved installation, can access retained app data and permissions. App-level encryption and tool confirmation cannot protect against replacement app code. Deleting the key does not revoke existing copies. See README.md for the required reinstall and data-loss implications.
+- Maintainers must use a new private distribution key, never the old debug key, for signed releases. Remove the old `ci-latest` release and any historical APK assets signed with the exposed key from distribution; this source change cannot withdraw already published or downloaded APKs.
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 ## Data
 
 **Backup posture (v0.6.9, audit M-7):** `vorv.db` — prompts, tool inputs and

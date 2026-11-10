@@ -20,16 +20,14 @@ engine needs the Hexagon NPU). See [DEVELOPMENT.md](DEVELOPMENT.md).
 4. **Sensitive actions need consent.** Anything that leaves the app, dials,
    shares, launches, or spends the user's money goes through the confirmation
    bridge (`ctx.confirm`) — fail closed when it's absent.
-5. **Release secrets never get committed.** API keys, tokens and RELEASE
-   key material — no exceptions. One documented, deliberate non-secret
-   exception exists (H-2, code review 2026-11): the DEBUG signing key at
-   `app/vorv-debug.keystore`, pinned since v0.7.0 so CI-built debug APKs
-   update in place — see SECURITY.md ("Secrets") for the full rationale.
-   It signs debug builds only, grants no capabilities, and is never used
-   for release signing. If you catch yourself force-adding anything else
-   with "it's just a debug key", stop — that is exactly what this rule
-   exists to prevent.
+<!-- coderabbit-ai-generated:v1 -->
 
+<!-- coderabbit-ai-generated-section:v1:e0ba67db97a864fc6281851ac12d6eb41194de2793c2db67367038c46081b604 -->
+
+5. **Secrets and signing private keys never get committed.** This includes debug keys. Development builds use a machine-local debug key and a separate application ID. Release signing keys must be private, stored outside the repository and supplied through the documented environment variables or GitHub Actions secrets.
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 ## Workflow
 
 - Branch from `main` using `feature/**` or `fix/**` — CI builds and tests
