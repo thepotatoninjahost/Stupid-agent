@@ -122,9 +122,9 @@ class ScheduleTool(
     override val name = "schedule"
     override val description =
         "Schedule a reminder that fires N minutes from now (1 to 10080 = 7 days), even if " +
-        "the app is closed or the phone reboots. Returns the reminder's unique name."
+        "the app is closed or the phone reboots. Requires user confirmation. Returns the reminder's unique name."
 
-    override val timeoutMs: Long get() = 15_000L
+    override val timeoutMs: Long get() = 70_000L // 60-second consent dialog + scheduling
     override val maxCallsPerTask: Int get() = 10
 
     private val workManager = WorkManager.getInstance(appContext)
@@ -154,6 +154,19 @@ class ScheduleTool(
 
         return try {
             val delay = minutes.toLong()
+            val confirm = ctx.confirm
+                ?: return ToolResult(ok = false, output = "",
+                    error = "User confirmation bridge unavailable — refusing to schedule reminder (fail closed).",
+                    durationMs = System.currentTimeMillis() - t0)
+            val allowed = confirm(
+                "Vorv wants to schedule a reminder in $delay minutes after approval.\n\n" +
+                    "Title:\n$title\n\nText:\n$text\n\nAllow?"
+            )
+            if (!allowed) {
+                return ToolResult(ok = false, output = "",
+                    error = "User DENIED reminder scheduling. Do not claim it was scheduled.",
+                    durationMs = System.currentTimeMillis() - t0)
+            }
             val workName = "vorv_reminder_${ctx.taskId}_${ctx.iteration}"
             // Audit M-9 — REGISTER FIRST, ENQUEUE SECOND (with rollback):
             // the old order (enqueue → register) left a reminder enqueued in
@@ -192,6 +205,8 @@ class ScheduleTool(
                 durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("exec", ctx.taskId, "schedule iter ${ctx.iteration}"),
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "schedule failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
