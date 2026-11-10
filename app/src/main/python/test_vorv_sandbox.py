@@ -139,6 +139,48 @@ expect_ok(
     "f = __builtins__['__import__']\nprint(f.__globals__.get('sys', 'CLEAN'))",
     "CLEAN")
 
+# Proxy methods and their classes must not expose the runner namespace.
+for proxy_name in ("os", "sys"):
+    expect_ok(
+        "%s proxy method has isolated globals" % proxy_name,
+        "import uuid\n"
+        "proxy = uuid.uuid4.__globals__[%r]\n"
+        "g = proxy.__getattr__.__globals__\n"
+        "assert 'builtins' not in g\n"
+        "assert '_BLOCKED_AUDIT_EVENTS' not in g\n"
+        "assert 'open' not in g['__builtins__']\n"
+        "assert proxy.__class__.__dict__['__getattr__'].__globals__ is g\n"
+        "print('CLEAN')" % proxy_name,
+        "CLEAN")
+    expect_blocked(
+        "%s proxy cannot disable audit policy and recover open" % proxy_name,
+        "import uuid\n"
+        "g = uuid.uuid4.__globals__[%r].__getattr__.__globals__\n"
+        "g['_BLOCKED_AUDIT_EVENTS'] = ()\n"
+        "try:\n"
+        "    g['builtins'].open('/data/data/host.vorv/databases/vorv.db')\n"
+        "finally:\n"
+        "    g.pop('_BLOCKED_AUDIT_EVENTS', None)" % proxy_name)
+
+# Exercise the verifier independently of the real scrubbed whitelist. A
+# class namespace is a mappingproxy, and an instance's methods can carry
+# a leak even when the instance dictionary itself is empty.
+class LeakyClass:
+    leaked = sys
+
+for label, root in (
+    ("class namespace", {"cls": LeakyClass}),
+    ("proxy instance", {"proxy": vorv_runner._INERT_OS}),
+):
+    if label == "proxy instance":
+        vorv_runner._InertOs.leaked = sys
+    try:
+        assert not vorv_runner._walk_namespaces([root], replace_proxies=False), label
+        print("  PASS  [verifier] %s leak detected" % label)
+    finally:
+        if label == "proxy instance":
+            del vorv_runner._InertOs.leaked
+
 # ---------------------------------------------------------------- allowed
 expect_ok("arithmetic + print", "print(2 + 2)", "4")
 expect_ok("math", "import math\nprint(math.sqrt(16))", "4.0")

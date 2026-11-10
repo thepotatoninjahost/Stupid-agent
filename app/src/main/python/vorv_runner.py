@@ -136,25 +136,16 @@ for _m in sorted(_ALL_MODULES):
         continue        # simply won't be available to user code
 
 
-class _InertOs:
-    """Minimal os replacement for scrubbed namespaces: urandom/getpid only.
-
-    urandom and getpid are C builtins with no __globals__ and no reachable
-    namespace, so exposing them through this inert object is safe.
-    Everything else raises — honestly and loudly.
-    """
-    _allowed = {"urandom": _os_module.urandom, "getpid": _os_module.getpid}
-
-    def __getattr__(self, name):
-        if name in _InertOs._allowed:
-            return _InertOs._allowed[name]
-        raise AttributeError(
-            "Vorv sandbox: os.%s is not available inside python_exec" % name)
-
-
-class _InertSys:
-    """Minimal sys replacement: safe constants only. No modules, no path."""
-    _constants = {
+# Proxy methods must not retain this module's privileged globals. Define
+# them in a separate namespace containing only the capabilities they need.
+_PROXY_NS = {
+    "__builtins__": {
+        "__build_class__": builtins.__build_class__,
+        "AttributeError": builtins.AttributeError,
+    },
+    "__name__": "__vorv_proxy__",
+    "_os_allowed": {"urandom": _os_module.urandom, "getpid": _os_module.getpid},
+    "_sys_constants": {
         "maxsize": _sys_module.maxsize,
         "byteorder": _sys_module.byteorder,
         "platform": "",
@@ -164,15 +155,25 @@ class _InertSys:
         "intern": _sys_module.intern,
         "argv": [],
         "path": [],
-    }
-
+    },
+}
+exec("""
+class _InertOs:
     def __getattr__(self, name):
-        if name in _InertSys._constants:
-            return _InertSys._constants[name]
+        if name in _os_allowed:
+            return _os_allowed[name]
+        raise AttributeError(
+            "Vorv sandbox: os.%s is not available inside python_exec" % name)
+
+class _InertSys:
+    def __getattr__(self, name):
+        if name in _sys_constants:
+            return _sys_constants[name]
         raise AttributeError(
             "Vorv sandbox: sys.%s is not available inside python_exec" % name)
-
-
+""", _PROXY_NS)
+_InertOs = _PROXY_NS["_InertOs"]
+_InertSys = _PROXY_NS["_InertSys"]
 _INERT_OS = _InertOs()
 _INERT_SYS = _InertSys()
 
@@ -188,16 +189,18 @@ def _walk_namespaces(roots, replace_proxies):
     Reachability covers module dicts, function __globals__, class __dict__
     and MROs — the same routes attribute-syntax walks use.
     """
-    seen = set()
+    # Retain mappingproxy objects: vars(cls) creates temporary wrappers,
+    # whose ids could otherwise be reused and skip an unrelated class.
+    seen = {}
     queue = list(roots)
     clean = True
     while queue:
         if len(seen) > _MAX_SCRUB_DICTS:
             return False  # closure unexpectedly huge — fail safe
         ns = queue.pop(0)
-        if not isinstance(ns, dict) or id(ns) in seen:
+        if not isinstance(ns, (dict, types.MappingProxyType)) or id(ns) in seen:
             continue
-        seen.add(id(ns))
+        seen[id(ns)] = ns
         try:
             items = list(ns.items())
         except Exception:
@@ -221,6 +224,11 @@ def _walk_namespaces(roots, replace_proxies):
                     g = getattr(value, "__globals__", None)
                     if isinstance(g, dict) and id(g) not in seen:
                         queue.append(g)
+                elif isinstance(value, (_InertOs, _InertSys)):
+                    queue.append(vars(type(value)))
+                    queue.append(vars(value))
+                elif isinstance(value, types.MethodType):
+                    queue.append(value.__func__.__globals__)
                 elif isinstance(value, type):
                     if id(vars(value)) not in seen:
                         queue.append(vars(value))
