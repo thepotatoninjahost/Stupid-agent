@@ -153,7 +153,12 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     ?: java.io.ByteArrayInputStream(ByteArray(0))
                 WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
             } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
+                // Never fall back to WebView's network stack: a failure may be
+                // PublicDns rejecting a redirect to a private destination.
+                lastBlockReason = e.message ?: "resource proxy failed"
+                WebResourceResponse("text/plain", "utf-8", 502, "Bad Gateway",
+                    java.util.Collections.emptyMap(),
+                    java.io.ByteArrayInputStream("resource proxy failed".toByteArray()))
             }
         }
 
