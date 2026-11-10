@@ -135,15 +135,22 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             if (!checkAllowed(url)) {
                 // A blocked sub-resource (iframe/fetch/XHR): serve an honest
                 // empty 403 instead of letting the WebView fetch it.
-                return WebResourceResponse("text/plain", "utf-8", 403, "Blocked by Vorv",
-                    java.util.Collections.emptyMap(),
-                    java.io.ByteArrayInputStream("blocked by network guard".toByteArray()))
+                return blockedResponse()
             }
             // M-1: proxy through the DNS-pinned client so the connection uses
             // EXACTLY the addresses that were checked.
             return try {
                 val req = okhttp3.Request.Builder().url(url.toString()).build()
                 val resp = proxyClient.newCall(req).execute()
+                // Intercepted bodies retain the original WebView URL/origin.
+                // Never expose a different origin's HTML or scripts under it.
+                val finalUrl = resp.request.url
+                if (req.url.scheme != finalUrl.scheme || req.url.host != finalUrl.host ||
+                    req.url.port != finalUrl.port) {
+                    lastBlockReason = "cross-origin redirect blocked"
+                    resp.close()
+                    return blockedResponse()
+                }
                 val contentType = resp.header("Content-Type") ?: "application/octet-stream"
                 val (mime, charset) = contentType.split(";", limit = 2)
                     .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
@@ -153,9 +160,18 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     ?: java.io.ByteArrayInputStream(ByteArray(0))
                 WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
             } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
+                // Returning null would let WebView retry outside the guarded
+                // proxy, including when a redirect or response close fails.
+                lastBlockReason = "guarded request failed"
+                blockedResponse()
             }
         }
+
+        private fun blockedResponse() = WebResourceResponse(
+            "text/plain", "utf-8", 403, "Blocked by Vorv",
+            java.util.Collections.emptyMap(),
+            java.io.ByteArrayInputStream("blocked by network guard".toByteArray()),
+        )
 
         /** True when allowed; records the reason when blocked. */
         private fun checkAllowed(url: android.net.Uri): Boolean {

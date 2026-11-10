@@ -115,7 +115,16 @@ Five layers, self-tested in CI (`app/src/main/python/test_vorv_sandbox.py`):
 - `allowFileAccess`, `allowContentAccess`, `allowFileAccessFromFileURLs`,
   `allowUniversalAccessFromFileURLs`: all **false**.
 - Mixed content: `MIXED_CONTENT_NEVER_ALLOW`.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:78caa1213d29c619e3425f0b84ab6a9b67ad6f9d80b4fc5e3e684b9aeacd059e -->
+
 - Private/loopback hosts blocked before load.
+- Proxied responses whose final scheme, host or effective port differs from
+  the original request are blocked; same-origin redirects remain supported.
+  Proxy failures return a blocked response rather than retrying outside the guard.
+
+<!-- /coderabbit-ai-generated:v1 -->
 - JS built by Gson string interpolation (no injection via selectors/text).
 - The WebView is headless and destroyed with the ViewModel.
 
