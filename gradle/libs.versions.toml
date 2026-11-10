@@ -54,7 +54,7 @@ documentfile = "1.1.0"
 # At-rest encryption for the stored API key (Android Keystore-backed master key).
 securityCrypto = "1.1.0"
 # Robust HTML parsing for web_fetch (replaces regex-based stripping).
-jsoup = "1.24.1"
+jsoup = "1.23.2"
 # JSON — used directly by the kernel, tools and LLM layer. Was previously a
 # transitive dependency via Retrofit's converter; now declared explicitly
 # because Retrofit was removed (audit L-5).
