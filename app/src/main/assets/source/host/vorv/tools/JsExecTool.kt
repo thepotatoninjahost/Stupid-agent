@@ -97,22 +97,55 @@ class JsExecTool : Tool {
      * getClass() results are shutter-gated, wait/notify throw
      * IllegalMonitorStateException off-monitor).
      */
-    class SandboxConsole(
-        private val stdout: StringBuilder,
-        private val stderr: StringBuilder,
-    ) {
-        fun log(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-        fun info(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-        fun warn(vararg args: Any?) { stderr.appendLine("WARN: " + args.joinToString(" ") { fmt(it) }) }
-        fun error(vararg args: Any?) { stderr.appendLine("ERR: " + args.joinToString(" ") { fmt(it) }) }
+    class SandboxConsole {
+        private val stdout = StringBuilder()
+        private val stderr = StringBuilder()
+        private var remaining = MAX_OUTPUT_CHARS
+        @Volatile internal var exhausted = false
+            private set
+        private var closed = false
 
-        private fun fmt(v: Any?): String = when (v) {
-            null -> "null"
-            is String -> v
-            is Number, is Boolean -> v.toString()
-            else -> v.toString()
+        fun log(vararg args: Any?) = write(stdout, "", args)
+        fun info(vararg args: Any?) = write(stdout, "", args)
+        fun warn(vararg args: Any?) = write(stderr, "WARN: ", args)
+        fun error(vararg args: Any?) = write(stderr, "ERR: ", args)
+
+        private fun write(target: StringBuilder, prefix: String, args: Array<out Any?>) {
+            checkBudget(0) // Check before formatting, even if the script caught an earlier failure.
+            append(target, prefix)
+            args.forEachIndexed { index, value ->
+                if (index > 0) append(target, " ")
+                // Rhino strings can be lazy CharSequences. Check length BEFORE flattening.
+                if (value is CharSequence) checkBudget(value.length)
+                append(target, value?.toString() ?: "null")
+            }
+            append(target, "\n")
+        }
+
+        @Synchronized
+        private fun append(target: StringBuilder, text: String) {
+            checkBudget(text.length)
+            target.append(text)
+            remaining -= text.length
+        }
+
+        @Synchronized
+        private fun checkBudget(chars: Int) {
+            if (closed || exhausted || chars > remaining) {
+                exhausted = true
+                throw OutputLimitExceeded()
+            }
+        }
+
+        // A timed-out worker may still be unwinding: freeze output before reading it.
+        @Synchronized
+        internal fun finish(): Pair<String, String> {
+            closed = true
+            return stdout.toString().trim() to stderr.toString().trim()
         }
     }
+
+    private class OutputLimitExceeded : Error(OUTPUT_LIMIT_MSG)
 
     /**
      * The ONLY Java classes the sandbox exposes (beyond Rhino internals and
@@ -169,8 +202,7 @@ class JsExecTool : Tool {
             ?: return@withContext ToolResult(ok = false, output = "", error = "missing code",
                 durationMs = System.currentTimeMillis() - t0)
 
-        val stdout = StringBuilder()
-        val stderr = StringBuilder()
+        val console = SandboxConsole()
         val resultRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val errorRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var timedOut = false
@@ -192,7 +224,7 @@ class JsExecTool : Tool {
                 cx.instructionObserverThreshold = 10_000
 
                 val global = cx.initStandardObjects(null, false)
-                global.put("console", global, SandboxConsole(stdout, stderr))
+                global.put("console", global, console)
                 for (name in liveConnectGlobals) global.delete(name)
                 global.sealObject()
 
@@ -206,7 +238,11 @@ class JsExecTool : Tool {
                 factory.deadline = System.currentTimeMillis() + SANDBOX_TIMEOUT_MS
                 try {
                     val result = cx.evaluateString(child, code, "vorv-sandbox.js", 1, null)
-                    resultRef.set(result?.toString())
+                    // Bound lazy strings before their potentially large toString allocation.
+                    if (result is CharSequence && result.length > MAX_OUTPUT_CHARS) {
+                        throw OutputLimitExceeded()
+                    }
+                    resultRef.set(result?.toString()?.let { capWithMarker(it, MAX_OUTPUT_CHARS) })
                 } catch (e: EvaluatorException) {
                     errorRef.set(if (factory.aborted) TIMEOUT_MSG else (e.message ?: e.toString()))
                 } catch (t: Throwable) {
@@ -238,23 +274,24 @@ class JsExecTool : Tool {
             worker.interrupt()
         }
 
-        val error = errorRef.get()
+        val (stdout, stderr) = console.finish()
+        val error = if (console.exhausted) OUTPUT_LIMIT_MSG else errorRef.get()
         val returnValue = resultRef.get()
 
         ToolResult(
             ok = !timedOut && error == null,
-            output = buildString {
-                if (stdout.isNotEmpty()) append(stdout.toString().trim())
+            output = capWithMarker(buildString {
+                if (stdout.isNotEmpty()) append(stdout)
                 if (returnValue != null && returnValue != "undefined") {
                     if (isNotEmpty()) append("\n")
                     append("=> $returnValue")
                 }
                 if (isEmpty()) append("(no output)")
-            },
-            stderr = stderr.toString().trim(),
+            }, MAX_OUTPUT_CHARS),
+            stderr = capWithMarker(stderr, MAX_OUTPUT_CHARS),
             error = when {
                 timedOut -> TIMEOUT_MSG
-                error != null -> error
+                error != null -> capWithMarker(error, MAX_OUTPUT_CHARS)
                 else -> null
             },
             durationMs = System.currentTimeMillis() - t0,
@@ -263,6 +300,11 @@ class JsExecTool : Tool {
     }
 
     private companion object {
+        // Shared UTF-16 budget: at most 192 KiB of UTF-8 console data, without
+        // allocating encoded copies. Independently cap persisted result fields too.
+        const val MAX_OUTPUT_CHARS = 65_536
+        const val OUTPUT_LIMIT_MSG = "Console output limit exceeded (65536 chars); narrow the computation"
+
         const val SANDBOX_TIMEOUT_MS = 5_000L
         const val JOIN_MARGIN_MS = 1_500L
         const val TIMEOUT_MSG = "Execution timed out after $SANDBOX_TIMEOUT_MS ms"
