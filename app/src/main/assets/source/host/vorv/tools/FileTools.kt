@@ -155,7 +155,7 @@ class FileReadTool(private val appContext: Context) : Tool {
  */
 class FileWriteTool(private val appContext: Context) : Tool {
     override val name = "file_write"
-    override val description = "Write text content to a file in the workspace. Overwrites if exists, creates if not. Use for saving artifacts, reports, generated code."
+    override val description = "Write text content to a file in the workspace. Overwrites if exists, creates if not. Use for saving artifacts, reports, generated code. Requires user confirmation for each write."
 
     override fun schema() = JsonObject().apply {
         addProperty("type", "object")
@@ -183,6 +183,21 @@ class FileWriteTool(private val appContext: Context) : Tool {
             return@withContext ToolResult(ok = false, output = "",
                 error = "Content too large (${content.length} chars, cap $MAX_WRITE_CHARS). " +
                     "Write in smaller chunks or use shell/python with the workspace.",
+                durationMs = System.currentTimeMillis() - t0)
+        }
+        // A workspace grant scopes storage access; it does not authorize a
+        // model-selected modification. Ask before even creating parent folders.
+        // Keep the approved values in local strings, independent of mutable input.
+        val confirm = ctx.confirm
+            ?: return@withContext ToolResult(ok = false, output = "",
+                error = "User confirmation bridge unavailable — refusing to write (fail closed).",
+                durationMs = System.currentTimeMillis() - t0)
+        if (!confirm("Vorv wants to create or overwrite a workspace file. " +
+                "Existing content will be replaced and missing parent folders created.\n\n" +
+                "Workspace: ${ctx.workspaceUri}\nPath: $path\n" +
+                "Replacement content (${content.length} chars):\n$content")) {
+            return@withContext ToolResult(ok = false, output = "",
+                error = "User DENIED the file write. No files were changed.",
                 durationMs = System.currentTimeMillis() - t0)
         }
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
