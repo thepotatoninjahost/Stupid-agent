@@ -2,6 +2,7 @@ package host.vorv.tools
 
 import com.google.gson.JsonObject
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -153,6 +154,95 @@ class JsExecToolTest {
         val r = runJs("function f(:")
         assertFalse(r.describe(), r.ok)
         assertTrue(r.describe(), r.error!!.isNotBlank())
+    }
+
+    // ---------------------------------------------------- Rhino rollback regressions
+
+    @Test fun `toFixed preserves rounding and trailing zeroes`() {
+        val r = runJs("""
+            console.log(JSON.stringify([
+                (1.25).toFixed(1), (-1.25).toFixed(1),
+                (12).toFixed(2), (0).toFixed(2), (-0).toFixed(2)
+            ]));
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertEquals("[\"1.3\",\"-1.3\",\"12.00\",\"0.00\",\"0.00\"]", r.output)
+    }
+
+    @Test fun `toFixed coerces precision and defaults to zero digits`() {
+        val r = runJs("""
+            console.log(JSON.stringify([
+                (1.25).toFixed(), (1.25).toFixed(undefined),
+                (1.25).toFixed(null), (1.25).toFixed(NaN),
+                (1.25).toFixed('2'), (1.25).toFixed(2.9)
+            ]));
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertEquals("[\"1\",\"1\",\"1\",\"1\",\"1.25\",\"1.25\"]", r.output)
+    }
+
+    @Test fun `toFixed accepts both precision boundaries`() {
+        val r = runJs("""
+            console.log((1.5).toFixed(0));
+            console.log((1).toFixed(100));
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertEquals("2\n1." + "0".repeat(100), r.output)
+    }
+
+    @Test fun `toFixed rejects invalid precision as RangeError before formatting`() {
+        // Keep inputs bounded: the upper boundary exercises the validation
+        // protecting the native formatter without allocating enormous strings.
+        for (precision in listOf("-1", "101", "Infinity", "-Infinity")) {
+            val r = runJs("""
+                try {
+                    (1).toFixed($precision);
+                    console.log('unexpected success');
+                } catch (e) {
+                    console.log(e.name);
+                }
+            """.trimIndent())
+            assertTrue("precision=$precision ${r.describe()}", r.ok)
+            assertEquals("precision=$precision ${r.describe()}", "RangeError", r.output)
+        }
+    }
+
+    @Test fun `uncaught toFixed range error is a tool failure and next run succeeds`() {
+        val failed = runJs("(1).toFixed(101)")
+        assertFalse(failed.describe(), failed.ok)
+        assertTrue(failed.describe(), failed.error.orEmpty().contains("RangeError"))
+        assertEquals("(no output)", failed.output)
+
+        val recovered = runJs("(1.25).toFixed(2)")
+        assertTrue(recovered.describe(), recovered.ok)
+        assertEquals("=> 1.25", recovered.output)
+    }
+
+    @Test fun `toFixed handles nonfinite numbers and exponential threshold`() {
+        val r = runJs("""
+            console.log(JSON.stringify([
+                (NaN).toFixed(2), (Infinity).toFixed(2),
+                (-Infinity).toFixed(2), (1e21).toFixed(2), (1e20).toFixed(2)
+            ]));
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertEquals(
+            "[\"NaN\",\"Infinity\",\"-Infinity\",\"1e+21\",\"100000000000000000000.00\"]",
+            r.output,
+        )
+    }
+
+    @Test fun `toFixed rejects nonnumeric receiver`() {
+        val r = runJs("""
+            try {
+                Number.prototype.toFixed.call('1.25', 2);
+                console.log('unexpected success');
+            } catch (e) {
+                console.log(e.name);
+            }
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertEquals("TypeError", r.output)
     }
 
     // ---------------------------------------------------- budget enforcement
