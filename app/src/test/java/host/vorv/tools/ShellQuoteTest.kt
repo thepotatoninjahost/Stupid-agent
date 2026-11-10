@@ -154,9 +154,9 @@ class ShellQuoteTest {
         for (p in payloads) {
             val rawDir = "/storage/emulated/0/$p"
             val cmd = host.vorv.healer.HealingAgent.Companion.dispatchCommand(
-                rawDir, ".vorv-heal", "c.sh", "o.txt", "e.txt", "k.txt")
+                rawDir, ".vorv-heal", "echo COMPILE_OK", "o.txt", "e.txt", "k.txt")
             val words = bashSplitWords(cmd)
-            assertTrue("script path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/c.sh"))
+            assertTrue("script text not preserved: $cmd", words.contains("echo COMPILE_OK"))
             assertTrue("out path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/o.txt"))
             assertTrue("err path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/e.txt"))
             assertTrue("code path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/k.txt"))
@@ -166,10 +166,40 @@ class ShellQuoteTest {
     @Test
     fun `healer dispatch command keeps redirection and exit-code capture`() {
         val cmd = host.vorv.healer.HealingAgent.Companion.dispatchCommand(
-            "/storage/emulated/0/plain", ".vorv-heal", "c.sh", "o.txt", "e.txt", "k.txt")
+            "/storage/emulated/0/plain", ".vorv-heal", "echo COMPILE_OK", "o.txt", "e.txt", "k.txt")
         assertEquals(
-            "bash '/storage/emulated/0/plain/.vorv-heal/c.sh' > '/storage/emulated/0/plain/.vorv-heal/o.txt' " +
+            "bash -c 'echo COMPILE_OK' > '/storage/emulated/0/plain/.vorv-heal/o.txt' " +
                 "2> '/storage/emulated/0/plain/.vorv-heal/e.txt'; echo \$? > '/storage/emulated/0/plain/.vorv-heal/k.txt'",
             cmd)
     }
+
+    @Test
+    fun `healer executes trusted text despite replacement workspace script`() {
+        val root = java.nio.file.Files.createTempDirectory("healer-dispatch").toFile()
+        try {
+            val workspace = java.io.File(root, "it's a `name` with \$symbols")
+            val healDir = java.io.File(workspace, ".vorv-heal").apply { mkdirs() }
+            val marker = java.io.File(root, "untrusted-ran")
+            val replacement = "touch ${ShellQuote.sh(marker.absolutePath)}"
+            java.io.File(healDir, "compile_test.sh").writeText(replacement)
+            val script = "printf '%s\\n' \"trusted 'text'\"\nprintf '%s\\n' 'diagnostic' >&2\nexit 7"
+            val command = host.vorv.healer.HealingAgent.dispatchCommand(
+                workspace.absolutePath, ".vorv-heal", script, "o.txt", "e.txt", "k.txt")
+            // Reproduce the actual base64 transport used by RUN_COMMAND.
+            val encoded = java.util.Base64.getEncoder().withoutPadding()
+                .encodeToString(command.toByteArray(Charsets.UTF_8))
+            java.io.File(healDir, "compile_test.sh").writeText(replacement + "\nexit 0")
+            val process = ProcessBuilder("bash", "-c", "printf '%s' '$encoded' | base64 -d | bash")
+                .redirectErrorStream(true).start()
+            assertTrue("dispatch timed out", process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(0, process.exitValue())
+            assertEquals("trusted 'text'\n", java.io.File(healDir, "o.txt").readText())
+            assertEquals("diagnostic\n", java.io.File(healDir, "e.txt").readText())
+            assertEquals("7", java.io.File(healDir, "k.txt").readText().trim())
+            org.junit.Assert.assertFalse("workspace script executed", marker.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
 }

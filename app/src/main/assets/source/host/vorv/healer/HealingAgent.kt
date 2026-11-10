@@ -117,27 +117,23 @@ class HealingAgent(
         private const val ASSET_CLASSES_JAR = "healer/app_classes.jar"
 
         /**
-         * H-1 (code review, 2026-11): the bash -c payload that runs the
-         * compile script and captures its output/exit code, as a PURE
-         * function. Every path is [ShellQuote.sh]-quoted: the old
-         * hand-written single quotes let a workspace folder name carrying
-         * a quote, `$()`, backtick or semicolon break out of the quoting
-         * and execute arbitrary text inside Termux. Internal and pure so
-         * the injection regression tests pin it without a device.
+         * Run the generated compiler instructions from trusted command arguments,
+         * never from a script in the workspace: other workspace writers could
+         * replace that file before Bash opens it. Paths and the nested bash -c
+         * argument are quoted independently to preserve their literal contents.
          */
         internal fun dispatchCommand(
             rawDir: String,
             dirName: String,
-            scriptName: String,
+            script: String,
             outName: String,
             errName: String,
             codeName: String,
         ): String {
-            val scriptPath = ShellQuote.sh("$rawDir/$dirName/$scriptName")
             val outPath = ShellQuote.sh("$rawDir/$dirName/$outName")
             val errPath = ShellQuote.sh("$rawDir/$dirName/$errName")
             val codePath = ShellQuote.sh("$rawDir/$dirName/$codeName")
-            return "bash $scriptPath > $outPath 2> $errPath; echo \$? > $codePath"
+            return "bash -c ${ShellQuote.sh(script)} > $outPath 2> $errPath; echo \$? > $codePath"
         }
     }
 
@@ -548,7 +544,6 @@ class HealingAgent(
             writeDoc(stampDoc, currentVersion.toByteArray())
         }
 
-        val scriptName = "compile_$runId.sh"
         val outName = "out_$runId.txt"
         val errName = "err_$runId.txt"
         val codeName = "code_$runId.txt"
@@ -578,17 +573,13 @@ class HealingAgent(
             appendLine("else echo KOTLINC_FAILED; cat \"\$H/err_compile_$runId\"; fi")
         }
 
-        val scriptDoc = healDir.createFile("text/x-shellscript", scriptName)
-            ?: return@withContext null
-        writeDoc(scriptDoc, script.toByteArray())
-
         // Dispatch via Termux RUN_COMMAND with output capture (ShellTool's
         // proven wrapper pattern: base64-transport, code file poll).
         // H-1 (code review, 2026-11): every path is ShellQuote.sh-quoted —
         // the old hand-written single quotes let a folder name containing
         // a quote break out and inject commands into Termux.
         val b64 = android.util.Base64.encodeToString(
-            dispatchCommand(rawDir, HEAL_DIR, scriptName, outName, errName, codeName).toByteArray(),
+            dispatchCommand(rawDir, HEAL_DIR, script, outName, errName, codeName).toByteArray(),
             android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
         val wrapper = "printf '%s' '$b64' | base64 -d | bash"
 
@@ -639,7 +630,7 @@ class HealingAgent(
         val dexBytes = if (dexDoc != null && dexDoc.isFile) readDocBytes(dexDoc) else null
 
         // Clean up the workspace artifacts.
-        listOf(outName, errName, codeName, scriptName, "fix_$runId.kt",
+        listOf(outName, errName, codeName, "fix_$runId.kt",
             "fix_$runId.jar", "err_compile_$runId", "patch_$runId.dex")
             .forEach { n -> runCatching { healDir.findFile(n)?.delete() } }
         runCatching { healDir.findFile("dex_$runId")?.delete() }
