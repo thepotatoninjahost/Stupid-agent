@@ -329,6 +329,11 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     // Test-only
+    constraints {
+        testImplementation(libs.guava) {
+            because("Use patched Guava for Robolectric's transitive dependency")
+        }
+    }
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)

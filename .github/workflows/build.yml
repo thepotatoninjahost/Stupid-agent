@@ -119,6 +119,7 @@ jobs:
 
       - name: Upload signed release APK artifact
         if: env.HAS_KEYSTORE == 'true'
+        continue-on-error: ${{ github.ref == 'refs/heads/main' }}
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -147,19 +148,20 @@ jobs:
           test -f "$DEBUG_APK" || { echo "debug APK missing"; exit 1; }
           test -f "$RELEASE_APK" || { echo "release APK missing"; exit 1; }
           NOTES=$(cat <<'EOF'
-          Automated CI output of commit __SHA__ — NOT a signed release.
+          Automated CI output of commit __SHA__.
 
           - `app-debug.apk`: debug-signed, debuggable. Sideloadable for testing (Settings → Apps → Special access → Install unknown apps → allow the browser, then tap the APK).
-          - `app-release-unsigned.apk`: UNSIGNED. It will not install until signed: apksigner sign --ks <keystore> --out vorv-release.apk app-release-unsigned.apk.
-
-          A proper signed release is published by the publish job when the RELEASE_KEYSTORE_* secrets are configured.
           EOF
           )
           NOTES=${NOTES/__SHA__/$SHORT_SHA}
           if [ "$HAS_KEYSTORE" = true ]; then
             NOTES="$NOTES
 
-          This build also includes app-release.apk, signed with the private release key."
+          - app-release.apk: signed with the private release key."
+          else
+            NOTES="$NOTES
+
+          - app-release-unsigned.apk: UNSIGNED. It must be signed before installation. Use app-debug.apk for testing."
           fi
           gh release create "build-$SHORT_SHA" "$DEBUG_APK" "$RELEASE_APK" \
             --target "$GITHUB_SHA" --prerelease \
@@ -204,15 +206,29 @@ jobs:
       - name: Check release keystore is configured
         if: env.HAS_KEYSTORE != 'true'
         run: |
-          echo "::warning::RELEASE_KEYSTORE_* secrets are not configured — skipping the GitHub Release. The CI-built debug APK remains available as a workflow artifact, but it is NOT an installable release build."
+          echo "::warning::Private release signing is not configured. Install app-debug.apk from ci-latest for testing; app-release-unsigned.apk requires signing."
 
       - name: Download signed release APK
         if: env.HAS_KEYSTORE == 'true'
+        continue-on-error: true
         # actions/download-artifact v8.0.2
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: Vorv-release-signed-APK
           path: release/
+
+      - name: Recover signed APK from durable build release
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          if [ ! -s release/app-release.apk ]; then
+            mkdir -p release
+            gh release download "build-$(git rev-parse --short HEAD)" \
+              --pattern app-release.apk --dir release --clobber
+          fi
+          test -s release/app-release.apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Compute short SHA and app version
         if: env.HAS_KEYSTORE == 'true'
