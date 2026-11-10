@@ -34,7 +34,7 @@ okhttp = "5.5.1"
 coroutines = "1.11.0"
 # Rhino 1.7.15.1 — the CVE-2025-66453 (toFixed DoS) fix release (audit M-3).
 # The existing JsExecToolTest attack suite is the safety net for the upgrade.
-rhino = "1.7.15.1"
+rhino = "1.9.2"
 # GenieX Android — Qualcomm's official first-party on-device Gen-AI runtime.
 # Verified present on Maven Central at
 # repo1.maven.org/maven2/com/qualcomm/qti/geniex-android/0.10.0/geniex-android-0.10.0.aar
