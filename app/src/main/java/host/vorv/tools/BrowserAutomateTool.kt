@@ -104,8 +104,8 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .dns(NetworkGuard.PublicDns)
-            .followRedirects(true)
-            .followSslRedirects(true)
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build()
     }
 
@@ -143,7 +143,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             // EXACTLY the addresses that were checked.
             return try {
                 val req = okhttp3.Request.Builder().url(url.toString()).build()
-                val resp = proxyClient.newCall(req).execute()
+                val resp = executeBrowserRequest(proxyClient, req)
                 val contentType = resp.header("Content-Type") ?: "application/octet-stream"
                 val (mime, charset) = contentType.split(";", limit = 2)
                     .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
@@ -153,7 +153,11 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     ?: java.io.ByteArrayInputStream(ByteArray(0))
                 WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
             } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
+                // Never let WebView retry outside the guarded proxy.
+                lastBlockReason = e.message ?: "browser proxy request failed"
+                WebResourceResponse("text/plain", "utf-8", 403, "Blocked by Vorv",
+                    java.util.Collections.emptyMap(),
+                    java.io.ByteArrayInputStream("blocked by network guard".toByteArray()))
             }
         }
 
