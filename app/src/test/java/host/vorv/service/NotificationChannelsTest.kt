@@ -87,7 +87,7 @@ class NotificationChannelsTest {
                 addProperty("title", "Task done")
                 addProperty("text", "report.csv saved")
             },
-            ToolContext(taskId = "test", iteration = 1, workspaceUri = null),
+            ToolContext(taskId = "test", iteration = 1, workspaceUri = null, confirm = { true }),
         )
 
         assertTrue("notify must succeed: ${result.error}", result.ok)
