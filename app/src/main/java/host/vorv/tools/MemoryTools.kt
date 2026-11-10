@@ -15,7 +15,7 @@ import host.vorv.data.entity.KnowledgeEntry
  */
 class MemoryWriteTool(private val db: VorvDatabase) : Tool {
     override val name = "memory_write"
-    override val description = "Persist a fact or lesson to long-term memory. Use when you learn something the user said, or you discovered something worth keeping."
+    override val description = "Persist a fact or lesson to long-term memory. Requires user approval of the exact topic and content before storing a model-proposed memory."
 
     override fun schema() = JsonObject().apply {
         addProperty("type", "object")
@@ -37,6 +37,24 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
         val topic = input.get("topic")?.asString ?: return ToolResult(ok = false, output = "", error = "missing topic", durationMs = System.currentTimeMillis() - t0)
         val content = input.get("content")?.asString ?: return ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
 
+        // Model arguments may originate in untrusted tool observations. Only the
+        // user consent bridge can authorize persistence; model-supplied approval
+        // or provenance fields are never accepted as authorization.
+        val confirm = ctx.confirm ?: return ToolResult(
+            ok = false, output = "", error = "User confirmation unavailable — memory was not stored.",
+            durationMs = System.currentTimeMillis() - t0,
+        )
+        if (!confirm(
+                "Store this model-proposed memory for future sessions? " +
+                    "Its origin and accuracy have not been independently verified.\n\n" +
+                    "Topic:\n$topic\n\nContent:\n$content"
+            )) {
+            return ToolResult(
+                ok = false, output = "", error = "User did not approve — memory was not stored.",
+                durationMs = System.currentTimeMillis() - t0,
+            )
+        }
+
         // Generate the ID up-front and set citationRef before insert (audit H-9).
         // The v0.5.x code inserted, then tried to FIND the row again via
         // searchLike(topic, 1) — a substring query that could match a DIFFERENT
@@ -47,10 +65,10 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
             id = id,
             topic = topic,
             content = content,
-            source = "memory_write",
+            source = "memory_write:user-approved-model-proposal",
             citationType = "memory",
             citationRef = id,
-            confidence = 0.9f,
+            confidence = 0.5f,
         )
         db.knowledgeDao().upsert(entry)
         return ToolResult(
