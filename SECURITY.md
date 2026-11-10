@@ -56,10 +56,17 @@ Therefore every tool treats its input as hostile data. The defense is layered:
 
 ### js_exec (Rhino)
 
-- `ClassShutter` denies every Java class except Rhino internals and a small
-  allowlist of immutable `java.lang` types (`String`, `Boolean`, `Number`,
-  `Math`, …). `Runtime`, `ProcessBuilder`, `System`, `Class`, `java.io.*`,
-  `android.*`, `host.vorv.*`, `com.chaquo.*` and `com.geniex.*` are all denied.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:051794d4ae270ce01934468348948381f962f6b41b3553fda1e0594e246dddb0 -->
+
+- `ClassShutter` denies every Java class except Rhino internals (excluding
+  `org.mozilla.javascript.tools.shell.*`) and a small allowlist of `java.lang`
+  types (`String`, `Boolean`, `Number`, `Math`, …). `Runtime`, `ProcessBuilder`,
+  `System`, `Class`, `java.io.*`, `android.*`, `host.vorv.*`, `com.chaquo.*`
+  and `com.geniex.*` are all denied.
+
+<!-- /coderabbit-ai-generated:v1 -->
 - LiveConnect globals (`Packages`, `java`, `javax`, `org`, `com`, `net`, …)
   and import helpers (`importClass`, `importPackage`, `JavaAdapter`,
   `JavaImporter`) are deleted from the scope, which is then **sealed**.

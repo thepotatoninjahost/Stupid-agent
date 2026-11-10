@@ -14,7 +14,8 @@ import kotlinx.coroutines.withContext
  * Defense in depth, each layer verified by JsExecToolTest (attack cases) and
  * by a local Rhino-jar prototype during remediation:
  *
- *  1. ClassShutter — the ONLY Java classes visible to script are Rhino's own,
+ *  1. ClassShutter — the ONLY Java classes visible to script are Rhino's own
+ *     (excluding the shell package),
  *     a tiny allowlist of immutable java.lang types, and the console bridge's
  *     own class. Every class access through every namespace path
  *     (Packages.java.lang.System, java.lang.Runtime, Class.forName, …) is
@@ -140,7 +141,8 @@ class JsExecTool : Tool {
      * ("[Ljava.lang.Object;") — markers are stripped before matching so the
      * vararg console bridge (log(Object[])) is not misread as an unknown
      * class. Rhino internals, the console bridge's own classes, and the
-     * immutable java.lang allowlist are visible; everything else is denied.
+     * immutable java.lang allowlist are visible; shell classes and everything
+     * else are denied.
      */
     private fun isClassVisible(className: String): Boolean {
         var name = className
@@ -150,6 +152,7 @@ class JsExecTool : Tool {
                 name = name.substring(1, name.length - 1)
             }
         }
+        if (name.startsWith("org.mozilla.javascript.tools.shell.")) return false
         if (name.startsWith("org.mozilla.javascript.")) return true
         if (name.startsWith("host.vorv.tools.JsExecTool")) return true
         return name in allowedClasses

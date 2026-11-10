@@ -93,6 +93,21 @@ class JsExecToolTest {
         assertFalse(r.describe(), r.ok)
     }
 
+    @Test fun `Rhino shell classes via Packages remain inert`() {
+        val r = runJs("""
+            console.log(typeof Packages.org.mozilla.javascript.tools.shell.Main);
+            console.log(typeof Packages.org.mozilla.javascript.tools.shell.Global);
+            console.log(typeof Packages.org.mozilla.javascript.tools.shell.Environment);
+        """.trimIndent())
+        assertTrue(r.describe(), r.ok)
+        assertTrue(r.describe(), r.output.lines().take(3) == listOf("object", "object", "object"))
+    }
+
+    @Test fun `Rhino shell entry point via Packages is blocked`() {
+        val r = runJs("Packages.org.mozilla.javascript.tools.shell.Main.getGlobal();")
+        assertFalse(r.describe(), r.ok)
+    }
+
     // ---------------------------------------------------- legitimate code: ALLOW
 
     @Test fun `arithmetic and console log work`() {
