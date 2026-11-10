@@ -16,7 +16,7 @@ abstract class HealerClasspathJar : Jar() {
 
     init {
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        include("**/*.class", "META-INF/*.kotlin_module", "META-INF/LICENSE*", "META-INF/NOTICE*")
+        include("**/*.class", "**/*.kotlin_builtins", "META-INF/*.kotlin_module", "META-INF/LICENSE*", "META-INF/NOTICE*")
         from(classDirectories)
         from(classJars.map { jars -> jars.map { project.zipTree(it.asFile) } })
         eachFile {
@@ -122,12 +122,13 @@ android {
         // v0.6.x sandbox was recycled on 2026-11-05), the new machine's key
         // mismatches the installed app, Android refuses the update, and a
         // phone-only user must uninstall — losing every memory, task log and
-        // setting — just to accept an update. A committed DEBUG key has no
-        // security value to lose (anyone can generate one; it never
-        // authenticates anything), and it makes every future build — CI,
-        // sandbox, fork — signature-compatible with the installed base.
-        // One-time cost of the switch: ONE final uninstall (from the
-        // dead-machine key to this one). Never again after that.
+        // setting — just to accept an update. A committed DEBUG key makes every build — CI, sandbox, fork —
+        // signature-compatible with the installed base, at the cost of
+        // making its update-signing identity publicly reproducible.
+        // The public key preserves compatibility with existing test installs,
+        // but anyone with it can sign a replacement APK for that identity.
+        // A private production key needs an owner-approved migration plan;
+        // changing this key silently would prevent updates to installed apps.
         // (getByName, not create — AGP pre-creates the "debug" config; we
         // override its key material with the committed keystore.)
         getByName("debug") {

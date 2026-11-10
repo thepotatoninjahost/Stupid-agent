@@ -1418,7 +1418,6 @@ class AgentViewModel(
         (appContext as? VorvApplication)?.appScope?.launch(Dispatchers.IO) {
             runCatching { modelRepository.shutdown() }
         }
-        super.onCleared()
     }
 
     private fun engineLabel(s: AgentState, choice: ModelChoice): String {
