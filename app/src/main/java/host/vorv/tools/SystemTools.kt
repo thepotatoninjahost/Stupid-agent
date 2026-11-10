@@ -9,6 +9,8 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonObject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -292,7 +294,8 @@ class ShellTool(private val appContext: Context) : Tool {
         add("properties", JsonObject().apply {
             add("command", JsonObject().apply {
                 addProperty("type", "string")
-                addProperty("description", "Bash command to run.")
+                addProperty("description", "Bash command to run. Requires Python in Termux (pkg install python). " +
+                    "Stops at the deadline or if stdout exceeds 400000 bytes or stderr exceeds 80000 bytes.")
             })
             add("cwd", JsonObject().apply {
                 addProperty("type", "string")
@@ -434,13 +437,11 @@ class ShellTool(private val appContext: Context) : Tool {
         val errName = "$id.err"
         val codeName = "$id.code"
 
-        // ---- build the wrapper: base64-transport the command, capture everything ----
-        val b64 = android.util.Base64.encodeToString(command.toByteArray(), android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
-        val outPath = shQuote("$rawDir/$SHELL_DIR/$outName")
-        val errPath = shQuote("$rawDir/$SHELL_DIR/$errName")
-        val codePath = shQuote("$rawDir/$SHELL_DIR/$codeName")
-        val workDir = "/data/data/com.termux/files/home"
-        val wrapper = "printf '%s' '$b64' | base64 -d | bash > $outPath 2> $errPath; echo \$? > $codePath"
+        val basePath = "$rawDir/$SHELL_DIR/$id"
+        val cancelName = "$id.cancel"
+        val wrapper = ShellExecution.wrapper(command, basePath, timeoutMs,
+            System.currentTimeMillis() + timeoutMs)
+        var dispatched = false
 
         try {
             val intent = Intent().apply {
@@ -448,11 +449,12 @@ class ShellTool(private val appContext: Context) : Tool {
                 action = "com.termux.RUN_COMMAND"
                 putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
                 putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", wrapper))
-                putExtra("com.termux.RUN_COMMAND_WORKDIR", cwd ?: workDir)
+                putExtra("com.termux.RUN_COMMAND_WORKDIR", cwd ?: "/data/data/com.termux/files/home")
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             }
             try {
                 appContext.startService(intent)
+                dispatched = true
             } catch (bg: IllegalStateException) {
                 // M13 (code review, 2026-11): Android 8+ forbids startService
                 // while the app is BACKGROUNDED. The generic handler used to
@@ -466,9 +468,9 @@ class ShellTool(private val appContext: Context) : Tool {
             }
 
             // ---- poll for the exit-code file via SAF ----
-            val deadline = System.currentTimeMillis() + timeoutMs
+            val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs + 3_000L
             var codeFile: androidx.documentfile.provider.DocumentFile? = null
-            while (System.currentTimeMillis() < deadline && currentCoroutineContext().isActive) {
+            while (android.os.SystemClock.elapsedRealtime() < deadline && currentCoroutineContext().isActive) {
                 delay(POLL_INTERVAL_MS)
                 codeFile = shellDir.findFile(codeName)
                 if (codeFile != null) break
@@ -479,7 +481,6 @@ class ShellTool(private val appContext: Context) : Tool {
 
             if (codeFile == null) {
                 // Honest failure — do NOT fabricate output (audit C-3).
-                out?.delete(); err?.delete()
                 return@withContext ToolResult(
                     ok = false,
                     output = "",
@@ -504,20 +505,44 @@ class ShellTool(private val appContext: Context) : Tool {
                 if (c.truncated) c.text + "\n…(stderr truncated at $MAX_ERR_CHARS chars)" else c.text
             } ?: ""
 
-            out?.delete(); err?.delete(); codeFile.delete()
+            // Cleanup follows supervision completion in finally.
 
             ToolResult(
                 ok = exitCode == 0,
                 output = stdoutText.ifBlank { if (exitCode == 0) "(no output)" else "" },
                 stderr = stderrText,
                 exitCode = exitCode,
-                error = if (exitCode != 0) "command exited with code $exitCode" else null,
+                error = when (exitCode) {
+                    124 -> "command stopped at its deadline or was cancelled"
+                    125 -> "command stopped: output exceeded the capture limit or supervision failed"
+                    0 -> null
+                    else -> "command exited with code $exitCode"
+                },
                 durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("exec", ctx.taskId, "shell iter ${ctx.iteration}"),
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult(ok = false, output = "", error = "shell dispatch failed: ${e.message}",
                 durationMs = System.currentTimeMillis() - t0)
+        } finally {
+            if (dispatched) withContext(NonCancellable + Dispatchers.IO) {
+                // Persist cancellation even if Termux has not begun executing yet.
+                // If no completion arrives, retain the flag until the stale sweep;
+                // the absolute expiry also prevents a delayed command from starting.
+                if (shellDir.findFile(codeName) == null) {
+                    shellDir.createFile("application/octet-stream", cancelName)
+                    repeat(20) {
+                        if (shellDir.findFile(codeName) == null) delay(100)
+                    }
+                }
+                if (shellDir.findFile(codeName) != null) {
+                    listOf(outName, errName, codeName, cancelName).forEach {
+                        shellDir.findFile(it)?.delete()
+                    }
+                }
+            }
         }
     }
 
@@ -547,19 +572,11 @@ class ShellTool(private val appContext: Context) : Tool {
         }
     }
 
-    /** <16 hex>.out|.err|.code — exactly what dispatches create. */
-    internal val STALE_SHELL_NAME = Regex("^[0-9a-f]{16}\\.(out|err|code)$")
+    /** Capture, completion and cancellation files belonging to a dispatch. */
+    internal val STALE_SHELL_NAME = Regex("^[0-9a-f]{16}\\.(out|err|code|cancel)$")
 
     /** Age gate for the sweep: 10 minutes, vs a 120 s max poll window. */
     internal val STALE_SHELL_FILE_MS = 10 * 60_000L
-
-    /**
-     * Single-quote for shell, escaping embedded quotes: ' → '\''
-     * H-1 (code review, 2026-11): now a delegation to the single shared copy
-     * [ShellQuote.sh] — the healer and the Termux probe quote through the
-     * same helper, so the escaping discipline cannot drift between call sites.
-     */
-    private fun shQuote(s: String): String = ShellQuote.sh(s)
 
     /**
      * H2 (code review, 2026-11): capped streaming read of a workspace file.
