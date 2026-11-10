@@ -31,6 +31,7 @@ object ScheduleValidator {
 /**
  * Persistence for the pending-reminder registry: WorkManager unique names
  * keyed by title, so schedule_cancel can find them across restarts.
+ * VorvPrefs keeps these private titles separate from transferable settings.
  */
 class ReminderRegistry(private val prefs: VorvPrefs) {
 

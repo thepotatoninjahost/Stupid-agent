@@ -1,19 +1,49 @@
 package host.vorv.data
 
 import android.content.Context
+import androidx.datastore.core.DataMigration
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-private val Context.vorvPrefs by preferencesDataStore(name = "vorv_prefs")
+private val SCHEDULED = stringPreferencesKey("scheduled_reminders")
+
+// Private content must not travel with settings. Excluded in both backup XML files.
+private val Context.reminderPrefs by preferencesDataStore(name = "vorv_reminders")
+private val Context.vorvPrefs by preferencesDataStore(
+    name = "vorv_prefs",
+    produceMigrations = { context -> listOf(ReminderPrefsMigration(context.reminderPrefs)) },
+)
+
+/** Move before exposing settings; a failed destination write leaves the source intact. */
+internal class ReminderPrefsMigration(private val destination: DataStore<Preferences>) : DataMigration<Preferences> {
+    override suspend fun shouldMigrate(currentData: Preferences) = currentData[SCHEDULED] != null
+
+    override suspend fun migrate(currentData: Preferences): Preferences {
+        currentData[SCHEDULED]?.let { legacy ->
+            destination.edit { target ->
+                // A retry after the destination write must not overwrite newer private data.
+                if (target[SCHEDULED] == null) target[SCHEDULED] = legacy
+            }
+        }
+        return currentData.toMutablePreferences().apply { remove(SCHEDULED) }
+    }
+
+    override suspend fun cleanUp() = Unit
+}
 
 /**
  * Non-secret persisted settings for Vorv (workspace URI, LLM mode, selected
- * local model, reminder registry). API keys live in [SecretsStore], NOT here.
+ * local model). Reminder content uses a separate store excluded from backup.
+ * API keys live in [SecretsStore], NOT here.
  *
  * Renamed from the old misnamed `KeyStore` class (audit finding L-1): this
  * is a preferences wrapper, not a keystore, and never holds secrets.
@@ -47,7 +77,10 @@ class VorvPrefs(private val context: Context) {
     /** Whether the POST_NOTIFICATIONS runtime prompt has been shown (Android 13+). */
     val notifPermissionAsked: Flow<Boolean> = context.vorvPrefs.data.map { it[NOTIF_ASKED] ?: false }
     /** JSON array of pending scheduled reminders: [{"name":..,"title":..,"etaMs":..}] */
-    val scheduledReminders: Flow<String> = context.vorvPrefs.data.map { it[SCHEDULED] ?: "[]" }
+    val scheduledReminders: Flow<String> = flow {
+        context.vorvPrefs.data.first() // Complete legacy migration before reading private data.
+        emitAll(context.reminderPrefs.data.map { it[SCHEDULED] ?: "[]" })
+    }
 
     suspend fun setWorkspaceUri(uri: String) {
         context.vorvPrefs.edit { it[WORKSPACE_URI] = uri }
@@ -76,7 +109,8 @@ class VorvPrefs(private val context: Context) {
     }
 
     suspend fun setScheduledReminders(json: String) {
-        context.vorvPrefs.edit { it[SCHEDULED] = json }
+        context.vorvPrefs.data.first() // Migrate before writes, including Clear ALL data.
+        context.reminderPrefs.edit { it[SCHEDULED] = json }
     }
 
     // ------------------------------------------------------------ legacy migration
@@ -97,7 +131,6 @@ class VorvPrefs(private val context: Context) {
         private val AUTO_FALLBACK = booleanPreferencesKey("auto_fallback")
         private val LOCAL_MODEL_ID = stringPreferencesKey("local_model_id")
         private val NOTIF_ASKED = booleanPreferencesKey("notif_permission_asked")
-        private val SCHEDULED = stringPreferencesKey("scheduled_reminders")
         private val LEGACY_ZAI_KEY = stringPreferencesKey("zai_api_key")
     }
 }
