@@ -314,3 +314,60 @@ would each be a substantial new subsystem.
    cheapest real improvement to the self-modification safety story.
 7. Then, and only then, decide whether "build any app" and "learn/evolve" are
    new subsystems you want to specify.
+
+---
+
+## 8. Addendum — verified by building (2026-11-13, same day)
+
+### F-8 (Critical — self-repair cannot work) `assets/healer/app_classes.jar` is empty
+Built `:app:packageHealerClasspathDebug` and opened the produced jar:
+
+```
+META-INF/MANIFEST.MF
+host/vorv/BuildConfig.java
+```
+5 entries, **zero compiled classes**. `build.gradle.kts` (H-4/L-7 blocks) reads
+`layout.buildDirectory.dir("tmp/kotlin-classes/$v")`, which is the legacy
+kotlin-android output directory. AGP 9's built-in Kotlin writes to
+`build/intermediates/built_in_kotlinc/<variant>/compile<Var>Kotlin/classes`
+(verified: 531 `.class` files there). The `generated/source/buildConfig/$v`
+half of the jar contributes a `.java` **source** file, not a `.class`.
+
+Consequence: on the phone, `kotlinc -cp app_classes.jar` resolves none of
+`Tool`, `ToolContext`, `PatchRegistry`, `Llm`, … — every generated patch fails
+to compile with unresolved references, `HealingAgent` reports
+`COMPILE_FAILED`, and the whole self-healing pipeline is dead. This is the
+same class of failure as audit H-4 ("classpath never populated"), reintroduced
+by the AGP 9 migration, which also silently invalidated the `L-7` per-variant
+fix (that fix was correct; the path it points at no longer exists).
+
+Fix: take the classes from the variant's real compile output, e.g.
+
+```kotlin
+val kotlinClasses = variant.sources.java
+    ?.all  // or a provider on the KGP task output
+// simplest robust form, verified to produce a 531-entry jar here:
+from(layout.buildDirectory.dir("intermediates/built_in_kotlinc/$v/compile${capitalized}Kotlin/classes"))
+from(layout.buildDirectory.dir("intermediates/javac/$v/compile${capitalized}Java/classes"))
+```
+and add a build-time assertion (jar entry count > 100, `host/vorv/tools/Tool.class`
+present) so an empty or source-only jar fails the build instead of the phone.
+
+### F-9 (High) `./gradlew tasks` fails at configuration
+Reproduced on the exact pinned stack (AGP 9.5.1, Compose BOM 2026.09.00):
+`generateReleaseComposePreviewRunfiles` cannot be created because the release
+variant has unit tests disabled. CI survives because `test`/`assemble*` do not
+materialise that task; IDE sync and `gradlew build`/`tasks` do not.
+
+### Proven in this environment: the toolchain does not need Termux or a shell
+`kotlin-compiler-embeddable 2.4.21` (58 MB jar) + `d8.jar` from
+build-tools 37.0.0, both plain JVM code, compiled a patch class against the
+app's **real** compiled classes and dexed it:
+
+```
+kotlinc-embeddable -classpath app_classes_fixed.jar:android.jar -d patchout PatchProbe.kt
+  -> patchout/host/vorv/tools/PatchProbe.class
+d8 --release --min-api 31 -> dexout/classes.dex   (1280 bytes)
+```
+Required on the compiler's own classpath: `kotlin-stdlib`, `kotlinx-coroutines-core-jvm`,
+`org.jetbrains.annotations`. No Termux, no `bash -c`, no SAF path quoting.
