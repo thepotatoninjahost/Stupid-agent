@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     alias(libs.plugins.android.application)
     // Dependency wave 2026-11-09 / AGP 9: Kotlin support is BUILT IN to AGP
@@ -178,9 +180,32 @@ androidComponents {
             destinationDirectory.set(healerAssetsDir.map { it.dir("$v/") })
             // The compiled app classes (Kotlin output + generated BuildConfig)
             // of THIS variant, so a patch compiles against what actually runs.
-            from(layout.buildDirectory.dir("tmp/kotlin-classes/$v"))
+            //
+            // F-8 (2026-11-13): these paths were `tmp/kotlin-classes/$v` and
+            // `generated/source/buildConfig/$v` — the legacy kotlin-android
+            // output. AGP 9's built-in Kotlin writes to
+            // intermediates/built_in_kotlinc/, so the jar shipped with the APK
+            // contained ONLY host/vorv/BuildConfig.java (5 entries, no
+            // classes) and every on-device patch compile failed with
+            // unresolved references. Verified: 531 classes at the path below.
+            from(layout.buildDirectory.dir("intermediates/built_in_kotlinc/$v/compile${capitalized}Kotlin/classes"))
+            from(layout.buildDirectory.dir("intermediates/javac/$v/compile${capitalized}Java/classes"))
             from(layout.buildDirectory.dir("generated/source/buildConfig/$v"))
             dependsOn("compile${capitalized}Kotlin")
+            // A self-healing classpath that is empty is worse than no classpath
+            // at all: it fails on the phone, silently, at compile time.
+            doLast {
+                val jar = archiveFile.get().asFile
+                val entries = ZipFile(jar).use { z -> z.entries().toList().map { it.name } }
+                val required = listOf("host/vorv/tools/Tool.class", "host/vorv/kernel/", "host/vorv/llm/")
+                val missing = required.filter { needle -> entries.none { it.startsWith(needle) } }
+                if (missing.isNotEmpty()) {
+                    throw GradleException(
+                        "healer classpath jar ${jar.name} is incomplete: missing ${missing.joinToString()}. " +
+                            "The self-repair pipeline would fail on-device (see REVIEW.md F-8)."
+                    )
+                }
+            }
         }
         // Register the jar task as a GENERATED asset producer through the
         // variant API. AGP then threads a provider-based dependency into
