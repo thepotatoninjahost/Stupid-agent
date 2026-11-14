@@ -38,30 +38,50 @@ writable by another app, so the whole class of bugs that came from
 interpolating a user-chosen folder name into a shell command disappears by
 construction. `ShellQuote` stays, but nothing new may go through a shell.
 
-## 2. Two ways to run the compiler, both Termux-free
+## 2. What a non-rooted phone can actually run (corrected)
 
-**Mode A (recommended): private runtime, native process.**
-Ship a minimal aarch64 JRE (`jlink`-trimmed, ~35–45 MB compressed) in
-`assets/forge/jre-arm64.tar.xz`, extract it under `forge/toolchain/jre/`, and
-launch the real `java` binary with `ProcessBuilder` and an **argv array** (not
-a command string). Android blocks `execve` of files in the app's writable data
-dir for `targetSdk >= 29`, so the JVM launcher is packaged as
-`lib/arm64-v8a/libforgejvm.so` and executed from `nativeLibraryDir`
-(this project already sets `useLegacyPackaging = true`, so the `.so` is a real
-file on disk). Verified constraint, not a theory: that is the only supported
-way to exec a bundled interpreter on modern Android.
+An earlier revision of this document claimed the app could bundle a desktop
+aarch64 JRE and execute it. **That is wrong, and it is corrected here.** A
+non-rooted Android app cannot:
 
-**Mode B (fallback): load the compiler into a `:forge` process.**
-`assets/forge/*.jar` extracted and loaded with `DexClassLoader` inside a
-dedicated process, then `org.jetbrains.kotlin.cli.jvm.K2JVMCompiler` invoked
-directly. Much smaller download, no JRE, but the compiler must run on ART
-rather than a JVM — higher risk, needs on-device testing before it can be
-trusted.
+- `execve` a binary it downloaded into its own data directory
+  (`targetSdk >= 29` blocks exec from writable app storage), and
+- run an ordinary Linux aarch64 binary at all — Android uses bionic, not
+  glibc, so a JRE built for a desktop distro has no loader to start it.
 
-Both modes call the **same** code path from `HealingAgent`'s point of view:
-`ForgeCompiler.compileAndDex(request) -> ForgeResult`.
+Termux works because Termux is *its own app* with its own `libexec`, its own
+bionic-linked packages and its own `RUN_COMMAND` bridge. There is no way to
+borrow that from inside another app without the second app, and there is no
+way to get it by rooting — the phone is never rooted.
 
-Mode A is the default. Mode B is behind a build flag until an S25 confirms it.
+So the app's computer is not a Linux box. It is what an unrooted app can
+genuinely own, and it is enough to write and run real programs:
+
+| Engine | Runs | Status |
+|---|---|---|
+| JS (`JsEngine`) | Rhino interpreter compiled into the APK | **implemented, tested** |
+| Python (`PythonEngine`) | CPython 3.11 via Chaquopy, compiled into the APK (bionic `.so`, no Termux) | implemented, wired to `python_exec` |
+| Kotlin patch (`ForgeCompiler`) | needs a JVM; only possible with a bionic-linked runtime payload, which does not exist yet | unproven — do not advertise |
+
+`host.vorv.computer` is the single place that decides what can run: engines
+that are not present are reported as refused with a reason, never silently
+attempted.
+
+### What the JS engine can do
+
+Real programs: computation, string/JSON handling, algorithms, scripted
+transformations. It cannot touch the filesystem, the network or Java classes —
+that is the point. Its purpose is *writing and running code*, on the device,
+with no Termux, which the tests below demonstrate with an actual program.
+
+### The Kotlin-compile question, stated honestly
+
+Self-repair that recompiles Kotlin on the phone needs a JVM that Android can
+execute. `ForgeCompiler` is written and proven to work *wherever a JVM
+exists* (verified on a desktop JVM against the app's own 531 classes). On the
+phone it will refuse with "toolchain incomplete" until a bionic-linked JVM
+payload is built and verified. Making the model write Kotlin it cannot compile
+would be the same lie in a new costume.
 
 ## 3. What was proven here (2026-11-13)
 

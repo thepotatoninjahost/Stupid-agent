@@ -23,6 +23,7 @@ import host.vorv.llm.ModelManager
 import host.vorv.llm.ModelRepository
 import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrowserAutomateTool
+import host.vorv.tools.ComputerTool
 import host.vorv.tools.CrashLogsTool
 import host.vorv.tools.FileListTool
 import host.vorv.tools.FileReadTool
@@ -175,6 +176,7 @@ class AgentViewModel(
         MemoryRecallTool(db),
         MemoryWebTool(db.knowledgeGraphDao()),
         JsExecTool(),
+        ComputerTool(appContext),
         FileReadTool(appContext),
         FileWriteTool(appContext),
         FileListTool(appContext),
