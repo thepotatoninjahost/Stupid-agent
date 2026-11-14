@@ -19,3 +19,20 @@ stay ignored forever.
 # Module build output (audit hygiene — was missing; build/ artifacts must never be committed)
 /app/build/
 .kotlin/
+
+# Forge runtime payload — ~137 MB of pinned binaries, including OpenJDK.
+# Reproduced with tools/forge/fetch-runtime.sh from runtime-manifest.json
+# (sha256 checked); never committed, so the repository stays clonable.
+/app/src/main/jniLibs/arm64-v8a/libforge-*.so
+/app/src/main/jniLibs/arm64-v8a/libandroid-shmem.so
+/app/src/main/jniLibs/arm64-v8a/libandroid-spawn.so
+/app/src/main/jniLibs/arm64-v8a/libextnet.so
+/app/src/main/jniLibs/arm64-v8a/libjava.so
+/app/src/main/jniLibs/arm64-v8a/libjli.so
+/app/src/main/jniLibs/arm64-v8a/libjvm.so
+/app/src/main/jniLibs/arm64-v8a/libmanagement.so
+/app/src/main/jniLibs/arm64-v8a/libnet.so
+/app/src/main/jniLibs/arm64-v8a/libnio.so
+/app/src/main/jniLibs/arm64-v8a/libverify.so
+/app/src/main/jniLibs/arm64-v8a/libzip.so
+/app/src/main/assets/forge/

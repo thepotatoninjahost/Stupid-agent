@@ -1,0 +1,58 @@
+{
+  "why": [
+    "Vorv needs a Java runtime inside itself to turn code into an installable app on the phone.",
+    "This is a payload list, not a download: nothing is committed to git. tools/forge/fetch-runtime.sh",
+    "fetches each package, refuses anything whose sha256 differs, and unpacks only the files listed here."
+  ],
+  "arch": "arm64-v8a",
+  "packages": [
+    {
+      "name": "openjdk-17",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/o/openjdk-17/openjdk-17_17.0.21-2_aarch64.deb",
+      "sha256": "48a5eddbe94e354282132578da17c1394caa04d83a4592074c1793b436ff9c15",
+      "bytes": 96253172,
+      "license": "GPL-2.0 WITH Classpath-exception-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib/jvm/java-17-openjdk",
+      "take": [
+        "bin/java",
+        "bin/javac",
+        "bin/jar",
+        "bin/jarsigner",
+        "lib/modules",
+        "lib/server/libjvm.so",
+        "lib/libjava.so",
+        "lib/libjli.so",
+        "lib/libnet.so",
+        "lib/libnio.so",
+        "lib/libzip.so",
+        "lib/libmanagement.so",
+        "lib/libverify.so",
+        "lib/libextnet.so",
+        "conf"
+      ]
+    },
+    {
+      "name": "libandroid-shmem",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "sha256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6",
+      "bytes": 7216,
+      "license": "Apache-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib",
+      "take": ["libandroid-shmem.so"]
+    },
+    {
+      "name": "libandroid-spawn",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-spawn/libandroid-spawn_0.3_aarch64.deb",
+      "sha256": "7988fa788ef48ab5da9660443905a2e4099ac36221739d72f5c39acc644b4d1c",
+      "bytes": 15216,
+      "license": "Apache-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib",
+      "take": ["libandroid-spawn.so"]
+    }
+  ],
+  "not_used": [
+    "No Termux app, no Termux runtime and no Termux paths are installed or required:",
+    "this is the same OpenJDK source built for Android's own C library, carried by Vorv",
+    "and started from Vorv's own native library directory."
+  ]
+}
