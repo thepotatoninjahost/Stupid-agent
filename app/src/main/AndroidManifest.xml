@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Installing APKs the agent built for the user: a normal PackageInstaller
+         session, and Android still shows its own install consent. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Required to be declarable so the user can grant it in Android Settings
          (Settings → Apps → Vorv → Permissions → Run commands in Termux).
          Termux's RUN_COMMAND mechanism only works when the caller holds this
@@ -80,6 +83,21 @@
           demotes immediately, and keeps watching. Without this, background
           boots on Android 8+ silently started NO watchdog at all.
         -->
+        <!-- Drives apps this app built, to prove they work before hand-off.
+             Off unless the user enables it in Settings > Accessibility. -->
+        <service
+            android:name=".nativeapp.UiAutomationService"
+            android:exported="true"
+            android:label="@string/ui_automation_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/ui_automation_service" />
+        </service>
+
         <service
             android:name=".watchdog.WatchdogService"
             android:process=":watchdog"

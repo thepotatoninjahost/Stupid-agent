@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">Vorv</string>
     <string name="app_full_name">Vorv — local-first autonomous agent</string>
+    <string name="ui_automation_label">Vorv app testing</string>
+    <string name="ui_automation_description">Lets Vorv open and tap through apps it built for you, so you get one that has been tested instead of one that might be broken. It reads nothing unless a build is being tested, and never reads passwords or other apps.</string>
 </resources>
