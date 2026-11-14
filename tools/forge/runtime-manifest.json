@@ -1,0 +1,40 @@
+{
+  "what": "Vorv's own build toolchain: a Java runtime, the Android API jar, the dexer and the signer.",
+  "why": "Turning source into an installable app needs javac, d8 and apksigner, all of which are Java. A phone has no Java, so it travels inside the app.",
+  "arch": "arm64-v8a",
+  "packages": [
+    {
+      "name": "openjdk-17",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/o/openjdk-17/openjdk-17_17.0.21-2_aarch64.deb",
+      "sha256": "48a5eddbe94e354282132578da17c1394caa04d83a4592074c1793b436ff9c15",
+      "bytes": 96253172,
+      "license": "GPL-2.0 WITH Classpath-exception-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib/jvm/java-17-openjdk",
+      "take": ["bin/java", "bin/javac", "bin/jar", "bin/keytool", "lib/modules", "lib/server/libjvm.so", "lib/libjava.so", "lib/libjli.so", "lib/libnet.so", "lib/libnio.so", "lib/libzip.so", "lib/libmanagement.so", "lib/libverify.so", "lib/libextnet.so", "conf"]
+    },
+    {
+      "name": "libandroid-shmem",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "sha256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6",
+      "bytes": 7216,
+      "license": "Apache-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib",
+      "take": ["libandroid-shmem.so"]
+    },
+    {
+      "name": "libandroid-spawn",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-spawn/libandroid-spawn_0.3_aarch64.deb",
+      "sha256": "7988fa788ef48ab5da9660443905a2e4099ac36221739d72f5c39acc644b4d1c",
+      "bytes": 15216,
+      "license": "Apache-2.0",
+      "prefix": "data/data/com.termux/files/usr/lib",
+      "take": ["libandroid-spawn.so"]
+    }
+  ],
+  "sdkFiles": [
+    {"what": "android.jar", "why": "the Android API javac compiles against, and d8 links against", "from": "platforms/android-37/android.jar", "as": "android.jar"},
+    {"what": "d8.jar", "why": "turns .class files into classes.dex", "from": "build-tools/37.0.0/lib/d8.jar", "as": "d8.jar"},
+    {"what": "apksigner.jar", "why": "signs the finished apk so Android will install it", "from": "build-tools/37.0.0/lib/apksigner.jar", "as": "apksigner.jar"}
+  ],
+  "note": "Nothing here is committed: 200 MB of binaries would make the repository unclonable. Rebuild them with tools/forge/fetch-runtime.sh. No Termux app, no Termux runtime and no Termux path is installed or needed; these are the same open-source builds, carried by Vorv and started from its own native library directory."
+}

@@ -19,3 +19,13 @@ stay ignored forever.
 # Module build output (audit hygiene — was missing; build/ artifacts must never be committed)
 /app/build/
 .kotlin/
+
+# Forge toolchain payload (~200 MB of pinned binaries) — rebuilt by
+# tools/forge/fetch-runtime.sh from runtime-manifest.json, never committed.
+/app/src/main/jniLibs/
+/app/src/main/assets/forge/jvm/
+/app/src/main/assets/forge/tools/
+
+# The build template is source, not build output: it is the compiled manifest
+# and launcher that every app built on the phone is packed into.
+!/app/src/main/assets/forge/template.apk

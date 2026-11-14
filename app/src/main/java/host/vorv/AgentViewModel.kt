@@ -25,6 +25,7 @@ import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrowserAutomateTool
 import host.vorv.tools.ComputerTool
 import host.vorv.tools.WebTestTool
+import host.vorv.tools.BuildAppTool
 import host.vorv.tools.NativeTestTool
 import host.vorv.tools.CrashLogsTool
 import host.vorv.tools.FileListTool
@@ -180,6 +181,7 @@ class AgentViewModel(
         JsExecTool(),
         ComputerTool(appContext),
         WebTestTool(appContext),
+        BuildAppTool(appContext),
         NativeTestTool(appContext),
         FileReadTool(appContext),
         FileWriteTool(appContext),
