@@ -83,6 +83,22 @@ class VorvApplication : Application() {
     var lastExitVerdict: String? = null
         private set
 
+    /**
+     * What Vorv already did about a proven crash this boot, in plain words
+     * (null when nothing had to be done). See [host.vorv.healer.CrashRepair].
+     */
+    @Volatile
+    var lastRepairSummary: String? = null
+        private set
+
+    /**
+     * True when the previous boot died inside GenieX/native init: this boot
+     * runs without it once, instead of crashing the same way again.
+     */
+    @Volatile
+    var suppressNativeThisBoot: Boolean = false
+        private set
+
     override fun onCreate() {
         // L-7: the boot marker must exist BEFORE any step that can crash —
         // including the crash handler install and the hot-patch load.
@@ -168,6 +184,24 @@ class VorvApplication : Application() {
                 safeMode = true
                 BootTracer.step(this, "SAFE_MODE_ENABLED", "skipping non-essential init")
             }
+
+            // Evidence is in hand: do the repairs that need no judgement.
+            // A crash report nobody acted on was the complaint; the probation
+            // quarantine above already removed the patch that caused it, and
+            // a death inside native init is not retried blindly on this boot.
+            val repair = host.vorv.healer.CrashRepair.plan(
+                prevTrace = BootTracer.readPreviousTrace(this),
+                rolledBackPatches = rolledBackPatches,
+            )
+            suppressNativeThisBoot = repair.suppressNativeInit
+            lastRepairSummary = runCatching {
+                host.vorv.healer.CrashRepair.record(this, death, repair)
+            }.getOrDefault(repair.actions.joinToString(" "))
+            BootTracer.step(
+                this,
+                "crash_repair",
+                "suppress_native=${repair.suppressNativeInit} actions=${repair.actions.size}",
+            )
         } else if (previousBootFinished) {
             BootTracer.step(this, "previous_boot_ok")
         } else {

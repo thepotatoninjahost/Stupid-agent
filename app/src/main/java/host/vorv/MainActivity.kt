@@ -168,10 +168,16 @@ class MainActivity : ComponentActivity() {
         ModelManager.cleanupLegacyModelsDir(applicationContext)
         BootTracer.step(this, "cleanup_legacy_models_end")
 
-        // Initialize GenieX SDK — BUT skip it in safe mode.
+        // Initialize GenieX SDK — skip it in safe mode, and skip it for one
+        // boot when the previous launch died while it was starting (the
+        // crash-repair pass decided that; without this the app crashes in the
+        // same place forever).
         if (app.safeMode) {
             BootTracer.step(this, "geniex_init_SKIPPED", "safe mode")
             Log.w(TAG, "SAFE MODE: skipping GenieX init")
+        } else if (app.suppressNativeThisBoot) {
+            BootTracer.step(this, "geniex_init_SKIPPED", "crash repair: died mid-init last boot")
+            Log.w(TAG, "CRASH REPAIR: skipping GenieX init for this boot")
         } else {
             BootTracer.step(this, "geniex_init_begin")
             GenieXSdk.getInstance().init(this, object : GenieXSdk.InitCallback {
@@ -257,6 +263,8 @@ class MainActivity : ComponentActivity() {
                                 bootTrace = previousTrace ?: "",
                                 previousBootCrashed = previousBootCrashed,
                                 rolledBackPatches = rolledBack,
+                                repairSummary = app.lastRepairSummary,
+                                evidenceDetail = app.lastExitVerdict,
                             )) {
                             agentHandlingCrash = true
                             return@LaunchedEffect
@@ -305,6 +313,7 @@ class MainActivity : ComponentActivity() {
                         CrashLogDialog(
                             crashText = crashLogText!!,
                             rolledBackPatches = rolledBack,
+                            repairSummary = app.lastRepairSummary,
                             onCopy = {
                                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 clipboard.setPrimaryClip(ClipData.newPlainText("vorv_crash_log", crashLogText!!))
@@ -682,6 +691,7 @@ private fun SafeModeScreen(
 private fun CrashLogDialog(
     crashText: String,
     rolledBackPatches: List<String>,
+    repairSummary: String? = null,
     onCopy: () -> Unit,
     onAnalyze: () -> Unit,
     onSelfRepair: () -> Unit,
@@ -706,6 +716,14 @@ private fun CrashLogDialog(
                             "by a crash in the class it overrides.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                if (!repairSummary.isNullOrBlank()) {
+                    Text(
+                        text = "Done automatically: $repairSummary",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }

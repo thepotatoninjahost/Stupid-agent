@@ -1144,6 +1144,8 @@ class AgentViewModel(
         bootTrace: String,
         previousBootCrashed: Boolean,
         rolledBackPatches: List<String> = emptyList(),
+        repairSummary: String? = null,
+        evidenceDetail: String? = null,
     ): Boolean {
         if (bootDiagnosisStarted) return true
         val s = _state.value
@@ -1159,10 +1161,10 @@ class AgentViewModel(
             hasJavaReport ->
                 "A Java crash report was written by CrashReportWorker — it is in crash_logs/."
             previousBootCrashed ->
-                "The previous boot died WITHOUT completing and no Java report was written — " +
-                    "consistent with a NATIVE crash (e.g. the GenieX/NPU layer) or an external " +
-                    "process kill. A synthesized report from the breadcrumbs may be in " +
-                    "crash_logs/, and watchdog detections may be in watchdog/."
+                "The previous boot was ended by a crash. Evidence: " +
+                    (evidenceDetail ?: "recorded in the crash report") +
+                    ". A synthesized report may be in crash_logs/, and watchdog detections " +
+                    "may be in watchdog/."
             else ->
                 "The watchdog detected a mid-session process death (watchdog/ has the detection)."
         }
@@ -1172,6 +1174,10 @@ class AgentViewModel(
             appendLine("You (Vorv) crashed. Find out why, and fix yourself if a code fix is possible.")
             appendLine()
             appendLine("What is known: $situation")
+            if (!repairSummary.isNullOrBlank()) {
+                appendLine("Already done automatically this boot (do not repeat it): $repairSummary")
+                appendLine("The record is in crash_repairs/ — read it before proposing anything.")
+            }
             if (bootTrace.isNotBlank()) {
                 appendLine("Last breadcrumbs before death (tail of the previous boot trace — the full trace is readable via crash_logs):")
                 appendLine(bootTrace.trim().takeLast(600))
