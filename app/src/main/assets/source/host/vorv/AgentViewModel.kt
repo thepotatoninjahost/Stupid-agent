@@ -22,6 +22,7 @@ import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
 import host.vorv.llm.ModelRepository
 import host.vorv.tools.AppIntentTool
+import host.vorv.tools.BrainTool
 import host.vorv.tools.BrowserAutomateTool
 import host.vorv.tools.ComputerTool
 import host.vorv.tools.WebTestTool
@@ -188,6 +189,7 @@ class AgentViewModel(
         WebTestTool(appContext),
         BuildAppTool(appContext),
         LinuxRunTool(linuxSystem),
+        BrainTool(appContext),
         NativeTestTool(appContext),
         FileReadTool(appContext),
         FileWriteTool(appContext),

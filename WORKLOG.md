@@ -27,6 +27,43 @@ Where it and this file seem to disagree about Termux, this file is current.
 
 ---
 
+## 2026-11-15 · v0.8.2 — the brain actually learns (weights move, on the phone)
+
+The owner's objection was correct: an engine that cannot learn is not worth
+having. So the app now owns a real trainer.
+
+`host.vorv.brain`:
+- `Value` — a scalar with a gradient. Every operation records its parents and
+  local derivatives; `backward()` walks the graph and accumulates dL/dv. This
+  is backpropagation written out, not a wrapper around a library.
+- `CharBrain` — a ~3 000 parameter model: 8-character context, embedding
+  table, one tanh hidden layer of 24, softmax over the vocabulary. Trains by
+  cross-entropy + SGD with per-weight gradient clipping (without clipping the
+  first version diverged, 2.9 → 23.6; with it, 2.958 → 0.393 in 800 steps).
+  Weights save to `files/brain/brain.txt` and reload.
+- `BrainTool` (`brain`) — `train` (learns from any text passed to it, reports
+  the loss before and after), `generate` (predicts with the current weights),
+  `status`. Registered next to the other tools, so the agent can use it.
+
+Proof on the JVM, in the test suite (`CharBrainTest`): loss falls 2.958 →
+0.393; more than a third of weights move and none go NaN; save/load round-trips
+to identical predictions; generation stays inside the vocabulary; unseen
+characters map to padding instead of crashing.
+
+Said plainly, in the tool description and here: this model learns the patterns
+in the data it is given. It does not write new programs. The cloud model does
+that.
+
+Also in this build: `versionName 0.8.2`, `versionCode 39`.
+
+Verified: 433 unit tests, 0 failures; `assembleDebug` succeeds;
+`extractNativeLibs=true`; rootfs 9 113 600 B and proot 259 832 B in the APK;
+apksigner verifies.
+
+Not verified: nothing here ran on the S25 — again, the diagnostics line is the
+instrument for that.
+
+
 ## 2026-11-15 · v0.8.1 — why the phone said "NOT PACKAGED"
 
 **Reported from the phone:** Setup → Linux system showed
