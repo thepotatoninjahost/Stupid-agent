@@ -59,6 +59,7 @@ jsoup = "1.24.1"
 # transitive dependency via Retrofit's converter; now declared explicitly
 # because Retrofit was removed (audit L-5).
 gson = "2.15.0"
+commons-compress = "1.28.0"
 # Test-only
 junit = "4.13.2"
 robolectric = "4.17"
@@ -95,6 +96,7 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commons-compress" }
 
 # Test-only dependencies (not shipped in the APK)
 junit = { group = "junit", name = "junit", version.ref = "junit" }

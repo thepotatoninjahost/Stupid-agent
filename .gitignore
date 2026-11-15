@@ -29,3 +29,6 @@ stay ignored forever.
 # The build template is source, not build output: it is the compiled manifest
 # and launcher that every app built on the phone is packed into.
 !/app/src/main/assets/forge/template.apk
+
+# Alpine root filesystem (~9 MB tar) — rebuilt by tools/forge/fetch-linux.sh.
+/app/src/main/assets/forge/linux/

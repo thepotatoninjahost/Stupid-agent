@@ -10,7 +10,23 @@
       "bytes": 96253172,
       "license": "GPL-2.0 WITH Classpath-exception-2.0",
       "prefix": "data/data/com.termux/files/usr/lib/jvm/java-17-openjdk",
-      "take": ["bin/java", "bin/javac", "bin/jar", "bin/keytool", "lib/modules", "lib/server/libjvm.so", "lib/libjava.so", "lib/libjli.so", "lib/libnet.so", "lib/libnio.so", "lib/libzip.so", "lib/libmanagement.so", "lib/libverify.so", "lib/libextnet.so", "conf"]
+      "take": [
+        "bin/java",
+        "bin/javac",
+        "bin/jar",
+        "bin/keytool",
+        "lib/modules",
+        "lib/server/libjvm.so",
+        "lib/libjava.so",
+        "lib/libjli.so",
+        "lib/libnet.so",
+        "lib/libnio.so",
+        "lib/libzip.so",
+        "lib/libmanagement.so",
+        "lib/libverify.so",
+        "lib/libextnet.so",
+        "conf"
+      ]
     },
     {
       "name": "libandroid-shmem",
@@ -19,7 +35,9 @@
       "bytes": 7216,
       "license": "Apache-2.0",
       "prefix": "data/data/com.termux/files/usr/lib",
-      "take": ["libandroid-shmem.so"]
+      "take": [
+        "libandroid-shmem.so"
+      ]
     },
     {
       "name": "libandroid-spawn",
@@ -28,13 +46,66 @@
       "bytes": 15216,
       "license": "Apache-2.0",
       "prefix": "data/data/com.termux/files/usr/lib",
-      "take": ["libandroid-spawn.so"]
+      "take": [
+        "libandroid-spawn.so"
+      ]
     }
   ],
   "sdkFiles": [
-    {"what": "android.jar", "why": "the Android API javac compiles against, and d8 links against", "from": "platforms/android-37/android.jar", "as": "android.jar"},
-    {"what": "d8.jar", "why": "turns .class files into classes.dex", "from": "build-tools/37.0.0/lib/d8.jar", "as": "d8.jar"},
-    {"what": "apksigner.jar", "why": "signs the finished apk so Android will install it", "from": "build-tools/37.0.0/lib/apksigner.jar", "as": "apksigner.jar"}
+    {
+      "what": "android.jar",
+      "why": "the Android API javac compiles against, and d8 links against",
+      "from": "platforms/android-37/android.jar",
+      "as": "android.jar"
+    },
+    {
+      "what": "d8.jar",
+      "why": "turns .class files into classes.dex",
+      "from": "build-tools/37.0.0/lib/d8.jar",
+      "as": "d8.jar"
+    },
+    {
+      "what": "apksigner.jar",
+      "why": "signs the finished apk so Android will install it",
+      "from": "build-tools/37.0.0/lib/apksigner.jar",
+      "as": "apksigner.jar"
+    }
   ],
-  "note": "Nothing here is committed: 200 MB of binaries would make the repository unclonable. Rebuild them with tools/forge/fetch-runtime.sh. No Termux app, no Termux runtime and no Termux path is installed or needed; these are the same open-source builds, carried by Vorv and started from its own native library directory."
+  "note": "Nothing here is committed: 200 MB of binaries would make the repository unclonable. Rebuild them with tools/forge/fetch-runtime.sh. No Termux app, no Termux runtime and no Termux path is installed or needed; these are the same open-source builds, carried by Vorv and started from its own native library directory.",
+  "linuxSystem": {
+    "what": "The Linux system Vorv runs: proot plus an Alpine root filesystem.",
+    "why": "proot runs an unprivileged userland by interposing on syscalls, so the guest sees a root filesystem that is really a folder in Vorv's storage. Alpine is small, has apk, and installs compilers for anything the agent might need.",
+    "packages": [
+      {
+        "name": "proot",
+        "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.102_aarch64.deb",
+        "sha256": "10a394b585c2fc2b2c8502544f4e5f1be581dc8bfff79e8ba62f16207423e030",
+        "license": "GPL-2.0",
+        "prefix": "data/data/com.termux/files/usr",
+        "take": {
+          "bin/proot": "libforge-proot.so",
+          "libexec/proot/loader": "libforge-proot-loader.so",
+          "libexec/proot/loader32": "libforge-proot-loader32.so"
+        }
+      },
+      {
+        "name": "libtalloc",
+        "url": "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+        "sha256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7",
+        "license": "LGPL-3.0-or-later",
+        "prefix": "data/data/com.termux/files/usr/lib",
+        "take": {
+          "libtalloc.so.2.5.0": "libtalloc.so"
+        }
+      }
+    ],
+    "rootfs": {
+      "name": "alpine-minirootfs-3.20.0-aarch64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.0-aarch64.tar.gz",
+      "sha256": "83a79199bf3112c65e62ddf1732b051daf62ed2ddf5a8413c440dc25956116f0",
+      "license": "MIT and others (Alpine base packages)",
+      "as": "app/src/main/assets/forge/linux/rootfs.tar",
+      "note": "Stored as a plain tar: AGP strips the .gz suffix off asset names, so a file called rootfs.tar.gz arrives in the APK as rootfs.tar with gzipped content still inside. Uncompressed it is 9 MB and compresses again in the APK."
+    }
+  }
 }

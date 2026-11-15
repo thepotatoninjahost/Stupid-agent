@@ -277,6 +277,7 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.jsoup)
     implementation(libs.gson)
+    implementation(libs.commons.compress)
     debugImplementation(libs.androidx.ui.tooling)
 
     // Test-only
