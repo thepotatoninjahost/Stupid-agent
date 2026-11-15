@@ -92,7 +92,11 @@ object BootTracer {
             // Instead, write a separator + new start marker.
             file.appendText("\n" + "=".repeat(60) + "\n")
         }
-        writeStep(ctx, "BOOT_STARTED", "pid=${android.os.Process.myPid()} install=${installId(ctx)}")
+        writeStep(
+            ctx,
+            "BOOT_STARTED",
+            "pid=${android.os.Process.myPid()} install=${installId(ctx)} epoch=${System.currentTimeMillis()}",
+        )
     }
 
     /**
@@ -177,6 +181,21 @@ object BootTracer {
         // A section from a different install (or from before install ids
         // existed) says nothing about THIS install: ignore it.
         return sectionCompleted(prev, installId(ctx))
+    }
+
+    /**
+     * Epoch millis at which the previous boot started, when the trace records
+     * it. Used to tell "crashed during that session" from "a record from an
+     * older session". Null when the trace predates epoch stamps.
+     */
+    fun previousBootStartEpoch(ctx: Context): Long? {
+        val prev = readPreviousTrace(ctx) ?: return null
+        return sectionStartEpoch(prev)
+    }
+
+    internal fun sectionStartEpoch(section: String): Long? {
+        val line = section.lines().firstOrNull { it.contains("BOOT_STARTED") } ?: return null
+        return Regex("epoch=(\\d+)").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()
     }
 
     /**

@@ -65,9 +65,22 @@ class VorvApplication : Application() {
     var safeMode = false
         private set
 
-    /** Patches rolled back this boot by the probation gate (for the UI). */
+        /** Patches rolled back this boot by the probation gate (for the UI). */
     @Volatile
     var rolledBackPatches: List<String> = emptyList()
+
+    /**
+     * Did the session before this launch actually crash? Decided once, at boot,
+     * from evidence — see [host.vorv.healer.DeathEvidence]. The crash dialog
+     * reads this instead of asking "did the last boot finish?".
+     */
+    @Volatile
+    var lastExitCrashed: Boolean = false
+        private set
+
+    /** What the evidence said, in one line (null when the last boot finished). */
+    @Volatile
+    var lastExitVerdict: String? = null
         private set
 
     override fun onCreate() {
@@ -102,11 +115,20 @@ class VorvApplication : Application() {
         BootTracer.step(this, "hotpatch_load_end", "applied=${appliedPatches.size}")
 
         BootTracer.step(this, "check_previous_boot")
-        // Detect crash loop: if the previous boot didn't complete, increment
-        // the crash counter. If we're at 2+ crashes, enter safe mode.
-        if (!BootTracer.previousBootCompleted(this)) {
+        // An unfinished boot is only a crash when something independent says
+        // so (Android's exit history, a Java report, or the watchdog). The old
+        // rule treated every unfinished boot as a crash, so closing the app or
+        // Android reclaiming memory produced "Vorv crashed last time" on the
+        // next launch — a report about a session that never crashed.
+        val previousBootFinished = BootTracer.previousBootCompleted(this)
+        val death = if (previousBootFinished) null
+        else runCatching { host.vorv.healer.DeathEvidence.of(this, BootTracer.previousBootStartEpoch(this)) }
+            .getOrNull()
+        lastExitCrashed = death?.crashed == true
+        lastExitVerdict = death?.detail
+        if (!previousBootFinished && lastExitCrashed) {
             val count = BootTracer.incrementCrashCount(this)
-            BootTracer.step(this, "previous_boot_crashed", "count=$count")
+            BootTracer.step(this, "previous_boot_crashed", "count=$count evidence=${death!!.detail}")
 
             // Night session 2026-11-08 (screen recording 20:32 — "this time
             // no crash report or notification"): a native crash or process
@@ -146,8 +168,13 @@ class VorvApplication : Application() {
                 safeMode = true
                 BootTracer.step(this, "SAFE_MODE_ENABLED", "skipping non-essential init")
             }
-        } else {
+        } else if (previousBootFinished) {
             BootTracer.step(this, "previous_boot_ok")
+        } else {
+            // Nothing says it crashed: say exactly that, and take any stale
+            // synthesized report out of the dialog's way (the file stays).
+            BootTracer.step(this, "previous_exit_not_a_crash", death?.detail ?: "no evidence found")
+            runCatching { retireSynthesizedReports() }
         }
 
         // Start the watchdog service in a separate process. It survives this
@@ -355,6 +382,21 @@ class VorvApplication : Application() {
      * (evidence is never destroyed); the crash_logs tool still lists and
      * reads it; only getLatestCrashLog (dialog + probation gate) skips it.
      */
+    /**
+     * A synthesized report describes an unfinished boot as a crash. When this
+     * boot found no evidence of a crash, that report must not be offered as
+     * one again — it is renamed `handled_`, so it stays on disk as history but
+     * leaves the dialog and the probation gate alone.
+     */
+    private fun retireSynthesizedReports() {
+        val dir = java.io.File(getExternalFilesDir(null) ?: return, "crash_logs")
+        dir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("crash_synthesized_") }
+            ?.forEach { f ->
+                runCatching { f.renameTo(java.io.File(dir, "handled_${f.name}")) }
+            }
+    }
+
     fun markCrashHandled(file: java.io.File) {
         if (!file.isFile || file.name.startsWith("handled_")) return
         runCatching {
@@ -441,9 +483,11 @@ class VorvApplication : Application() {
         sb.appendLine("Vorv crash report (SYNTHESIZED — no Java stack trace)")
         sb.appendLine("========================================")
         sb.appendLine("Synthesized at: ${java.util.Date()}")
-        sb.appendLine("Reason: the previous boot did not complete, but no Java crash")
-        sb.appendLine("report was written — consistent with a NATIVE crash (e.g. the")
-        sb.appendLine("GenieX/NPU layer) or the process being killed externally.")
+        sb.appendLine("What says this was a crash: " + (lastExitVerdict ?: "unknown"))
+        sb.appendLine("Reason: the previous boot did not complete and it was ended by a")
+        sb.appendLine("crash, but no Java crash report was written for it (a native crash")
+        sb.appendLine("writes no Java log). This report is only produced when that")
+        sb.appendLine("evidence exists — an unfinished boot on its own is not a crash.")
         sb.appendLine("There is NO exception class, NO stack trace, and NO line number")
         sb.appendLine("below — the breadcrumbs are all that survived. Treat any")
         sb.appendLine("diagnosis as inference, not fact.")

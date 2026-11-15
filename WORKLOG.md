@@ -1,3 +1,18 @@
+## 0.8.6 — "Vorv crashed last time" can no longer appear without evidence
+
+**Reported:** "It never fucking crashed." The dialog fired on a launch that had not crashed, and its own text said so: *no Java crash report was written*.
+
+**1. The rule was wrong, not the wording.** Every boot wrote `BOOT_COMPLETE` when the UI was up; a boot without that line was *assumed* to be a crash. Closing the app, swiping it away, or Android reclaiming memory all produce a missing `BOOT_COMPLETE` — so the next launch was told it had crashed. New `host.vorv.healer.DeathEvidence` decides from evidence a session cannot fabricate: Android's own exit history names a crash reason (CRASH, CRASH_NATIVE, ANR, INITIALIZATION_FAILURE) for an exit at/after that boot's start, or a Java crash report was written during it, or the watchdog recorded a death detection during it. No evidence → no crash: breadcrumb `previous_exit_not_a_crash` with the reason ("Android's exit history says REASON_USER_REQUESTED — ended, not crashed" or "Android kept no exit record for it"), crash counter untouched, no safe mode, no patch rollback, no synthesized report.
+
+**2. The dialog asks the verdict, not the trace.** `VorvApplication` decides once at boot (`lastExitCrashed`, `lastExitVerdict`); `MainActivity` shows the crash dialog only when that is true. A stale `crash_synthesized_*` report from an earlier false alarm is retired to `handled_…` when the evidence says otherwise, so it cannot resurface as a crash.
+
+**3. Boot start is a fact now.** `BOOT_STARTED` carries `epoch=<millis>` and `BootTracer.previousBootStartEpoch`/`sectionStartEpoch` read it, so a crash record from an older session cannot be pinned on the previous one. Without a stamp it reports `null` instead of guessing.
+
+**4. Reports say what they rest on.** The synthesized body now prints `What says this was a crash: <evidence>` instead of "consistent with a NATIVE crash … or the process being killed externally".
+Tests: `DeathEvidenceTest` — unfinished boot with no record is not a crash; user-closed and low-memory are not crashes; a native crash after the boot start is; a crash record older than the session is not; a Java report or watchdog detection during the session is; missing epoch still trusts a current crash reason; `sectionStartEpoch` parses the stamp and returns null when absent.
+
+**Version:** versionCode 43, versionName 0.8.6. 461 tests, 0 failures.
+
 ## 0.8.5 — the app stopped claiming it had no Linux system when the APK plainly has it
 
 **Reported:** "Still have no linux." with the Setup card reading *NOT PACKAGED — this build has no Linux system* and *proot MISSING*, on 0.8.2 (39).

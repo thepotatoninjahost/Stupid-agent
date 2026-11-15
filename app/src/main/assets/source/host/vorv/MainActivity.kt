@@ -144,13 +144,20 @@ class MainActivity : ComponentActivity() {
             bindService(intent, watchdogConnection, Context.BIND_AUTO_CREATE)
         }.onFailure { BootTracer.step(this, "bind_watchdog_failed", it.message) }
 
-        // Check for crash logs from a previous run (written by CrashReportWorker).
-        val crashLogFile = app.getLatestCrashLog()
-        BootTracer.step(this, "crash_log_check", "found=${crashLogFile != null}")
+        // A crash is only claimed when VorvApplication found evidence for it
+        // (Android's exit history, a Java report, or the watchdog). An
+        // unfinished boot that nothing says crashed is not a crash: the dialog
+        // used to fire on a session that had simply been closed.
+        val previousBootCrashed = app.lastExitCrashed
+        val crashLogFile = if (previousBootCrashed) app.getLatestCrashLog() else null
+        BootTracer.step(
+            this,
+            "crash_log_check",
+            "found=${crashLogFile != null} evidence=${app.lastExitVerdict ?: "none"}",
+        )
 
-        // Read the previous boot's trace — if it crashed, we want to show that too.
-        val previousTrace = BootTracer.readPreviousTrace(this)
-        val previousBootCrashed = !BootTracer.previousBootCompleted(this)
+        // Read the previous boot's trace for the report body.
+        val previousTrace = if (previousBootCrashed) BootTracer.readPreviousTrace(this) else null
         BootTracer.step(this, "prev_boot_status", "crashed=$previousBootCrashed")
 
         // Probation rollbacks from this boot's VorvApplication (patch gate).
