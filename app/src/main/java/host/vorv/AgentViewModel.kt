@@ -151,6 +151,8 @@ data class AgentState(
     val linuxTestResult: String? = null,
     /** What the payload check actually looked for, worded for the Setup card. */
     val linuxDiagnostics: String? = null,
+    /** The APK carries proot even if Android has not unpacked it (two different facts). */
+    val linuxPayloadInApk: Boolean = false,
     /** A real command completed inside the guest this session (knowledge). */
     val shellVerifiedThisSession: Boolean = false,
     /** v0.6.17: the dead-shell circuit breaker is active (live in Setup). */
@@ -769,6 +771,7 @@ class AgentViewModel(
         _state.update {
             it.copy(
                 linuxAvailable = guest.isAvailable(),
+                linuxPayloadInApk = guest.inspectPayload().payloadInApk,
                 linuxProvisioned = guest.isProvisioned(),
                 linuxDiagnostics = guest.diagnose(),
             )
@@ -781,8 +784,22 @@ class AgentViewModel(
         _state.update { it.copy(linuxTesting = true, linuxTestResult = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val guest = linuxSystem
+            var repaired: host.vorv.linux.LinuxPayload.State? = null
+            if (!guest.isAvailable()) repaired = runCatching { guest.repairPayload() }.getOrNull()
             val verdict = if (!guest.isAvailable()) {
-                "NO LINUX SYSTEM IN THIS BUILD — package one with tools/forge/fetch-linux.sh."
+                when {
+                    repaired == null || !repaired.payloadInApk ->
+                        "NO LINUX SYSTEM IN THIS BUILD — this APK has no payload at all (tools/forge/fetch-linux.sh)."
+                    else ->
+                        "THE PAYLOAD IS IN THIS APK BUT ANDROID DID NOT UNPACK IT FOR THIS INSTALL.\n" +
+                            "That unpack happens at install time, so the fix is a clean install, not a setting:\n" +
+                            "  1. uninstall Vorv,  2. install the same APK again.\n\n" +
+                            "Checked on this phone:\n" +
+                            "  in the APK: " + (repaired.apkEntry ?: "no") + "\n" +
+                            "  found by the runtime: " + (repaired.resolvedPath ?: "no") + "\n" +
+                            "  unpacked copy: " + (if (repaired.extracted) "present" else "missing") + "\n" +
+                            "  app-storage attempt: " + (repaired.execVerdict ?: "not attempted")
+                }
             } else {
                 val shell = runCatching { guest.run(PROBE_COMMAND, 180_000, emptyList(), "/root") }
                     .getOrElse { host.vorv.linux.LinuxSystem.Shell(-1, "", it.message, true) }
@@ -801,6 +818,7 @@ class AgentViewModel(
                     linuxTesting = false,
                     linuxTestResult = verdict,
                     linuxAvailable = guest.isAvailable(),
+                    linuxPayloadInApk = guest.inspectPayload().payloadInApk,
                     linuxProvisioned = guest.isProvisioned(),
                     linuxDiagnostics = guest.diagnose(),
                     shellVerifiedThisSession = SessionGrants.shellVerified,

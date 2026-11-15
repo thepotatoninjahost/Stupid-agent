@@ -393,9 +393,14 @@ fun SettingsScreen(
         val gates = listOf(
             Triple(
                 "The Linux payload is in this build",
-                if (state.linuxAvailable) "✓" else "✗",
-                if (state.linuxAvailable) "proot + Alpine rootfs found in the APK"
-                else "this APK was built without the payload — run tools/forge/fetch-linux.sh and rebuild",
+                if (state.linuxAvailable || state.linuxPayloadInApk) "✓" else "✗",
+                when {
+                    state.linuxAvailable -> "proot is installed and executable on this phone"
+                    state.linuxPayloadInApk ->
+                        "proot IS in this APK, but Android did not unpack it for this install —" +
+                            " uninstall Vorv and install this same APK again"
+                    else -> "this APK was built without the payload — run tools/forge/fetch-linux.sh and rebuild"
+                },
             ),
             Triple(
                 "Filesystem unpacked",
@@ -422,12 +427,15 @@ fun SettingsScreen(
                 Text(
                     if (state.linuxAvailable && guestRan)
                         "READY — the shell runs inside Vorv's own Linux system."
+                    else if (!state.linuxAvailable && state.linuxPayloadInApk)
+                        "PACKAGED, NOT UNPACKED — Android did not unpack this APK's binaries; reinstall it."
                     else if (!state.linuxAvailable)
                         "NOT PACKAGED — this build has no Linux system."
                     else
                         "PACKAGED, NOT YET RUN — test it once to prove it works on this phone.",
                     color = when {
                         state.linuxAvailable && guestRan -> Success
+                        !state.linuxAvailable && state.linuxPayloadInApk -> Warning
                         !state.linuxAvailable -> Error
                         else -> Warning
                     },
@@ -448,7 +456,7 @@ fun SettingsScreen(
                     }
                 }
 
-                if (!state.linuxAvailable && !state.linuxDiagnostics.isNullOrBlank()) {
+                if ((!state.linuxAvailable || state.linuxPayloadInApk) && !state.linuxDiagnostics.isNullOrBlank()) {
                     Text(
                         state.linuxDiagnostics!!,
                         color = OnSurfaceVariant, fontSize = 10.sp,
@@ -467,7 +475,7 @@ fun SettingsScreen(
 
                 OutlinedButton(
                     onClick = onTestLinuxSystem,
-                    enabled = state.linuxAvailable && !state.linuxTesting,
+                    enabled = !state.linuxTesting,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(50),
                 ) {

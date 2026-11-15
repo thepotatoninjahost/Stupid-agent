@@ -1,3 +1,17 @@
+## 0.8.5 — the app stopped claiming it had no Linux system when the APK plainly has it
+
+**Reported:** "Still have no linux." with the Setup card reading *NOT PACKAGED — this build has no Linux system* and *proot MISSING*, on 0.8.2 (39).
+
+**1. Two different facts were being reported as one.** "Is the payload in the APK?" and "did the installer unpack it where Android can execute it?" are not the same question, and the card answered the first with the second's result. It told the owner the build had no payload while the APK contained `lib/arm64-v8a/libforge-proot.so` (verified in the 0.8.2 release asset by reading its central directory, and again in 0.8.5). New `host.vorv.linux.LinuxPayload` answers both: the APK entry for this ABI (`ZipFile` over `applicationInfo.sourceDir`), the path the runtime itself reports (`ClassLoader.findLibrary("forge-proot")`, by reflection because it is protected), what `nativeLibraryDir` actually holds, and — when nothing is executable — an honest unpack-and-try in app storage that records the exact failure instead of swallowing it.
+`LinuxSystem.isAvailable()` and `run()` now use the runtime-resolved path rather than assuming `nativeLibraryDir/libforge-proot.so`, so a stale `nativeLibraryDir` no longer reads as "missing".
+
+**2. The card says which fix is needed.** Payload in the APK but not unpacked now reads **PACKAGED, NOT UNPACKED — Android did not unpack this APK's binaries; reinstall it**, gate 1 shows ✓ with that explanation, and TEST reports the four facts it checked on this phone. That unpack is an install-time step: nothing in app code can perform it, and Android 10+ will not execute a binary from app storage, so a clean install is the real remedy — now stated instead of "no Linux system in this build".
+
+**3. Diagnostics widened.** The Setup dump now prints version, ABIs, `nativeLibraryDir`, the APK entry, the runtime-resolved path, an explicit "the installer unpacked no libraries for this install", the `assets/forge/linux` listing and the rootfs state. 16 KB page alignment was checked on the payload (`p_align = 0x4000` on proot, its loader and libjvm), so alignment is ruled out as a cause.
+Tests: `LinuxPayloadTest` — inspect and repair answer instead of throwing on a context with no payload; `nativeLibraryDir` is null-guarded (Robolectric has no native lib dir, and a crash there would also have read as "no Linux").
+
+**Version:** versionCode 42, versionName 0.8.5. 450 tests, 0 failures.
+
 ## 0.8.4 — crash reports come from Android itself, and a paid model can no longer look like a broken key
 
 **Reported:** "the last crash didn't say that on the crash log — I believe it said unknown because it didn't have the tools to trace native crashes", and "I don't think it ever saved any of the crash logs."

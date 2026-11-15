@@ -31,9 +31,18 @@ class LinuxSystem(private val context: Context) : GuestShell {
     private val loaderDir: File get() = File(root, "loader")
     private val stamp: File get() = File(root, "provisioned")
 
-    private val nativeDir: File get() = File(context.applicationInfo.nativeLibraryDir)
+    private val nativeDir: File get() = File(context.applicationInfo.nativeLibraryDir ?: "")
 
-    override fun isAvailable(): Boolean = File(nativeDir, "libforge-proot.so").isFile
+    private val payload by lazy { LinuxPayload(context) }
+
+    /** The proot binary, at the path the runtime actually installed it. */
+    fun prootExecutable(): File? = payload.executable()
+
+    fun inspectPayload(): LinuxPayload.State = payload.inspect()
+
+    fun repairPayload(): LinuxPayload.State = payload.repair()
+
+    override fun isAvailable(): Boolean = payload.executable() != null
 
     fun isProvisioned(): Boolean = stamp.isFile && File(rootfs, "etc/alpine-release").isFile
 
@@ -50,17 +59,20 @@ class LinuxSystem(private val context: Context) : GuestShell {
         }.getOrElse { "unknown" }
         lines += "ABIs " + android.os.Build.SUPPORTED_ABIS.joinToString(",")
         lines += "nativeLibraryDir " + nativeDir.absolutePath
-        val proot = File(nativeDir, "libforge-proot.so")
-        lines += "proot " + if (proot.isFile) "present ${proot.length()} B" else "MISSING"
-        if (!proot.isFile) {
-            val siblings = nativeDir.listFiles()?.map { it.name }?.sorted() ?: emptyList()
-            lines += "dir has " + if (siblings.isEmpty()) "nothing" else siblings.take(12).joinToString(",") +
-                if (siblings.size > 12) " (+${siblings.size - 12})" else ""
+
+        val state = inspectPayload()
+        lines += "proot in APK: " + (state.apkEntry ?: "MISSING — this build really has no payload")
+        lines += "runtime resolved: " + (state.resolvedPath ?: "not found by the ClassLoader")
+        lines += "extracted copy: " + if (state.extracted) "present" else "MISSING"
+        if (state.listing.isEmpty()) {
+            lines += "nativeLibraryDir holds nothing — the installer unpacked no libraries for this install"
+        } else {
+            lines += "nativeLibraryDir holds " + state.listing.take(12).joinToString(",") +
+                if (state.listing.size > 12) " (+${state.listing.size - 12})" else ""
         }
-        lines += "loader " + if (File(nativeDir, "libforge-proot-loader.so").isFile) "present" else "MISSING"
+
         val assets = runCatching { context.assets.list("forge/linux")?.toList() ?: emptyList() }.getOrElse { emptyList() }
-        val rootfsAsset = "rootfs.tar"
-        lines += "payload " + if (assets.contains(rootfsAsset)) "rootfs.tar present" else
+        lines += "payload " + if (assets.contains("rootfs.tar")) "rootfs.tar present" else
             "rootfs.tar MISSING (assets/forge/linux has: " + (if (assets.isEmpty()) "nothing" else assets.joinToString(",")) + ")"
         lines += "rootfs " + if (isProvisioned()) "unpacked" else "not unpacked yet"
         return lines.joinToString("\n")
@@ -68,8 +80,14 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     suspend fun provision(): Result<File> = withContext(Dispatchers.IO) {
         if (!isAvailable()) {
+            val inApk = payload.inspect().payloadInApk
             return@withContext Result.failure(
-                IllegalStateException("This build carries no Linux system. Package it with tools/forge/fetch-linux.sh."),
+                IllegalStateException(
+                    if (inApk)
+                        "The payload is in this APK but Android did not unpack it for this install, so it cannot run. " +
+                            "Uninstall Vorv and install this APK again."
+                    else "This build carries no Linux system. Package it with tools/forge/fetch-linux.sh.",
+                ),
             )
         }
         if (isProvisioned()) return@withContext Result.success(root)
@@ -79,8 +97,14 @@ class LinuxSystem(private val context: Context) : GuestShell {
             extractRootfs()
             loaderDir.mkdirs()
             listOf("loader", "loader32").forEach { name ->
-                val src = File(nativeDir, "libforge-proot-$name.so")
-                if (src.isFile) src.copyTo(File(loaderDir, name), overwrite = true)
+                // Prefer the installed copy; fall back to the one unpacked from
+                // our own APK, so a partially-unpacked install still works.
+                val candidates = listOf(
+                    File(nativeDir, "libforge-proot-$name.so"),
+                    File(File(context.filesDir, "native"), name),
+                )
+                candidates.firstOrNull { it.isFile }
+                    ?.copyTo(File(loaderDir, name), overwrite = true)
             }
             File(loaderDir, "loader").setExecutable(true)
             if (!isProvisioned()) {
@@ -108,7 +132,15 @@ class LinuxSystem(private val context: Context) : GuestShell {
         workDir: String,
     ): Shell = withContext(Dispatchers.IO) {
         provision().onFailure { return@withContext Shell(-1, "", it.message ?: "not provisioned", true) }
-        val proot = File(nativeDir, "libforge-proot.so")
+        val proot = payload.executable()
+            ?: return@withContext Shell(
+                -1, "",
+                "Android has not unpacked this app's Linux binaries, so proot cannot run here. " +
+                    "The APK does contain them" +
+                    (if (payload.inspect().payloadInApk) " (lib/…/libforge-proot.so)" else "") +
+                    " — the unpack happens at install time, so uninstall Vorv and install the APK again.",
+                true,
+            )
         val home = File(root, "home").apply { mkdirs() }
         val tmp = File(root, "tmp").apply { mkdirs() }
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
