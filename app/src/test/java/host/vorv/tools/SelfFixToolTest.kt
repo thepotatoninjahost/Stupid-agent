@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 /**
  * SelfFixTool validation tests (v0.6.8 general-scope self-healing).
  *
- * The happy path needs the on-device model + Termux and is exercised on a
+ * The happy path needs the on-device model + the forge toolchain and is exercised on a
  * real device; these tests pin the FAIL-CLOSED contract: no consent bridge,
  * vague problems, no workspace — every path returns an honest error and
  * changes nothing.

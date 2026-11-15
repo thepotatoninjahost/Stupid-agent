@@ -83,3 +83,15 @@ export ANDROID_HOME=/path/to/android-sdk   # needs platforms/android-37
 ./tools/forge/fetch-runtime.sh             # OpenJDK + android.jar + d8 + apksigner
 ./gradlew :app:assembleDebug
 ```
+
+## Status: Termux is gone (2026-11-13)
+
+Nothing in the app calls Termux any more. `shell` runs in this Linux system,
+`self_fix` compiles with the toolchain in the APK, `TermuxProbe` and the
+`com.termux.permission.RUN_COMMAND` permission are deleted, and the Setup
+card asks `LinuxSystem.isProvisioned()` instead of asking the user to install
+another app. See REVIEW.md section 10 for the full change table.
+
+What is still unproven is proot itself on a phone: argv and contract are
+pinned by `LinuxSystemArgvTest` (5) and `ShellToolTest` (12), but the guest
+must be started on the S25 before this page can claim a working OS.

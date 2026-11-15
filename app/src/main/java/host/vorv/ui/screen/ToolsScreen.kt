@@ -37,12 +37,12 @@ fun ToolsScreen(state: AgentState) {
         "web_search" to "Z.ai Web Search API (documented /web_search endpoint)",
         "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",
         "app_intent" to "Android intents (view/share/dial/open_app) — every action needs your confirmation",
-        "shell" to "Bash via Termux with REAL stdout/stderr/exit-code capture (needs workspace + Termux setup + your confirmation)",
+        "shell" to "A real shell in Vorv's own Linux system with REAL stdout/stderr/exit-code capture (no root, nothing to install; your confirmation first)",
         "notify" to "Post a system notification (checks permission, honest error if missing)",
         "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
         "schedule_cancel" to "Cancel pending reminders by title or all",
         "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
-        "self_fix" to "Fix or modify Vorv's own code: strongest on-device model writes the complete patched class, compiled in Termux, verified complete, signed, APPROVED by you, rolled back automatically if it crashes",
+        "self_fix" to "Fix or modify Vorv's own code: strongest on-device model writes the complete patched class, compiled by Vorv's own compiler, verified complete, signed, APPROVED by you, rolled back automatically if it crashes",
     )
     val engines = listOf(
         "local_llm" to if (state.localModelReady) {

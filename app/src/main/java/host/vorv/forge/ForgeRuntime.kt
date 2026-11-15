@@ -35,7 +35,11 @@ class ForgeRuntime(private val context: Context) {
 
     fun isAvailable(): Boolean = launcher.isFile
 
-    fun isProvisioned(): Boolean = androidJar.isFile && File(home, "lib/modules").isFile
+    /** The Kotlin compiler self-repair needs, shipped in the same payload. */
+    val kotlinCompilerJar: File get() = File(toolsDir, "kotlin-compiler-embeddable-2.4.21.jar")
+
+    fun isProvisioned(): Boolean =
+        androidJar.isFile && kotlinCompilerJar.isFile && File(home, "lib/modules").isFile
 
     private val stamp: File get() = File(context.filesDir, "forge/payload")
 
@@ -71,7 +75,10 @@ class ForgeRuntime(private val context: Context) {
             }
             if (!androidJar.isFile || !d8Jar.isFile || !apksignerJar.isFile) {
                 return@withContext Result.failure(
-                    IllegalStateException("payload incomplete: android.jar, d8.jar or apksigner.jar missing"),
+                    IllegalStateException(
+                        "payload incomplete: android.jar, d8.jar, apksigner.jar or the Kotlin " +
+                            "compiler is missing — repackage with tools/forge/fetch-runtime.sh",
+                    ),
                 )
             }
             stamp.parentFile?.mkdirs()
@@ -126,7 +133,7 @@ class ForgeRuntime(private val context: Context) {
     }
 
     private companion object {
-        const val REVISION = "openjdk-17.0.21-2+d8-37"
+        const val REVISION = "openjdk-17.0.21-2+d8-37+kotlinc-2.4.21"
         const val MAX_OUTPUT = 4000
     }
 }

@@ -10,7 +10,7 @@ import java.io.File
  * H3a / H3b / M8 (code review, 2026-11): the self-repair healer's budgets
  * and scratch-file hygiene.
  *
- *  - H3a: the Termux compile budget must be 8-10 minutes (600 s), not the
+ *  - H3a: the compile budget must be 8-10 minutes (600 s), not the
  *    150 s that killed healthy compiles mid-flight, and every attempt must
  *    record its real duration.
  *  - H3b: the source cap must hold the LARGEST bundled source file whole

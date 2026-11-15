@@ -10,11 +10,6 @@
     <!-- Installing APKs the agent built for the user: a normal PackageInstaller
          session, and Android still shows its own install consent. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Required to be declarable so the user can grant it in Android Settings
-         (Settings → Apps → Vorv → Permissions → Run commands in Termux).
-         Termux's RUN_COMMAND mechanism only works when the caller holds this
-         custom permission — it is a user-granted toggle, not an install grant. -->
-    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
     <!--
       Removed vs v0.5.x (audit supply-chain hygiene):

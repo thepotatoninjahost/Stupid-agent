@@ -71,6 +71,10 @@ for f in m["sdkFiles"]:
     print("sdk %s -> %s" % (f["from"], f["as"]))
 PY
 
+# Kotlin compiler jars: self-repair compiles patches on the phone, so the
+# compiler travels with the app. Verified against its pinned sha256 first.
+python3 "$here/fetch-maven.py" "$manifest" "$cache/maven" "$tools"
+
 echo
 du -sh "$jni" "$jvm" "$tools"
 echo "payload ready"

@@ -45,7 +45,6 @@ import host.vorv.tools.ScheduleTool
 import host.vorv.tools.SelfFixTool
 import host.vorv.tools.SessionGrants
 import host.vorv.tools.ShellTool
-import host.vorv.tools.TermuxProbe
 import host.vorv.tools.WebFetchTool
 import host.vorv.tools.WebSearchTool
 import kotlinx.coroutines.CompletableDeferred
@@ -88,9 +87,8 @@ data class PendingConfirmation(
 /**
  * A pending ANDROID runtime-permission dialog (v0.6.14). The UI observes
  * this, calls Activity.requestPermissions(), and reports back through
- * [AgentViewModel.respondPermissionRequest]. Used for Termux's
- * RUN_COMMAND permission — declared protectionLevel="dangerous" by the
- * Termux app, hence runtime-requestable with the standard one-tap dialog.
+ * [AgentViewModel.respondPermissionRequest]. For any runtime grant a tool
+ * needs — the standard one-tap dialog, never a Settings walk.
  */
 data class PendingPermissionRequest(
     val id: String,
@@ -142,14 +140,15 @@ data class AgentState(
     val pendingConfirmation: PendingConfirmation? = null,
     /** Active Android runtime-permission request (v0.6.14; one at a time). */
     val pendingPermissionRequest: PendingPermissionRequest? = null,
-    /** Termux integration status (Setup tab, v0.6.14) — live pm lookups. */
-    val termuxInstalled: Boolean = false,
-    val runCommandGranted: Boolean = false,
-    /** A Termux connection test is running (Setup tab). */
-    val termuxTesting: Boolean = false,
-    /** Verbatim result of the last Termux connection test (Setup tab). */
-    val termuxTestResult: String? = null,
-    /** v0.6.15: a real Termux round-trip completed this session (knowledge). */
+    /** The app carries the Linux payload (proot + Alpine rootfs). */
+    val linuxAvailable: Boolean = false,
+    /** The guest filesystem has been unpacked and stamped. */
+    val linuxProvisioned: Boolean = false,
+    /** A Linux-system test is running (Setup tab). */
+    val linuxTesting: Boolean = false,
+    /** Verbatim result of the last Linux-system test (Setup tab). */
+    val linuxTestResult: String? = null,
+    /** A real command completed inside the guest this session (knowledge). */
     val shellVerifiedThisSession: Boolean = false,
     /** v0.6.17: the dead-shell circuit breaker is active (live in Setup). */
     val shellBlockedThisSession: Boolean = false,
@@ -175,6 +174,9 @@ class AgentViewModel(
 
     private val reminderRegistry = ReminderRegistry(prefs)
 
+    /** Vorv's own computer: one instance, shared by the shell and linux_run. */
+    private val linuxSystem = host.vorv.linux.LinuxSystem(appContext)
+
     private val tools = listOf(
         MemoryWriteTool(db),
         MemoryRecallTool(db),
@@ -183,7 +185,7 @@ class AgentViewModel(
         ComputerTool(appContext),
         WebTestTool(appContext),
         BuildAppTool(appContext),
-        LinuxRunTool(appContext),
+        LinuxRunTool(linuxSystem),
         NativeTestTool(appContext),
         FileReadTool(appContext),
         FileWriteTool(appContext),
@@ -193,7 +195,7 @@ class AgentViewModel(
         WebSearchTool(secrets),
         WebFetchTool(),
         AppIntentTool(appContext),
-        ShellTool(appContext),
+        ShellTool(linuxSystem, appContext),
         NotifyTool(appContext),
         ScheduleTool(appContext, reminderRegistry),
         ScheduleCancelTool(appContext, reminderRegistry),
@@ -291,7 +293,7 @@ class AgentViewModel(
         // (binary compatibility with registered patches).
         @Suppress("LeakingThis")
         PermissionBridge.handler = installedPermissionHandler
-        refreshTermuxStatus()
+        refreshLinuxStatus()
 
         // v0.6.15: the session-grant audit channel — every command executed
         // under "Allow all shell commands this session" lands in the episode
@@ -752,27 +754,54 @@ class AgentViewModel(
         }
     }
 
-    // ------------------------------------------ Termux setup (v0.6.14)
+    // ------------------------------------- Linux system setup (Setup tab)
 
-    /** Live pm lookups for the Setup card — call after any external change. */
-    fun refreshTermuxStatus() {
+    /**
+     * Live status of Vorv's own computer. [provisioned] is a stamp file, so this
+     * is a cheap file check and can run on every screen entry.
+     */
+    fun refreshLinuxStatus() {
+        val guest = linuxSystem
         _state.update {
-            it.copy(
-                termuxInstalled = TermuxProbe.termuxInstalled(appContext),
-                runCommandGranted = TermuxProbe.runCommandGranted(appContext),
-            )
+            it.copy(linuxAvailable = guest.isAvailable(), linuxProvisioned = guest.isProvisioned())
         }
     }
 
-    /** Setup → Termux integration → GRANT: the one-tap system dialog. */
-    fun grantTermuxPermission() {
-        viewModelScope.launch {
-            permissionBridge(TermuxProbe.RUN_COMMAND_PERMISSION)
-            refreshTermuxStatus()
+    /** Setup → Linux system → TEST. Runs `apk --version` in the guest — nothing else. */
+    fun testLinuxSystem() {
+        if (_state.value.linuxTesting) return
+        _state.update { it.copy(linuxTesting = true, linuxTestResult = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val guest = linuxSystem
+            val verdict = if (!guest.isAvailable()) {
+                "NO LINUX SYSTEM IN THIS BUILD — package one with tools/forge/fetch-linux.sh."
+            } else {
+                val shell = runCatching { guest.run(PROBE_COMMAND, 180_000, emptyList(), "/root") }
+                    .getOrElse { host.vorv.linux.LinuxSystem.Shell(-1, "", it.message, true) }
+                when {
+                    shell.timedOut -> "FAILED — the guest did not answer within 180s. " +
+                        (shell.error ?: "No output.")
+                    shell.exitCode != 0 -> "FAILED — the guest answered with exit ${shell.exitCode}:\n" +
+                        shell.output.takeLast(2_000)
+                    else -> "ALL GOOD — a real command ran inside Vorv's Linux system:\n" +
+                        shell.output.trim().takeLast(2_000)
+                }
+            }
+            if (verdict.startsWith("ALL GOOD")) SessionGrants.markShellVerified()
+            _state.update {
+                it.copy(
+                    linuxTesting = false,
+                    linuxTestResult = verdict,
+                    linuxAvailable = guest.isAvailable(),
+                    linuxProvisioned = guest.isProvisioned(),
+                    shellVerifiedThisSession = SessionGrants.shellVerified,
+                    shellBlockedThisSession = SessionGrants.shellBlocked,
+                )
+            }
         }
     }
 
-    /** Setup → Termux integration → manual fallback: open Vorv's Settings page. */
+    /** Setup → manual fallback: open Vorv's own Android settings page. */
     fun openAppSettings() {
         runCatching {
             appContext.startActivity(
@@ -781,36 +810,6 @@ class AgentViewModel(
                     android.net.Uri.parse("package:${appContext.packageName}"),
                 ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             )
-        }
-    }
-
-    /**
-     * Setup → Termux integration → TEST. Runs exactly `echo vorv-termux-ok`
-     * in Termux (the button label states the command — that label is the
-     * consent surface) and puts the complete honest verdict in state.
-     *
-     * v0.6.17: the probe owns its session-state side effects — a pass marks
-     * the chain VERIFIED (lifting any dead-shell block), a timeout trips the
-     * SAME breaker the shell tool trips. The ViewModel acts on the typed
-     * kind, never on string prefixes; the Setup checklist reflects both.
-     */
-    fun testTermuxConnection() {
-        if (_state.value.termuxTesting) return
-        _state.update { it.copy(termuxTesting = true, termuxTestResult = null) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val result = TermuxProbe.runProbe(appContext, _state.value.workspaceUri.takeIf { it.isNotBlank() })
-            _state.update {
-                it.copy(
-                    termuxTesting = false,
-                    termuxTestResult = result.verdict,
-                    // The probe may have been the first real dispatch — refresh
-                    // every status readout it could have changed.
-                    termuxInstalled = TermuxProbe.termuxInstalled(appContext),
-                    runCommandGranted = TermuxProbe.runCommandGranted(appContext),
-                    shellVerifiedThisSession = SessionGrants.shellVerified,
-                    shellBlockedThisSession = SessionGrants.shellBlocked,
-                )
-            }
         }
     }
 
@@ -1410,6 +1409,14 @@ class AgentViewModel(
         private const val CLOUD_TASK_TIMEOUT_MS = 5 * 60_000L
         private const val LOCAL_TASK_TIMEOUT_MS = 15 * 60_000L
         private const val RETENTION_DAYS = 30
+
+        /**
+         * Setup → TEST runs exactly this inside the guest: it answers whether
+         * the root filesystem boots and whether apk (the package manager the
+         * agent installs compilers with) is really executable.
+         */
+        internal const val PROBE_COMMAND =
+            "uname -sr; cat /etc/alpine-release 2>/dev/null; apk --version"
 
         fun factory(
             db: VorvDatabase,

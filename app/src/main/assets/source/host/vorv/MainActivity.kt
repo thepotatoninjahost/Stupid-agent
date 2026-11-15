@@ -77,13 +77,11 @@ class MainActivity : ComponentActivity() {
         }
 
     /**
-     * v0.6.14: the tool-driven runtime permission dialog. When a tool hits
-     * the Termux RUN_COMMAND wall, AgentViewModel raises
-     * pendingPermissionRequest, VorvApp calls [requestPermission] (below),
-     * Android shows the one-tap system dialog, and the result flows back to
-     * the suspended tool via respondPermissionRequest. Termux declares the
-     * permission protectionLevel="dangerous", so the standard runtime
-     * dialog works — no Settings walk required.
+     * v0.6.14: the tool-driven runtime permission dialog. When a tool needs
+     * a runtime grant, AgentViewModel raises pendingPermissionRequest,
+     * VorvApp calls [requestPermission] (below), Android shows the one-tap
+     * system dialog, and the result flows back to the suspended tool via
+     * respondPermissionRequest — no Settings walk required.
      */
     private val toolPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -445,8 +443,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * SELF-REPAIR (audits C-2, H-4, M-8; strongest model per v0.6.9):
-     * generate a fix with the on-device LLM, compile it in Termux through
-     * the workspace round-trip, verify completeness, sign it, and — via
+     * generate a fix with the on-device LLM, compile it with the app's own
+     * compiler, verify completeness, sign it, and — via
      * [onConsent] — put the APPROVE/DENY decision in the user's hands
      * before anything is registered. Runs in the MAIN process only; the
      * watchdog stays LLM-free (M-8).

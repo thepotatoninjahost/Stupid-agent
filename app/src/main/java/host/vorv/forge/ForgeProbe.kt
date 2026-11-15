@@ -19,11 +19,13 @@ object ForgeProbe {
      * location modern Android permits execve from for a bundled interpreter).
      */
     fun runtimeExecutable(context: Context): File =
-        File(context.applicationInfo.nativeLibraryDir, "libforgejvm.so")
+        File(context.applicationInfo.nativeLibraryDir, "libforge-java.so")
 
     fun gates(context: Context, paths: ForgePaths = ForgePaths(context)): List<Gate> {
         val runtime = runtimeExecutable(context)
-        val libDir = paths.libDir
+        // The compiler, dexer and API jar are APK assets until the payload
+        // is provisioned into filesDir/forge/tools (ForgeRuntime.provision).
+        val libDir = ForgeRuntime(context).toolsDir
         val manifest = paths.manifestFile
         val libs = listOf(
             "kotlin-compiler-embeddable-2.4.21.jar",
@@ -31,6 +33,8 @@ object ForgeProbe {
             "kotlinx-coroutines-core-jvm-1.11.0.jar",
             "annotations-26.0.2.jar",
             "d8.jar",
+            "android.jar",
+            "apksigner.jar",
         )
         val missingLibs = libs.filterNot { File(libDir, it).isFile }
         return listOf(

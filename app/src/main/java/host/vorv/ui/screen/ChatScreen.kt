@@ -83,7 +83,7 @@ private fun MessageBubble(msg: ChatMessage) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 // v0.6.18 (field finding #7 — "vorv doesn't allow me to copy
                 // and paste"): chat text is SELECTABLE. The user had to
-                // hand-type setup commands from Vorv's answers into Termux
+                // hand-type setup commands from Vorv's answers into a shell
                 // on a phone keyboard; now long-press → select → copy works.
                 // Per-message container (not one around the whole list) so
                 // selection can't bleed across bubbles.

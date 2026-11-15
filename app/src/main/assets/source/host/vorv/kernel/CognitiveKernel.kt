@@ -70,7 +70,7 @@ class CognitiveKernel(
 
         /**
          * v0.6.19 (field finding #8): field recording — the user typed
-         * "termux works install the tools you need" and the model answered
+         * "the shell works, install the tools you need" and the model answered
          * with a multi-screen lecture about "learning language" (syntax,
          * grammar, SWOT analysis): no tool call, no code block. The v0.6.13
          * nudge only catches code-block advice, so prose non-answers to
@@ -87,7 +87,7 @@ class CognitiveKernel(
             // L1 (code review, 2026-11): two-part rule. 1) A verb in
             // IMPERATIVE position (leading, or right after a polite /
             // agent-addressed lead-in) is an order. 2) A verb ANYWHERE ELSE
-            // still counts — the field transcript's "termux works install
+            // still counts — the field transcript's "the shell works, install
             // the tools you need." has a status preamble, not a subject —
             // UNLESS the message opens like a STATEMENT about a subject
             // ("the app runs slowly", "it won't update" mention action
@@ -311,9 +311,10 @@ class CognitiveKernel(
                                         "installed, run, or changed. A lecture, a curriculum, or an " +
                                         "essay about how you would learn is NOT an answer to an " +
                                         "action request.")
-                                    appendLine("Call the matching tool NOW. Termux CAN install " +
-                                        "software: call shell with e.g. pkg install -y git — the " +
-                                        "user will be asked to approve the execution.")
+                                    appendLine("Call the matching tool NOW. The shell runs inside " +
+                                        "Vorv's own Linux system and CAN install software: call " +
+                                        "shell with e.g. apk add git — the user will be asked " +
+                                        "to approve the execution.")
                                     appendLine("If the user genuinely only asked for information, " +
                                         "reply with a SHORT final answer — no essay.")
                                 }))
@@ -730,8 +731,8 @@ class CognitiveKernel(
         appendLine("11. Never answer an action request with a lecture, a curriculum, a plan, or")
         appendLine("   an essay (including essays about \"learning\" or how you would learn) —")
         appendLine("   that is a non-answer. Either call the tool that does it, or ask ONE short")
-        appendLine("   clarifying question. Termux is a full Linux environment: it CAN install")
-        appendLine("   software with pkg install -y <name>.")
+        appendLine("   clarifying question. The shell runs inside Vorv's own Alpine Linux")
+        appendLine("   system: it CAN install software with apk add <name>.")
         // v0.7.3: the standing principle, promoted to a hard rule. Rule 1
         // already banned inventing tool OUTPUT; v0.6.15 banned guessing
         // AVAILABILITY from descriptions. This bans the guesses still left:
@@ -760,9 +761,9 @@ class CognitiveKernel(
         tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }
         appendLine()
         appendLine("Workspace: ${if (workspaceUri.isNullOrBlank()) "(none granted — file tools will fail until user picks a folder in Files tab)" else "granted"}")
-        // v0.6.15 (field finding #3): live Termux status. The model used to
+        // v0.6.15 (field finding #3): live shell status. The model used to
         // GUESS availability from the shell tool's description and answered
-        // "I don't have access to Termux" without ever calling it. Now the
+        // "I don't have access" without ever calling it. Now the
         // prompt states the session's verified truth — and when nothing is
         // verified yet, it explicitly forbids the false denial. Read from
         // the process-level SessionGrants singleton (same binary-compat

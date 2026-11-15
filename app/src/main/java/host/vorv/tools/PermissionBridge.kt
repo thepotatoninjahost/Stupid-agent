@@ -4,13 +4,13 @@ package host.vorv.tools
  * PermissionBridge — the tool → UI channel for RUNTIME permission requests
  * (v0.6.14).
  *
- * WHY THIS EXISTS. Termux's `com.termux.permission.RUN_COMMAND` is declared
- * by the Termux app with protectionLevel="dangerous" — which in Android
- * terms means RUNTIME-REQUESTABLE: Vorv can pop the standard system dialog
- * ("Allow Vorv to run commands in Termux environment?") and the user grants
- * it with ONE TAP. Before v0.6.14 the shell tool hit this wall and could
- * only tell the user to walk a five-step Settings path by hand — an honest
- * error, but the cheapest possible fix (one tap) was never offered.
+ * WHY THIS EXISTS. Some grants cannot be routed through a tool result: the
+ * consent is a system dialog, and its answer arrives later, on the UI
+ * thread. This bridge is the channel — a tool registers interest, the UI
+ * shows the one-tap dialog, and the result comes back to the suspended
+ * tool. Before v0.6.14 the shell tool hit such a wall and could only tell
+ * the user to walk a five-step Settings path by hand — an honest error, but
+ * the cheapest possible fix (one tap) was never offered.
  *
  * WHY A PROCESS-LEVEL SINGLETON instead of a ToolContext field: binary
  * compatibility with REGISTERED PATCHES. A patch compiled by the healer

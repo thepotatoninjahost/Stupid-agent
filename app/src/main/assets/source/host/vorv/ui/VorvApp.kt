@@ -67,10 +67,8 @@ fun VorvApp(
                         vm::deleteLocalModel,
                         vm::clearSetupError,
                         vm::clearAllData,
-                        onGrantTermuxPermission = vm::grantTermuxPermission,
-                        onOpenAppSettings = vm::openAppSettings,
-                        onTestTermuxConnection = vm::testTermuxConnection,
-                        onRefreshTermuxStatus = vm::refreshTermuxStatus,
+                        onTestLinuxSystem = vm::testLinuxSystem,
+                        onRefreshLinuxStatus = vm::refreshLinuxStatus,
                         onRevokeShellSessionGrant = vm::revokeShellSessionGrant,
                         // v0.6.17: gate 1 of the Setup checklist (workspace
                         // folder) is fixed in the Files tab — one tap away.
@@ -97,7 +95,7 @@ fun VorvApp(
                     // v0.6.18 (field finding #7): consent messages are
                     // SELECTABLE — the shell consent carries the exact
                     // command, and the user must be able to copy it out
-                    // instead of hand-typing it into Termux.
+                    // instead of hand-typing it into a shell.
                     SelectionContainer {
                         Text(
                             pending.message,
@@ -143,9 +141,9 @@ fun VorvApp(
         )
     }
 
-    // ---- Tool-driven runtime permission dialog (v0.6.14): when a tool
-    //      hits the Termux RUN_COMMAND wall, ask Android for the grant with
-    //      the standard one-tap system dialog. ----
+    // ---- Tool-driven runtime permission dialog (v0.6.14): a tool that
+    //      needs an Android grant asks through the standard one-tap system
+    //      dialog instead of sending the user into Settings. ----
     state.pendingPermissionRequest?.let { pending ->
         LaunchedEffect(pending.id) {
             onRequestPermission(pending.permission)

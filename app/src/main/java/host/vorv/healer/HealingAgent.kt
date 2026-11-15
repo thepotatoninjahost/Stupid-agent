@@ -1,25 +1,19 @@
 package host.vorv.healer
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.util.Log
-import androidx.documentfile.provider.DocumentFile
 import host.vorv.healer.CrashInfo
 import host.vorv.healer.DiagnosticBundle
 import host.vorv.healer.HealRequest
 import host.vorv.healer.HealResult
 import host.vorv.healer.PatchProposal
 import host.vorv.llm.Llm
-import host.vorv.tools.SafPaths
-import host.vorv.tools.ShellQuote
 import host.vorv.tools.capWithMarker
 import host.vorv.watchdog.HotPatcher
 import host.vorv.watchdog.PatchKeys
 import host.vorv.watchdog.PatchRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -41,11 +35,10 @@ import java.util.Locale
  *     → on-device coder model (STRONGEST downloaded model — v0.6.9) writes
  *       the COMPLETE fixed class (retry loop with compiler-error AND
  *       verifier-feedback)
- *     → compiled in Termux through the WORKSPACE round-trip (audit H-4:
- *       every artifact the compile touches lives in the user-granted
- *       folder, referenced by /storage/emulated/0/... paths Termux can
- *       actually read — the old /data/data/host.vorv/... paths were
- *       unreadable by Termux, so every compile failed)
+ *     → compiled by Vorv's own compiler (assets/forge/tools: kotlinc, d8,
+ *       android.jar) inside the app's private storage — no shell, no Termux,
+ *       no shared folder, so nothing outside the app can stall or read the
+ *       build (this replaced the old workspace round-trip)
  *     → PatchVerifier completeness gate: the patch must keep EVERY public
  *       constructor, method and field of the original and implement the
  *       dispatch interface. Partial fixes are rejected and fed back into
@@ -84,18 +77,18 @@ class HealingAgent(
         /** Hard budget for the whole heal (model load + attempts + verify). */
         private const val TOTAL_HEAL_BUDGET_MS = 15 * 60_000L
 
-        /** Wall-clock budget for ONE Termux compile. H3a (code review,
-         *  2026-11): raised 150 s → 600 s. Real kotlinc-in-Termux round-trips
+        /** Wall-clock budget for ONE in-app compile. H3a (code review,
+         *  2026-11): raised 150 s → 600 s. Real cold compiler starts
          *  for a single class plus d8 routinely exceed 150 s on an S25 (cold
          *  JVM start, no daemon); the old budget killed healthy compiles
          *  mid-flight. 600 s = the plan's 8–10 min window. The honest
          *  duration of every attempt is recorded in [lastCompileDurationMs]
          *  and the log so future tuning uses measured data, not guesses. */
         private const val COMPILE_TIMEOUT_MS = 600_000L
-        private const val COMPILE_POLL_MS = 1_000L
+        private const val DEX_TIMEOUT_MS = 120_000L
 
-        /** Last REAL Termux compile round-trip duration (ms), success or
-         *  failure — set by compileInTermux on every attempt. H3a's
+        /** Last real compile duration (ms), success or failure — set by
+         *  compileInApp on every attempt. H3a's
          *  "log real compile times": readable by diagnostics and tests. */
         @Volatile internal var lastCompileDurationMs: Long = -1L
 
@@ -113,32 +106,8 @@ class HealingAgent(
         private const val MAX_PROBLEM_CHARS = 4000
         private const val MAX_DIAGNOSTICS_CHARS = 2000
 
-        private const val HEAL_DIR = ".vorv-heal"
         private const val ASSET_CLASSES_JAR = "healer/app_classes.jar"
 
-        /**
-         * H-1 (code review, 2026-11): the bash -c payload that runs the
-         * compile script and captures its output/exit code, as a PURE
-         * function. Every path is [ShellQuote.sh]-quoted: the old
-         * hand-written single quotes let a workspace folder name carrying
-         * a quote, `$()`, backtick or semicolon break out of the quoting
-         * and execute arbitrary text inside Termux. Internal and pure so
-         * the injection regression tests pin it without a device.
-         */
-        internal fun dispatchCommand(
-            rawDir: String,
-            dirName: String,
-            scriptName: String,
-            outName: String,
-            errName: String,
-            codeName: String,
-        ): String {
-            val scriptPath = ShellQuote.sh("$rawDir/$dirName/$scriptName")
-            val outPath = ShellQuote.sh("$rawDir/$dirName/$outName")
-            val errPath = ShellQuote.sh("$rawDir/$dirName/$errName")
-            val codePath = ShellQuote.sh("$rawDir/$dirName/$codeName")
-            return "bash $scriptPath > $outPath 2> $errPath; echo \$? > $codePath"
-        }
     }
 
     // ================================================================
@@ -265,7 +234,7 @@ class HealingAgent(
                 continue
             }
 
-            val candidate = compileAndVerify(fixedSource, targetClass, workspaceUri)
+            val candidate = compileAndVerify(fixedSource, targetClass)
             when {
                 candidate == null -> {
                     lastCompilerError = "compile/verify stage failed on attempt $attempt (see previous errors)"
@@ -422,10 +391,8 @@ class HealingAgent(
     private suspend fun compileAndVerify(
         fixedSource: String,
         targetClass: String,
-        workspaceUri: String,
     ): CompiledPatch? {
-        val compiled = compileInTermux(fixedSource, targetClass, workspaceUri)
-            ?: return null
+        val compiled = compileInApp(fixedSource, targetClass)
         if (compiled.compileError != null) return compiled
         if (compiled.dexBytes == null) {
             return compiled.copy(compileError = "compile produced no dex")
@@ -502,165 +469,76 @@ class HealingAgent(
     }
 
     /**
-     * Compile through the workspace round-trip — the SAME mechanism
-     * ShellTool uses (audit H-4): every path the script touches lives in
-     * the user-granted folder under /storage/emulated/0, which Termux CAN
-     * read and write (the old /data/data/host.vorv paths were unreadable
-     * by Termux, so every compile failed before this fix).
+     * Compile the patch with Vorv's own compiler.
+     *
+     * The Kotlin compiler, the d8 dexer and the Android API jar travel inside
+     * the APK (tools/forge/fetch-runtime.sh), so this needs no shell, no
+     * Termux, no user-granted folder and no path a third party can rename
+     * mid-build: source, classes and dex all live under the app's private
+     * storage. It is the same [host.vorv.forge.ForgeCompiler] that builds apps.
      */
-    private suspend fun compileInTermux(
+    private suspend fun compileInApp(
         fixedSource: String,
         targetClass: String,
-        workspaceUri: String,
-    ): CompiledPatch? = withContext(Dispatchers.IO) {
+    ): CompiledPatch = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(workspaceUri))
-            ?: return@withContext null
-        val healDir = root.findFile(HEAL_DIR)?.takeIf { it.isDirectory }
-            ?: root.createDirectory(HEAL_DIR)
-            ?: return@withContext null
-
-        // Raw /storage path for the script (primary-storage workspaces only).
-        val rawDir = rawWorkspacePath(workspaceUri)
-            ?: return@withContext null
-
-        val runId = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
-        val srcDoc = healDir.createFile("text/x-kotlin", "fix_$runId.kt")
-            ?: return@withContext null
-        writeDoc(srcDoc, fixedSource.toByteArray())
-
-        // Stage the app classpath jar into the workspace so Termux can read it.
-        // Audit N-M1 (VRA-2026-1103): the staged copy is version-stamped too —
-        // after an app update the new jar is re-staged, so kotlinc never
-        // compiles against the previous version's classes.
-        val appClasses = extractAppClassesJar() ?: return@withContext null
-        val versionDoc = healDir.findFile("app_classes.version")
-        val stagedVersion = runCatching { readDoc(versionDoc)?.trim() }.getOrNull()
-        val currentVersion = host.vorv.BuildConfig.VERSION_CODE.toString()
-        val cpDoc = healDir.findFile("app_classes.jar")
-            ?: healDir.createFile("application/java-archive", "app_classes.jar")
-            ?: return@withContext null
-        if (stagedVersion != currentVersion) {
-            writeDoc(cpDoc, appClasses.readBytes())
-            val stampDoc = versionDoc
-                ?: healDir.createFile("text/plain", "app_classes.version")
-                ?: return@withContext null
-            writeDoc(stampDoc, currentVersion.toByteArray())
+        fun failed(message: String): CompiledPatch {
+            lastCompileDurationMs = System.currentTimeMillis() - t0
+            Log.w(TAG, "compile FAILED after $lastCompileDurationMs ms: $message")
+            return CompiledPatch(null, message, null, emptyList())
         }
 
-        val scriptName = "compile_$runId.sh"
-        val outName = "out_$runId.txt"
-        val errName = "err_$runId.txt"
-        val codeName = "code_$runId.txt"
-
-        val script = buildString {
-            appendLine("#!/data/data/com.termux/files/usr/bin/bash")
-            appendLine("set -u")
-            // H-1 (code review, 2026-11): the workspace path is user-chosen
-            // (folder NAME picked in the SAF grant) — quoting it terminates
-            // any quote/backtick/dollar-parenthesis a folder name may carry.
-            appendLine("H=" + ShellQuote.sh("$rawDir/$HEAL_DIR"))
-            appendLine("command -v kotlinc >/dev/null 2>&1 || { echo \"KOTLINC_MISSING (pkg install kotlin in Termux)\"; exit 1; }")
-            appendLine("D8=\"\"")
-            appendLine("command -v d8 >/dev/null 2>&1 && D8=d8")
-            appendLine("[ -z \"\$D8\" ] && command -v dx >/dev/null 2>&1 && D8=dx")
-            appendLine("[ -n \"\$D8\" ] || { echo \"D8_MISSING (no d8 or dx in Termux PATH)\"; exit 1; }")
-            appendLine("STDLIB=\"\"")
-            appendLine("S=\$(ls /data/data/com.termux/files/usr/lib/kotlin/lib/kotlin-stdlib.jar 2>/dev/null || true)")
-            appendLine("[ -n \"\$S\" ] && STDLIB=\":\$S\"")
-            appendLine("CP=\"/system/framework/framework.jar:\$H/app_classes.jar\$STDLIB\"")
-            appendLine("mkdir -p \"\$H/dex_$runId\"")
-            appendLine("if kotlinc -cp \"\$CP\" -no-stdlib -no-reflect \"\$H/fix_$runId.kt\" -d \"\$H/fix_$runId.jar\" 2>\"\$H/err_compile_$runId\"; then")
-            appendLine("  if \$D8 --lib /system/framework/framework.jar --output \"\$H/dex_$runId\" \"\$H/fix_$runId.jar\"; then")
-            appendLine("    mv \"\$H/dex_$runId/classes.dex\" \"\$H/patch_$runId.dex\"")
-            appendLine("    echo COMPILE_OK")
-            appendLine("  else echo D8_FAILED; fi")
-            appendLine("else echo KOTLINC_FAILED; cat \"\$H/err_compile_$runId\"; fi")
+        val runtime = host.vorv.forge.ForgeRuntime(context)
+        runtime.provision().getOrElse {
+            return@withContext failed(
+                "this app carries no build toolchain: ${it.message ?: it.javaClass.simpleName}. " +
+                    "Package one with tools/forge/fetch-runtime.sh, then rebuild Vorv.",
+            )
         }
+        val paths = host.vorv.forge.ForgePaths(context)
+        val layoutProblems = paths.ensureLayout()
+        if (layoutProblems.isNotEmpty()) {
+            return@withContext failed("cannot prepare a work directory: ${layoutProblems.joinToString()}")
+        }
+        val appClasses = extractAppClassesJar()
+            ?: return@withContext failed("healer classpath asset missing (healer/app_classes.jar)")
 
-        val scriptDoc = healDir.createFile("text/x-shellscript", scriptName)
-            ?: return@withContext null
-        writeDoc(scriptDoc, script.toByteArray())
+        val runId = "heal_" + System.currentTimeMillis()
+        val work = paths.workDir(runId).apply { mkdirs() }
+        val fileName = targetClass.substringAfterLast('.').ifBlank { "Patch" } + ".kt"
+        val source = File(work, fileName)
+        source.writeText(fixedSource)
 
-        // Dispatch via Termux RUN_COMMAND with output capture (ShellTool's
-        // proven wrapper pattern: base64-transport, code file poll).
-        // H-1 (code review, 2026-11): every path is ShellQuote.sh-quoted —
-        // the old hand-written single quotes let a folder name containing
-        // a quote break out and inject commands into Termux.
-        val b64 = android.util.Base64.encodeToString(
-            dispatchCommand(rawDir, HEAL_DIR, scriptName, outName, errName, codeName).toByteArray(),
-            android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.NO_CLOSE)
-        val wrapper = "printf '%s' '$b64' | base64 -d | bash"
+        val compiler = host.vorv.forge.ForgeCompiler(
+            javaExecutable = runtime.tool("java").first(),
+            toolchainLibDir = runtime.toolsDir,
+            androidJar = runtime.androidJar,
+            workRoot = paths.workRoot,
+            compileTimeoutMs = COMPILE_TIMEOUT_MS,
+            dexTimeoutMs = DEX_TIMEOUT_MS,
+        )
+        // android.jar first: the patch touches Android types; the app's own
+        // classpath second, so host.vorv.* resolve to this build's classes.
+        val targetClasspath = listOfNotNull(runtime.androidJar, appClasses)
 
-        val ok = runCatching {
-            val intent = Intent().apply {
-                setClassName("com.termux", "com.termux.app.RunCommandService")
-                action = "com.termux.RUN_COMMAND"
-                putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
-                putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", wrapper))
-                putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+        val result = runCatching {
+            compiler.compileAndDex(runId, listOf(source), targetClasspath, minApi = 31)
+        }.getOrElse { return@withContext failed("compiler crashed: ${it.message}") }
+
+        lastCompileDurationMs = System.currentTimeMillis() - t0
+        when (result) {
+            is host.vorv.forge.ForgeCompiler.Result.Ok -> {
+                val dex = runCatching { result.dex.readBytes() }.getOrNull()
+                runCatching { work.deleteRecursively() }
+                if (dex == null || dex.isEmpty()) {
+                    failed("the compiler produced a dex that could not be read")
+                } else {
+                    Log.i(TAG, "compile OK in $lastCompileDurationMs ms (${dex.size} bytes, ${result.classCount} classes)")
+                    CompiledPatch(dex, null, null, emptyList())
+                }
             }
-            context.startService(intent)
-            true
-        }.getOrDefault(false)
-        if (!ok) {
-            return@withContext CompiledPatch(
-                null, "Termux dispatch failed — is Termux installed with RUN_COMMAND " +
-                    "permission and allow-external-apps=true? Grant the permission in " +
-                    "Setup → Termux integration (one tap) or Android Settings → Apps → " +
-                    "Vorv → Permissions → Additional permissions; the allow-external-apps " +
-                    "step is documented in the same Setup section.", null, emptyList())
-        }
-
-        // Poll for the code file.
-        val deadline = System.currentTimeMillis() + COMPILE_TIMEOUT_MS
-        var codeDoc: DocumentFile? = null
-        while (System.currentTimeMillis() < deadline && currentCoroutineContext().isActive) {
-            delay(COMPILE_POLL_MS)
-            codeDoc = healDir.findFile(codeName)
-            if (codeDoc != null) break
-        }
-        if (codeDoc == null) {
-            // H3a: record the REAL waited duration, not just the budget.
-            lastCompileDurationMs = System.currentTimeMillis() - t0
-            Log.w(TAG, "compile timed out after ${lastCompileDurationMs}ms (budget ${COMPILE_TIMEOUT_MS}ms)")
-            return@withContext CompiledPatch(
-                null, "compile did not finish within ${COMPILE_TIMEOUT_MS / 1000}s " +
-                    "(kotlinc cold start is slow — check Termux; this attempt waited " +
-                    "${lastCompileDurationMs / 1000}s)", null, emptyList())
-        }
-
-        val out = readDoc(healDir.findFile(outName)) ?: ""
-        val err = readDoc(healDir.findFile(errName)) ?: ""
-        val code = readDoc(codeDoc)?.trim()
-
-        // Read back the produced dex.
-        val dexDoc = healDir.findFile("patch_$runId.dex")
-        val dexBytes = if (dexDoc != null && dexDoc.isFile) readDocBytes(dexDoc) else null
-
-        // Clean up the workspace artifacts.
-        listOf(outName, errName, codeName, scriptName, "fix_$runId.kt",
-            "fix_$runId.jar", "err_compile_$runId", "patch_$runId.dex")
-            .forEach { n -> runCatching { healDir.findFile(n)?.delete() } }
-        runCatching { healDir.findFile("dex_$runId")?.delete() }
-
-        if (code == "0" && out.contains("COMPILE_OK") && dexBytes != null) {
-            lastCompileDurationMs = System.currentTimeMillis() - t0
-            Log.i(TAG, "compile OK in $lastCompileDurationMs ms (${dexBytes.size} bytes dex)")
-            CompiledPatch(dexBytes, null, null, emptyList())
-        } else {
-            lastCompileDurationMs = System.currentTimeMillis() - t0
-            Log.w(TAG, "compile FAILED after $lastCompileDurationMs ms: exit=$code")
-            // M-2 family (code review, 2026-11): the caps announce themselves —
-            // the regeneration prompt must know the compiler output was cut, or
-            // the model believes it saw every error.
-            val outPart = capWithMarker(out, 400)
-            val errPart = capWithMarker(err, MAX_COMPILER_ERROR_CHARS)
-            val error = buildString {
-                append("exit=").append(code).append(" ")
-                append(outPart).append(" ").append(errPart)
-            }.trim()
-            CompiledPatch(null, error.ifBlank { "unknown compile failure" }, null, emptyList())
+            is host.vorv.forge.ForgeCompiler.Result.Failed ->
+                failed("${result.stage}: ${capWithMarker(result.detail, MAX_COMPILER_ERROR_CHARS)}")
         }
     }
 
@@ -868,31 +746,7 @@ class HealingAgent(
 
     // --- SAF helpers (workspace round-trip) ---
 
-    /**
-     * M-1 (code review, 2026-11): this used to be a THIRD private copy of
-     * the SAF → path mapping — the only one still carrying the pre-v0.6.18
-     * root-grant bug (`substringBefore(":", "")` returns "" for a
-     * colon-less docId, i.e. a ROOT grant of primary storage), so
-     * self-repair refused the very workspace the Setup checklist called
-     * green while ShellTool and TermuxProbe accepted it. The mapping now
-     * lives in exactly one place: [SafPaths.rawWorkspacePath].
-     */
-    private fun rawWorkspacePath(uriStr: String): String? = SafPaths.rawWorkspacePath(uriStr)
-
-    private fun writeDoc(doc: DocumentFile, bytes: ByteArray): Boolean = runCatching {
-        context.contentResolver.openOutputStream(doc.uri, "wt")?.use { it.write(bytes) } != null
-    }.getOrDefault(false)
-
-    private fun readDoc(doc: DocumentFile?): String? = runCatching {
-        doc?.takeIf { it.isFile }
-            ?.let { context.contentResolver.openInputStream(it.uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }
-    }.getOrNull()
-
-    private fun readDocBytes(doc: DocumentFile?): ByteArray? = runCatching {
-        doc?.takeIf { it.isFile }
-            ?.let { context.contentResolver.openInputStream(it.uri)?.use { it.readBytes() } }
-    }.getOrNull()
-}
+    }
 
 /**
  * M8 (code review, 2026-11): deletes leftover verifier scratch files

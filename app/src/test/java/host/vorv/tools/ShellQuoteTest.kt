@@ -5,19 +5,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * H-1 regression tests (code review, 2026-11): shell quoting of every
- * string interpolated into a Termux dispatch wrapper.
+ * H-1 regression tests (code review, 2026-11): [ShellQuote.sh] keeps a
+ * user-chosen workspace folder name inert.
  *
- * The bug: HealingAgent and TermuxProbe interpolated the SAF-derived
- * workspace path (`/storage/emulated/0/<user-chosen folder name>`) inside
- * hand-written quotes. A folder named `x'$(cmd)'` — a perfectly legal SAF
+ * The bug: the SAF-derived workspace path
+ * (`/storage/emulated/0/<user-chosen folder name>`) was interpolated inside
+ * hand-written quotes, so a folder named `x'$(cmd)'` — a perfectly legal SAF
  * grant the USER picks — broke out of the quoting and executed arbitrary
- * text inside Termux. The fix routes every interpolation through
- * [ShellQuote.sh]; these tests pin the escaping AND prove the two
- * dispatch builders survive the exact payloads an attacker would use.
+ * text. The guest shell no longer builds strings for a shell parser to
+ * unquote (paths are passed as argv), but `shell` still accepts a command
+ * string and callers still compose paths, so the escaper is pinned here.
  *
- * Plain JUnit (no Robolectric): [ShellQuote] and [TermuxProbe.buildProbeWrapper]
- * are pure string logic with no Android references.
+ * Plain JUnit: [ShellQuote] is pure string logic with no Android references.
  */
 class ShellQuoteTest {
 
@@ -112,64 +111,5 @@ class ShellQuoteTest {
         assertRoundTrips("/storage/emulated/0/a;b|c>d&e")
         assertRoundTrips("/storage/emulated/0/it's a \"quoted\" \$HOME")
         assertRoundTrips("/storage/emulated/0/ünïcödé ぷれいす")
-    }
-
-    // ------------------------------------------- the two dispatch builders (H-1)
-
-    private val payloads = listOf(
-        "x'\$(touch /data/local/tmp/pwned)'",   // the exact H-1 vector
-        "x'`id`'",
-        "a'; rm -rf /sdcard; #",
-        "weird name with spaces & \$ymbols",
-        "`reboot`",
-    )
-
-    @Test
-    fun `probe wrapper quotes every path against injection payloads`() {
-        for (p in payloads) {
-            val rawDir = "/storage/emulated/0/$p"
-            val w = TermuxProbe.buildProbeWrapper(
-                "QWJD", rawDir, ".vorv-shell", "id.out", "id.err", "id.code")
-            // The quoted paths round-trip through bash word-splitting as
-            // EXACTLY the intended paths — if any payload character leaked
-            // outside the quotes, the split would diverge (this is the
-            // assertion that fails on the pre-fix hand-written quoting).
-            val words = bashSplitWords(w)
-            assertTrue("out path not inert: $w", words.contains("/storage/emulated/0/$p/.vorv-shell/id.out"))
-            assertTrue("err path not inert: $w", words.contains("/storage/emulated/0/$p/.vorv-shell/id.err"))
-            assertTrue("code path not inert: $w", words.contains("/storage/emulated/0/$p/.vorv-shell/id.code"))
-        }
-    }
-
-    @Test
-    fun `probe wrapper keeps the transport prefix intact`() {
-        val w = TermuxProbe.buildProbeWrapper(
-            "QWJD", "/storage/emulated/0/plain", ".vorv-shell", "a.out", "a.err", "a.code")
-        assertTrue(w.startsWith("printf '%s' 'QWJD' | base64 -d | bash > "))
-        assertTrue(w.endsWith("; echo \$? > '/storage/emulated/0/plain/.vorv-shell/a.code'"))
-    }
-
-    @Test
-    fun `healer dispatch command quotes every path against injection payloads`() {
-        for (p in payloads) {
-            val rawDir = "/storage/emulated/0/$p"
-            val cmd = host.vorv.healer.HealingAgent.Companion.dispatchCommand(
-                rawDir, ".vorv-heal", "c.sh", "o.txt", "e.txt", "k.txt")
-            val words = bashSplitWords(cmd)
-            assertTrue("script path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/c.sh"))
-            assertTrue("out path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/o.txt"))
-            assertTrue("err path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/e.txt"))
-            assertTrue("code path not inert: $cmd", words.contains("/storage/emulated/0/$p/.vorv-heal/k.txt"))
-        }
-    }
-
-    @Test
-    fun `healer dispatch command keeps redirection and exit-code capture`() {
-        val cmd = host.vorv.healer.HealingAgent.Companion.dispatchCommand(
-            "/storage/emulated/0/plain", ".vorv-heal", "c.sh", "o.txt", "e.txt", "k.txt")
-        assertEquals(
-            "bash '/storage/emulated/0/plain/.vorv-heal/c.sh' > '/storage/emulated/0/plain/.vorv-heal/o.txt' " +
-                "2> '/storage/emulated/0/plain/.vorv-heal/e.txt'; echo \$? > '/storage/emulated/0/plain/.vorv-heal/k.txt'",
-            cmd)
     }
 }

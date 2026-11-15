@@ -29,7 +29,7 @@ import kotlinx.coroutines.flow.first
  *   problem (+ optional target class & diagnostics)
  *     → on-device coder model (STRONGEST downloaded — v0.6.9) generates the
  *       COMPLETE fixed class
- *     → compiled in Termux through the workspace round-trip (H-4)
+ *     → compiled by Vorv's own compiler inside the app (H-4, replaced)
  *     → PatchVerifier: every public constructor/method kept, dispatch
  *       interface intact — partial fixes are REJECTED and regenerated
  *     → signed with the device patch key (C-2)
@@ -71,10 +71,11 @@ class SelfFixTool(
             "applied; it becomes active at the next app start, and is rolled back " +
             "automatically if the app crashes in the patched class. Requires: a coder " +
             "model downloaded (the 7B is used when present — strongest model writes " +
-            "the repairs; the 3B only if the 7B was never pulled), a granted workspace " +
-            "folder, and Termux with kotlinc+d8 for the on-device compile."
+            "the repairs; the 3B only if the 7B was never pulled) and the app's own " +
+            "compiler (tools/forge/fetch-runtime.sh). No workspace folder and no other " +
+            "app are needed."
 
-    /** Model load + 3 attempts (LLM + Termux compile) + verification — 15 min,
+    /** Model load + 3 attempts (LLM + on-device compile) + verification — 15 min,
      * matching the healer's TOTAL_HEAL_BUDGET_MS and the local task timeout. */
     override val timeoutMs: Long get() = 15 * 60_000L
 
@@ -161,35 +162,17 @@ class SelfFixTool(
             )
         }
 
-        // v0.6.14: Termux readiness BEFORE the expensive pipeline. The
-        // compile round-trips through Termux; discovering a missing
-        // permission 10 minutes into a 15-minute heal (after the model
-        // already wrote the patch) wasted the whole budget. Check now,
-        // offer the one-tap grant (Termux declares RUN_COMMAND
-        // protectionLevel="dangerous" — runtime-requestable), and fail
-        // fast and honestly when it still isn't there.
-        val readiness = TermuxProbe.readinessError(
-            termuxInstalled = TermuxProbe.termuxInstalled(appContext),
-            permissionGranted = TermuxProbe.runCommandGranted(appContext),
-        )
+        // Compiler readiness BEFORE the expensive pipeline: discovering a
+        // missing toolchain ten minutes into a fifteen-minute heal (after the
+        // model already wrote the patch) wasted the whole budget. The check is
+        // file-only — the compiler travels inside the APK.
+        val readiness = host.vorv.forge.ForgeProbe.readinessError(appContext)
         if (readiness != null) {
-            // The permission is the only wall with a one-tap door — try it.
-            if (!TermuxProbe.runCommandGranted(appContext) &&
-                TermuxProbe.termuxInstalled(appContext)
-            ) {
-                PermissionBridge.request(TermuxProbe.RUN_COMMAND_PERMISSION)
-                val retry = TermuxProbe.readinessError(
-                    termuxInstalled = true,
-                    permissionGranted = TermuxProbe.runCommandGranted(appContext),
-                )
-                if (retry == null) {
-                    // Granted — fall through to the pipeline.
-                } else {
-                    return ToolResult(ok = false, output = "", durationMs = elapsed(t0), error = retry)
-                }
-            } else {
-                return ToolResult(ok = false, output = "", durationMs = elapsed(t0), error = readiness)
-            }
+            return ToolResult(
+                ok = false, output = "", durationMs = elapsed(t0),
+                error = "$readiness\n\nPackage the toolchain with " +
+                    "tools/forge/fetch-runtime.sh, then rebuild Vorv. Nothing was changed.",
+            )
         }
 
         // M-3 (code review, 2026-11): the repair engine now comes from
@@ -206,7 +189,7 @@ class SelfFixTool(
             ?: run {
                 // Fallback for contexts without a VorvApplication (tests):
                 // the old direct construction, caller-owned. repairModel is
-                // non-null — checked before the Termux gate above.
+                // non-null — checked before the toolchain gate above.
                 host.vorv.llm.ModelRepository.RepairEngineHandle(
                     LocalLlm(
                         appContext,

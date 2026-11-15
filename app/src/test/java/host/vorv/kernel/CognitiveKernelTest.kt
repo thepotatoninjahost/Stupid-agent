@@ -477,9 +477,10 @@ class CognitiveKernelTest {
         // {"ok":true,"output":"No memories matched..."} verbatim in chat).
         assertTrue(systemMsg.content.contains("Never paste raw tool"))
         assertTrue(systemMsg.content.contains("plain English"))
-        // v0.6.19: the anti-lecture rule and the pkg fact (field finding #8).
+        // v0.6.19: the anti-lecture rule and the package-manager fact
+        // (field finding #8) — now naming the guest's own apk.
         assertTrue(systemMsg.content.contains("Never answer an action request with a lecture"))
-        assertTrue(systemMsg.content.contains("pkg install -y"))
+        assertTrue(systemMsg.content.contains("apk add <name>"))
         // v0.7.3: the never-guess rule — the standing principle, pinned.
         assertTrue(systemMsg.content.contains("NEVER guess"))
         assertTrue(systemMsg.content.contains("file_list before file_read"))
@@ -579,7 +580,7 @@ class CognitiveKernelTest {
     }
 
     // ================== v0.6.19 lecture blind spot (field finding #8):
-    // "termux works install the tools you need" was answered with an essay
+    // the verbatim field recording (a user's own words) was answered with an essay
     // about "learning language" — no tool call, no code block. The nudge
     // must catch PROSE non-answers to action requests too.
 
@@ -595,7 +596,7 @@ class CognitiveKernelTest {
                     "Syntax refers to the rules that govern the structure of sentences " +
                     "in a language. Example: \"The cat eats fish.\"", done = true),
             // After the nudge the model does the right thing.
-            toolUse("shell", """{"x":"pkg install -y git"}"""),
+            toolUse("shell", """{"x":"apk add git"}"""),
             Llm.LlmResponse.Text("Installed git. [cite:exec:shell]", done = true),
         ))
         val result = kernel(sink, listOf(tool)).run(
@@ -605,7 +606,8 @@ class CognitiveKernelTest {
         assertEquals(3, llm.steps.size)
         val lastStep = llm.steps.last()
         assertTrue(lastStep.any { it.role == "user" && it.content.contains("no tool call") })
-        assertTrue(lastStep.any { it.role == "user" && it.content.contains("pkg install -y") })
+        // The nudge names a REAL install command for the guest, not Termux's.
+        assertTrue(lastStep.any { it.role == "user" && it.content.contains("apk add git") })
         // The lecture nudge is logged under its own name.
         assertTrue(sink.episodes.any {
             it.first == "nudge" && it.second == "action-request-without-tool-call" })
@@ -632,7 +634,7 @@ class CognitiveKernelTest {
     @Test
     fun `questions ending in a question mark never get the lecture nudge`() = runTest {
         val sink = FakeSink()
-        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("Termux is a terminal emulator.", done = true)))
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("Alpine ships python3 as a package.", done = true)))
         kernel(sink, emptyList()).run("t1", "how do I install python in termux?", llm, null)
 
         assertEquals(1, llm.steps.size)

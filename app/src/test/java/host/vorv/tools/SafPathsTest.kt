@@ -11,7 +11,7 @@ import org.robolectric.annotation.Config
 /**
  * M-1 regression tests (code review, 2026-11): the SAF tree-URI → path
  * mapping exists in exactly ONE place ([SafPaths]) and every consumer
- * (ShellTool, TermuxProbe, HealingAgent) delegates to it.
+ * (ShellTool, the Setup checklist) delegates to it.
  *
  * The mapping's history makes the colon-less case sacred: the pre-v0.6.18
  * copies returned volume "" for a docId without a colon, so a ROOT grant

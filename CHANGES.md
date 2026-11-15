@@ -1,3 +1,29 @@
+# Termux is gone (2026-11-13)
+
+Termux was never part of the product — it was a workaround that asked the
+user to install a second app and clear four gates before `shell` worked at
+all. Vorv now runs commands in the Linux system it carries itself.
+
+- **`shell`** runs inside the guest: proot + Alpine, unprivileged, shipped in
+  the APK. Same consent (approve the command text), same session grant with
+  an audit record, same circuit breaker when a command never returns. The
+  user's workspace folder appears at `/workspace`.
+- **`self_fix`** compiles with the app's own toolchain (`kotlinc` + `d8` +
+  `android.jar` in private storage) instead of round-tripping through Termux;
+  the readiness gate is now "is the toolchain present", answered by
+  `ForgeProbe`.
+- **Deleted**: `TermuxProbe` (433 lines and its four-gate checklist), the old
+  Termux `ShellTool`, `HealingAgent`'s dispatch helper and SAF transport, the
+  `com.termux.permission.RUN_COMMAND` permission, and the Setup card that
+  told the user to go install something.
+- **Prompts**: the kernel now says the shell is Vorv's own Alpine system and
+  that `apk add <name>` installs software — the exact wrong belief the old
+  prompt created ("I don't have access to Termux") is gone with the word.
+- **Tests**: `LinuxSystemArgvTest` (5) pins the proot command line;
+  `ShellToolTest` (12) pins consent, denial, honest errors, timeouts, the
+  workspace binding and the circuit breaker. The five Termux-only suites are
+  deleted with the code they tested. Full suite: 427 tests, 0 failures.
+
 # Changelog — the knowledge web (v0.8.0, 2026-11-09)
 
 The non-linear brain (owner spec, 2026-11-09): "a memory and knowledge web

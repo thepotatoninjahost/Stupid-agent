@@ -107,5 +107,43 @@
       "as": "app/src/main/assets/forge/linux/rootfs.tar",
       "note": "Stored as a plain tar: AGP strips the .gz suffix off asset names, so a file called rootfs.tar.gz arrives in the APK as rootfs.tar with gzipped content still inside. Uncompressed it is 9 MB and compresses again in the APK."
     }
-  }
+  },
+  "mavenFiles": [
+    {
+      "what": "kotlin-compiler-embeddable-2.4.21.jar",
+      "why": "the Kotlin compiler itself, so self-repair can compile a patch on the phone without Termux",
+      "url": "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.4.21/kotlin-compiler-embeddable-2.4.21.jar",
+      "sha256": "ef19419c765e7ac8404465fa026ca8fc4dbb8a822de0fc79aa53c8dce29f1d02",
+      "bytes": 58593291,
+      "license": "Apache-2.0",
+      "as": "kotlin-compiler-embeddable-2.4.21.jar"
+    },
+    {
+      "what": "kotlin-stdlib-2.4.21.jar",
+      "why": "kotlin.* has to resolve on the target classpath; kotlinc runs with -no-stdlib",
+      "url": "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.21/kotlin-stdlib-2.4.21.jar",
+      "sha256": "bd8250210584cb659847dce9cda660f8e9906e5def7fbebcea93dc6dcb6a88a3",
+      "bytes": 1853315,
+      "license": "Apache-2.0",
+      "as": "kotlin-stdlib-2.4.21.jar"
+    },
+    {
+      "what": "kotlinx-coroutines-core-jvm-1.11.0.jar",
+      "why": "the compiler's own runtime dependency",
+      "url": "https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.11.0/kotlinx-coroutines-core-jvm-1.11.0.jar",
+      "sha256": "d1d75aa01dffbb4d1c520e67e4c4e7f5f6174718e7cb4632412503f2f0e604fa",
+      "bytes": 1577052,
+      "license": "Apache-2.0",
+      "as": "kotlinx-coroutines-core-jvm-1.11.0.jar"
+    },
+    {
+      "what": "annotations-26.0.2.jar",
+      "why": "org.jetbrains.annotations, referenced by the stdlib's signatures",
+      "url": "https://repo1.maven.org/maven2/org/jetbrains/annotations/26.0.2/annotations-26.0.2.jar",
+      "sha256": "2037be378980d3ba9333e97955f3b2cde392aa124d04ca73ce2eee6657199297",
+      "bytes": 31170,
+      "license": "Apache-2.0",
+      "as": "annotations-26.0.2.jar"
+    }
+  ]
 }

@@ -12,7 +12,7 @@ class ToolchainArgsTest {
 
     @Test
     fun `kotlinc argv keeps hostile paths as single arguments`() {
-        // The exact string that broke the Termux wrapper (ShellQuote H-1):
+        // The exact string that broke the old shell wrapper (ShellQuote H-1):
         // a workspace folder named with a command substitution.
         val hostile = File("/data/user/0/host.vorv/files/forge/work/x'\$(reboot)/src")
         val args = ToolchainArgs.kotlinc(

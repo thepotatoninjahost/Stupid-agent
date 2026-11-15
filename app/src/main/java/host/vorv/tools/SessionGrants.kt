@@ -3,16 +3,16 @@ package host.vorv.tools
 /**
  * SessionGrants — session-scoped shell access state (v0.6.15).
  *
- * WHY THIS EXISTS. Third real-world test finding: asked to use Termux, Vorv
- * answered "I don't have access to Termux" WITHOUT EVER CALLING the shell
- * tool. The tool was registered, reachable and one consent dialog away —
- * but its description enumerated four setup prerequisites, which a small
- * local model reads as a disclaimer of unavailability, and the system
- * prompt carried live status only for the workspace, never for Termux. The
+ * WHY THIS EXISTS. Third real-world test finding: asked to use the shell,
+ * Vorv answered "I don't have access" WITHOUT EVER CALLING the shell tool.
+ * The tool was registered, reachable and one consent dialog away — but its
+ * description enumerated setup prerequisites, which a small local model
+ * reads as a disclaimer of unavailability, and the system prompt carried
+ * live status only for the workspace, never for the shell. The
  * model guessed, guessed "no", and the honest-error machinery never even
  * fired. Two fixes, both anchored here:
  *
- *   1. KNOWLEDGE — [markShellVerified] records that the Termux chain
+ *   1. KNOWLEDGE — [markShellVerified] records that the guest Linux shell
  *      actually round-tripped this session (the Setup probe passed, or a
  *      real shell command completed). The kernel's system prompt then tells
  *      the model the LIVE truth via [statusLine] instead of letting it
@@ -30,8 +30,8 @@ package host.vorv.tools
  *      process; never persisted to disk.
  *
  *   3. THE DEAD-SHELL CIRCUIT BREAKER (v0.6.16, field finding #4) — when a
- *      dispatched command never comes back (the allow-external-apps /
- *      termux-setup-storage wall), the model used to retry the SAME call
+ *      dispatched command never comes back (rootfs missing, proot killed),
+ *      the model used to retry the SAME call
  *      and burn its 30s timeout again and again while the user watched a
  *      task that could not be stopped. [blockShell] records the wall;
  *      ShellTool then fails FAST — no consent, no dispatch, no 30s wait —
@@ -49,7 +49,7 @@ package host.vorv.tools
  *
  * Fail-closed stance: this object grants NOTHING by itself. It only stores
  * what the user explicitly chose, and the tool still runs every other gate
- * (workspace, Termux installed, RUN_COMMAND permission) before executing.
+ * (consent, Linux payload present) before executing.
  */
 object SessionGrants {
 
@@ -57,7 +57,7 @@ object SessionGrants {
     @Volatile
     private var shellAllCommandsFlag: Boolean = false
 
-    /** Wall-clock ms of the first verified Termux round-trip this session. */
+    /** Wall-clock ms of the first verified guest-shell round-trip this session. */
     @Volatile
     private var shellVerifiedAtFlag: Long? = null
 
@@ -103,7 +103,7 @@ object SessionGrants {
     }
 
     /**
-     * The Termux chain verifiably round-tripped this session — Setup probe
+     * The guest shell verifiably round-tripped this session — Setup probe
      * passed or a real shell command completed. Knowledge, not a grant:
      * per-command dialogs continue unless the user separately granted.
      * v0.6.16: a verified round-trip is also the ONLY thing that lifts a
@@ -115,9 +115,9 @@ object SessionGrants {
     }
 
     /**
-     * v0.6.16: a dispatched command never came back — the Termux one-time
-     * setup wall. Shell fails fast with the manual fix until a verified
-     * round-trip lifts it. First reason wins.
+     * v0.6.16: a dispatched command never came back — the guest shell is
+     * wedged or its root filesystem is missing. Shell fails fast with the
+     * manual fix until a verified round-trip lifts it. First reason wins.
      */
     fun blockShell(reason: String) {
         if (shellBlockedReasonFlag == null) shellBlockedReasonFlag = reason
@@ -141,30 +141,31 @@ object SessionGrants {
     // -------------------------------------------------------- prompt line
 
     /**
-     * The LIVE Termux status line for the kernel's system prompt — the
+     * The LIVE guest-shell status line for the kernel's system prompt — the
      * model reads this instead of guessing. Pure function of the session
-     * state; wording pinned by TermuxSmokeTest.
+     * state; wording pinned by GuestShellStatusTest.
      */
     fun statusLine(): String = when {
         shellBlockedReasonFlag != null ->
-            "Termux shell: BLOCKED — a dispatched command never came back; a manual " +
-                "Termux-side step is pending. Do NOT call the shell tool again this " +
-                "session — it will fail instantly. Explain the fix to the user and " +
-                "wait; it re-enables after Setup → Termux integration → Test " +
-                "connection passes."
+            "Linux shell: BLOCKED — a dispatched command never came back; the guest " +
+                "is wedged or its root filesystem is missing. Do NOT call the shell " +
+                "tool again this session — it will fail instantly. Explain the fix to " +
+                "the user and wait; it re-enables after Setup → Linux system → " +
+                "RECHECK and TEST pass."
         shellVerified && shellAllCommands ->
-            "Termux shell: VERIFIED this session (a real command round-tripped). " +
+            "Linux shell: VERIFIED this session (a real command round-tripped). " +
                 "The user granted ALL shell commands for this session — run them " +
                 "directly; each one is logged and the grant is revocable in Setup."
         shellVerified ->
-            "Termux shell: VERIFIED this session (a real command round-tripped) — " +
+            "Linux shell: VERIFIED this session (a real command round-tripped) — " +
                 "it works. Every command still shows the user a consent dialog first; " +
                 "that is normal, not a failure."
         else ->
-            "Termux shell: not yet verified this session. Do NOT claim you cannot " +
-                "access Termux — call the shell tool when asked. If setup is " +
-                "incomplete it returns an honest error naming the exact fix; it " +
-                "never fakes output, and neither should you."
+            "Linux shell: not yet verified this session — it runs inside the app's " +
+                "own Linux system. Do NOT claim you cannot access a shell: call the " +
+                "shell tool when asked. If the root filesystem is missing it returns " +
+                "an honest error naming the exact fix; it never fakes output, and " +
+                "neither should you."
     }
 
     // -------------------------------------------------------------- test

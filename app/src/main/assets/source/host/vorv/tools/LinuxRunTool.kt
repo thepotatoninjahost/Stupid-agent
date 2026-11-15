@@ -1,6 +1,5 @@
 package host.vorv.tools
 
-import android.content.Context
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import host.vorv.linux.LinuxSystem
@@ -14,12 +13,12 @@ import kotlinx.coroutines.withContext
  * language the distribution carries, run scripts, keep files between calls.
  * It is not a simulator of a computer; it is one.
  */
-class LinuxRunTool(private val appContext: Context) : Tool {
+class LinuxRunTool(private val guest: GuestShell) : Tool {
 
     override val name = "linux_run"
     override val description =
         "Run a shell command inside Vorv's own Linux system (Alpine, on the phone, no root, no " +
-            "Termux). Packages install with 'apk add' and persist between calls; files written to " +
+            "Termux). 'apk add' installs packages; the app filesystem persists between calls; files written to " +
             "~ survive. Use it to compile or run code in any language the system can install, and " +
             "to inspect results. Long commands should be split so each stays under a minute."
 
@@ -50,8 +49,7 @@ class LinuxRunTool(private val appContext: Context) : Tool {
             }
             val budget = (input.get("timeout_ms")?.asLong ?: 180_000L).coerceIn(1_000L, 600_000L)
 
-            val system = LinuxSystem(appContext)
-            val shell = system.run(command, budget)
+            val shell = guest.run(command, budget, emptyList(), "/root")
             val header = when {
                 shell.ok -> "exit 0"
                 shell.timedOut -> "TIMEOUT — stopped after ${budget}ms"

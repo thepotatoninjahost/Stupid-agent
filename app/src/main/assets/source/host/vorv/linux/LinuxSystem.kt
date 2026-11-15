@@ -1,6 +1,7 @@
 package host.vorv.linux
 
 import android.content.Context
+import host.vorv.tools.GuestShell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -23,7 +24,7 @@ import java.util.concurrent.TimeUnit
  * installer unpacked into nativeLibraryDir) and an Alpine root filesystem
  * (as an asset, unpacked once into Vorv's storage).
  */
-class LinuxSystem(private val context: Context) {
+class LinuxSystem(private val context: Context) : GuestShell {
 
     val root: File get() = File(context.filesDir, "linux")
     val rootfs: File get() = File(root, "rootfs")
@@ -32,7 +33,7 @@ class LinuxSystem(private val context: Context) {
 
     private val nativeDir: File get() = File(context.applicationInfo.nativeLibraryDir)
 
-    fun isAvailable(): Boolean = File(nativeDir, "libforge-proot.so").isFile
+    override fun isAvailable(): Boolean = File(nativeDir, "libforge-proot.so").isFile
 
     fun isProvisioned(): Boolean = stamp.isFile && File(rootfs, "etc/alpine-release").isFile
 
@@ -71,42 +72,18 @@ class LinuxSystem(private val context: Context) {
      * the guest only needs to read them, and the guest's home is a folder
      * inside the computer, so work survives between commands.
      */
-    suspend fun run(
+    override suspend fun run(
         command: String,
-        timeoutMs: Long = 180_000,
-        binds: List<Pair<String, String>> = emptyList(),
-        workDir: String = "/root",
+        timeoutMs: Long,
+        binds: List<Pair<String, String>>,
+        workDir: String,
     ): Shell = withContext(Dispatchers.IO) {
         provision().onFailure { return@withContext Shell(-1, "", it.message ?: "not provisioned", true) }
         val proot = File(nativeDir, "libforge-proot.so")
         val home = File(root, "home").apply { mkdirs() }
         val tmp = File(root, "tmp").apply { mkdirs() }
-        val argv = buildList {
-            add(proot.absolutePath)
-            add("-0")
-            add("-r"); add(rootfs.absolutePath)
-            add("-b"); add("/dev")
-            add("-b"); add("/proc")
-            add("-b"); add("/sys")
-            add("-b"); add("$home:/root")
-            add("-b"); add("$tmp:/tmp")
-            // Guest paths are what the command sees; host paths are real folders
-            // on the phone (the user's workspace, for instance).
-            binds.forEach { (hostPath, guestPath) ->
-                add("-b"); add(if (hostPath == guestPath) hostPath else "$hostPath:$guestPath")
-            }
-            add("-w"); add(workDir)
-            add("/bin/sh"); add("-lc"); add(command)
-        }
-        val env = mapOf(
-            "PROOT_LOADER" to File(loaderDir, "loader").absolutePath,
-            "PROOT_TMP_DIR" to tmp.absolutePath,
-            "PROOT_NO_SECCOMP" to "1", // the app has no seccomp filter to inherit; avoids a needless probe
-            "HOME" to "/root",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "TERM" to "dumb",
-            "LANG" to "C.UTF-8",
-        )
+        val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
+        val env = guestEnv(loaderDir, tmp)
         val started = System.currentTimeMillis()
         val builder = ProcessBuilder(argv)
         builder.environment().putAll(env)
@@ -123,6 +100,61 @@ class LinuxSystem(private val context: Context) {
         Shell(process.exitValue(), out.toString(), null, false)
     }
 
+    companion object {
+        /**
+         * The proot command line, built as argv so no shell ever parses a path
+         * (the same rule as [host.vorv.forge.ToolchainArgs]). Pure: the exact
+         * instruction sequence is pinned by unit tests without a device.
+         */
+        internal fun prootArgv(
+            proot: File,
+            rootfs: File,
+            home: File,
+            tmp: File,
+            binds: List<Pair<String, String>>,
+            workDir: String,
+            command: String,
+        ): List<String> = buildList {
+            add(proot.absolutePath)
+            add("-0")
+            add("-r"); add(rootfs.absolutePath)
+            add("-b"); add("/dev")
+            add("-b"); add("/proc")
+            add("-b"); add("/sys")
+            add("-b"); add("$home:/root")
+            add("-b"); add("$tmp:/tmp")
+            // Guest paths are what the command sees; host paths are real folders
+            // on the phone (the user's workspace, for instance).
+            binds.forEach { (hostPath, guestPath) ->
+                add("-b"); add(if (hostPath == guestPath) hostPath else "$hostPath:$guestPath")
+            }
+            add("-w"); add(workDir)
+            add("/bin/sh"); add("-lc"); add(command)
+        }
+
+        /** proot's environment: its loader, a writable /tmp and a plain PATH. */
+        internal fun guestEnv(loaderDir: File, tmp: File): Map<String, String> = mapOf(
+            "PROOT_LOADER" to File(loaderDir, "loader").absolutePath,
+            "PROOT_TMP_DIR" to tmp.absolutePath,
+            // The app has no seccomp filter to inherit; avoids a needless probe.
+            "PROOT_NO_SECCOMP" to "1",
+            "HOME" to "/root",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "TERM" to "dumb",
+            "LANG" to "C.UTF-8",
+        )
+
+        /** Bumped when the payload layout changes, so provision() re-extracts. */
+        internal const val STAMP = "alpine-3.20.0-proot-5.1.107"
+
+        /**
+         * Output kept in memory per command. 12k chars cut real compiler logs
+         * mid-diagnostic; 200k holds a full build log while a runaway command
+         * still cannot eat the phone's memory.
+         */
+        internal const val MAX_OUTPUT = 200_000
+    }
+
     data class Shell(val exitCode: Int, val output: String, val error: String?, val timedOut: Boolean) {
         val ok: Boolean get() = exitCode == 0 && !timedOut
     }
@@ -134,10 +166,6 @@ class LinuxSystem(private val context: Context) {
         }
     }
 
-    private companion object {
-        const val STAMP = "alpine-3.20.0-proot-5.1.107"
-        const val MAX_OUTPUT = 12_000
-    }
 }
 
 /** Tar handling for the root filesystem, kept separate so it can be tested without Android. */

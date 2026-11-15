@@ -15,7 +15,6 @@ import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
 import host.vorv.llm.CloudModel
 import host.vorv.llm.ModelChoice
-import host.vorv.tools.TermuxProbe
 import host.vorv.ui.theme.*
 
 @Composable
@@ -30,10 +29,8 @@ fun SettingsScreen(
     onDeleteModel: (ModelChoice) -> Unit,
     onClearSetupError: () -> Unit = {},
     onClearAllData: () -> Unit = {},
-    onGrantTermuxPermission: () -> Unit = {},
-    onOpenAppSettings: () -> Unit = {},
-    onTestTermuxConnection: () -> Unit = {},
-    onRefreshTermuxStatus: () -> Unit = {},
+    onTestLinuxSystem: () -> Unit = {},
+    onRefreshLinuxStatus: () -> Unit = {},
     onRevokeShellSessionGrant: () -> Unit = {},
     onOpenFilesTab: () -> Unit = {},
 ) {
@@ -349,22 +346,17 @@ fun SettingsScreen(
             }
         }
 
-        // ------------------------------- Termux integration (v0.6.14; checklist v0.6.17)
-        // Field aftermath ("keeps coming up with new bullshit"): the gates
-        // used to surface one per error, mid-task. This card now shows
-        // EVERY gate with its live status at once, and names exactly ONE
-        // next action — the whole wall at once, one brick to fix at a time.
-        Text("Termux Integration (shell tool + self-repair)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        // --------------------------------- Linux system (Vorv's own computer)
+        // What used to be the Termux checklist. There is nothing to install
+        // and no permission to grant any more: the guest ships inside the APK.
+        Text("Linux System (the shell's computer)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Every gate between Vorv and a working shell — all of them, live, " +
-                "in the order they must open. Fix them top to bottom; each names " +
-                "its exact price. Nothing is held back for a mid-task surprise.",
+            "The shell and linux_run tools execute inside an Alpine Linux system that " +
+                "lives in this app's own storage — no root, no Termux, no other app. " +
+                "Packages install with 'apk add'.",
             color = OnSurfaceVariant, fontSize = 11.sp,
         )
 
-        // The dead-shell circuit breaker, visible: the model's status line
-        // points the user here ("Setup → Termux integration → Test
-        // connection") — this banner is what they find when they arrive.
         if (state.shellBlockedThisSession) {
             Surface(
                 shape = RoundedCornerShape(10.dp),
@@ -372,117 +364,114 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    TermuxProbe.blockedBannerMessage(),
+                    "Shell is disabled for this session: a command never came back. " +
+                        "Force-stop and reopen Vorv (or reboot the phone) — the guest is " +
+                        "recreated on the next command and shell re-enables itself.",
                     color = Error, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(10.dp),
                 )
             }
         }
 
-        // Pure, pinned by TermuxSetupTest — recomputed from live state.
-        val gates = TermuxProbe.setupChecklist(
-            state.workspaceUri.takeIf { it.isNotBlank() },
-            state.termuxInstalled,
-            state.runCommandGranted,
-            state.shellVerifiedThisSession,
-            state.shellBlockedThisSession,
+        val guestRan = state.shellVerifiedThisSession ||
+            (state.linuxTestResult?.startsWith("ALL GOOD") == true)
+        val gates = listOf(
+            Triple(
+                "The Linux payload is in this build",
+                if (state.linuxAvailable) "✓" else "✗",
+                if (state.linuxAvailable) "proot + Alpine rootfs found in the APK"
+                else "this APK was built without the payload — run tools/forge/fetch-linux.sh and rebuild",
+            ),
+            Triple(
+                "Filesystem unpacked",
+                if (state.linuxProvisioned) "✓" else "?",
+                if (state.linuxProvisioned) "the Alpine tree is extracted and stamped"
+                else "unpacks once on the first command (about 9 MB, a few seconds)",
+            ),
+            Triple(
+                "A real command answered",
+                if (guestRan) "✓" else "?",
+                if (guestRan) "the guest executed a command and returned its output"
+                else "tap Test below — nothing is assumed",
+            ),
+            Triple(
+                "Workspace visible at " + host.vorv.tools.ShellTool.GUEST_WORKSPACE,
+                if (state.workspaceUri.isNotBlank()) "✓" else "?",
+                if (state.workspaceUri.isNotBlank()) "the folder you granted is bound into the guest"
+                else "optional: grant a folder in the Files tab to edit the same files from both sides",
+            ),
         )
-        val nextStep = TermuxProbe.nextStepMessage(gates)
 
         Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Exactly ONE action at a time — or the honest all-clear.
-                if (nextStep != null) {
-                    Text(nextStep, color = Warning, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                } else {
-                    Text(
-                        "ALL 4 GATES OPEN — the shell tool is fully operational.",
-                        color = Success, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                Text(
+                    if (state.linuxAvailable && guestRan)
+                        "READY — the shell runs inside Vorv's own Linux system."
+                    else if (!state.linuxAvailable)
+                        "NOT PACKAGED — this build has no Linux system."
+                    else
+                        "PACKAGED, NOT YET RUN — test it once to prove it works on this phone.",
+                    color = when {
+                        state.linuxAvailable && guestRan -> Success
+                        !state.linuxAvailable -> Error
+                        else -> Warning
+                    },
+                    fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                )
 
                 Spacer(Modifier.height(2.dp))
 
-                gates.forEach { gate ->
-                    val (symbol, color) = when (gate.status) {
-                        TermuxProbe.GateStatus.PASS -> "✓" to Success
-                        TermuxProbe.GateStatus.FAIL -> "✗" to Error
-                        TermuxProbe.GateStatus.UNKNOWN -> "?" to OnSurfaceVariant
+                gates.forEachIndexed { i, (title, symbol, detail) ->
+                    val color = when (symbol) {
+                        "✓" -> Success
+                        "✗" -> Error
+                        else -> OnSurfaceVariant
                     }
                     Column {
-                        Text(
-                            "${gate.n}. ${gate.title}  $symbol",
-                            color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(gate.detail, color = OnSurfaceVariant, fontSize = 10.sp)
+                        Text("${i + 1}. $title  $symbol", color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(detail, color = OnSurfaceVariant, fontSize = 10.sp)
                     }
                 }
 
-                Spacer(Modifier.height(2.dp))
-
-                // Gate 1's fix lives in the Files tab — one tap away.
-                if (gates.first().status != TermuxProbe.GateStatus.PASS) {
+                if (state.workspaceUri.isBlank()) {
                     Button(
                         onClick = onOpenFilesTab,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(50),
-                    ) { Text("Open the Files tab to grant the workspace", fontSize = 11.sp) }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = onGrantTermuxPermission,
-                        enabled = state.termuxInstalled && !state.runCommandGranted,
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Grant (one tap)", fontSize = 11.sp) }
-                    OutlinedButton(
-                        onClick = onOpenAppSettings,
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Android Settings…", fontSize = 11.sp) }
+                    ) { Text("Open the Files tab to grant a workspace folder", fontSize = 11.sp) }
                 }
 
                 OutlinedButton(
-                    onClick = onTestTermuxConnection,
-                    enabled = state.termuxInstalled && state.runCommandGranted && !state.termuxTesting,
+                    onClick = onTestLinuxSystem,
+                    enabled = state.linuxAvailable && !state.linuxTesting,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(50),
                 ) {
                     Text(
-                        if (state.termuxTesting) "Testing…"
-                        else "Test connection — runs `echo vorv-termux-ok` in Termux",
+                        if (state.linuxTesting) "Testing… (first run unpacks the filesystem)"
+                        else "Test the Linux system — runs `apk --version`",
                         fontSize = 11.sp,
                     )
                 }
 
-                if (state.termuxTestResult != null) {
+                if (state.linuxTestResult != null) {
+                    val good = state.linuxTestResult!!.startsWith("ALL GOOD")
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (state.termuxTestResult!!.startsWith("ALL GOOD"))
-                            Success.copy(alpha = 0.12f) else Warning.copy(alpha = 0.12f),
+                        color = if (good) Success.copy(alpha = 0.12f) else Error.copy(alpha = 0.12f),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            state.termuxTestResult!!,
-                            color = if (state.termuxTestResult!!.startsWith("ALL GOOD")) Success else OnBackground,
-                            fontSize = 11.sp,
+                            state.linuxTestResult!!,
+                            color = if (good) Success else Error,
+                            fontSize = 10.sp,
                             modifier = Modifier.padding(10.dp),
                         )
                     }
                 }
 
-                Text(
-                    "Why Vorv cannot do the Termux-side steps for you: both files " +
-                        "live inside Termux's private data directory, which Android " +
-                        "blocks every other app from touching. One manual setup, then " +
-                        "the shell works forever. Also install the compilers " +
-                        "self-repair needs: pkg install kotlin",
-                    color = OnSurfaceVariant, fontSize = 10.sp,
-                )
-
                 TextButton(
-                    onClick = onRefreshTermuxStatus,
+                    onClick = onRefreshLinuxStatus,
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                 ) { Text("RECHECK", color = Primary, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
 
@@ -554,8 +543,8 @@ fun SettingsScreen(
                 "(GLM-4.7-Flash), paid models optional, automatic offline fallback.\n\n" +
                 "Honest limits: real measured tok/s appears in the trace after each generation — " +
                 "expected peak ~8-12 tok/s on the 7B model, ~4-6 sustained under thermal load. " +
-                "js_exec and python_exec run in hardened in-process sandboxes; shell and app_intent " +
-                "round-trip through your workspace and explicit confirmation dialogs. " +
+                "js_exec and python_exec run in hardened in-process sandboxes; shell runs inside " +
+                "Vorv's own Alpine Linux system; every powerful action asks first. " +
                 "See SECURITY.md in the repository for the full threat model.",
             color = OnSurfaceVariant,
             fontSize = 11.sp,

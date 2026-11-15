@@ -397,14 +397,53 @@ added for that second shape).
   to the proot `execve` is checked; the guest itself is not. Until
   `apk --version` and `apk add gcc && gcc hello.c -o hello && ./hello` are run
   on the S25, the Linux system is a design with a payload, not a proven OS.
-- **Termux is still in the build.** `ShellTool` (`tools/SystemTools.kt:266`),
-  `TermuxProbe` (433 lines), `HealingAgent.compileInTermux`, `SelfFixTool`'s
-  readiness gate, the Setup card and
-  `com.termux.permission.RUN_COMMAND` in `AndroidManifest.xml` all remain.
-  There are now two shells in the app; the Termux one is the one the model is
-  told to use first, and it is the one that fails on a phone without Termux.
-- **No tests** for `LinuxSystem`, `LinuxRunTool`, `PhoneBuilder`, `BuildAppTool`;
-  the native install/launch path has never run on a device.
+- **No tests** for `PhoneBuilder` or `BuildAppTool`; the native
+  install/launch path has never run on a device. (`LinuxSystem`'s argv and
+  `ShellTool`'s contract now have tests — see section 10 — but proot itself
+  still has not executed on a phone.)
 - `docs/OWN-LINUX-SYSTEM.md` carries the two device proofs and the rebuild
   command; `tools/forge/fetch-linux.sh` rebuilds every pinned payload file and
   refuses a checksum mismatch.
+
+## 10. Termux is gone
+
+The previous section ended with "Termux is still in the build". It is not any
+more. Termux was a second app the user had to install, configure over four
+gates and keep in sync, and it is exactly what failed in the field. Every
+path that used it now uses the app's own Linux system.
+
+**What changed**
+
+| Was | Is |
+| --- | --- |
+| `ShellTool` → base64 payload into Termux `RUN_COMMAND` | `tools/ShellTool.kt` → `GuestShell` → proot/Alpine, argv only, workspace bound at `/workspace` |
+| `TermuxProbe` (433 lines, four-gate checklist) | deleted; the Setup card asks the app itself (`LinuxSystem.isProvisioned`) |
+| `HealingAgent.compileInTermux` (workdir round-trip + SAF reads) | `compileInApp` → `ForgeCompiler` (kotlinc + d8 from the APK) |
+| `SelfFixTool` Termux readiness gate | `ForgeProbe.readinessError` (toolchain present in private storage) |
+| `com.termux.permission.RUN_COMMAND` in the manifest | removed |
+| kernel prompt "Termux CAN install software: `pkg install -y`" | "the shell runs inside Vorv's own Alpine Linux system: `apk add <name>`" |
+| Setup → "Termux integration" card | Setup → "Linux System (the shell's computer)" |
+
+Consent is unchanged: the user approves the full command text before it runs,
+a session grant replaces the dialog with an audit record, and a command that
+never returns trips the circuit breaker so the model cannot retry forever.
+`GuestShell` exists so this is testable: `LinuxSystem` is the production
+implementation, and the tests drive a fake.
+
+**Tests** (all passing here):
+
+- `linux/LinuxSystemArgvTest` 5 — the proot instruction sequence, the bind
+  syntax, the command as ONE argv element (a bound folder named
+  `x'$(touch …)'` stays inert), and the guest environment.
+- `tools/ShellToolTest` 12 — consent before execution, denial never runs,
+  missing guest is an honest error, real exit code/stderr, timeout says
+  UNKNOWN and does not count as verified, workspace binding, circuit breaker.
+- Deleted with the code they pinned: `TermuxSetupTest`, `TermuxSmokeTest`,
+  `ShellBackgroundStartTest`, `ShellCappedReadTest`, `ConsentPromptTest`;
+  `ShellQuoteTest` keeps the escaper and loses the Termux dispatch cases.
+- `:app:testDebugUnitTest` 427 tests, 0 failures; `:app:assembleDebug`
+  succeeds.
+
+**Still not verified on hardware:** proot itself. Same item as above — a
+payload that parses and a pipeline that passes on the JVM is not the same
+thing as `apk add gcc && gcc hello.c -o hello && ./hello` on the S25.
