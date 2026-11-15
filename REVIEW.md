@@ -371,3 +371,40 @@ d8 --release --min-api 31 -> dexout/classes.dex   (1280 bytes)
 ```
 Required on the compiler's own classpath: `kotlin-stdlib`, `kotlinx-coroutines-core-jvm`,
 `org.jetbrains.annotations`. No Termux, no `bash -c`, no SAF path quoting.
+
+---
+
+## 9. Addendum — what has been built since the review (commits up to `f3e721a`)
+
+The findings above are unchanged. This section records the work done in the
+same repository afterwards, so the review and the tree agree.
+
+| Commit | What it adds | Verified here |
+|---|---|---|
+| `818cf9c` | `computer` runtime (Rhino JS with a `ClassShutter`, Python via Chaquopy), audit log, 512 MB quota, `computer_run` tool | 17 unit tests, plus a live run |
+| `21c46b1` | `web_test`: serves a built web app from the app's own HTTP server and checks it | 17 unit tests, 7/7 checks live |
+| `a755a56` | `native_test`: installs a built APK through `PackageInstaller`, launches it, drives it with an AccessibilityService | code + manifest only |
+| `2113edb` | `build_app`: unsigned→signed APK on the phone (`javac`/`d8`/`apksigner`, self-generated key) | proven on desktop JVM (`apksigner verify` OK); never on a phone |
+| `f3e721a` | `linux_run`: a real Alpine 3.20 system under proot, unprivileged, no Termux, rootfs + proot shipped in the APK | rootfs extracts into a 3.20.0 tree (518 entries, 334 symlinks, `apk` executable); 5 unit tests on the extractor |
+
+Rootfs extraction also accepts gzipped tars, refuses `..` escapes and refuses
+to write **through** a symlink that points outside the tree (regression test
+added for that second shape).
+
+### Still true, and it matters
+
+- **`proot` has never executed on a phone in this repository.** Everything up
+  to the proot `execve` is checked; the guest itself is not. Until
+  `apk --version` and `apk add gcc && gcc hello.c -o hello && ./hello` are run
+  on the S25, the Linux system is a design with a payload, not a proven OS.
+- **Termux is still in the build.** `ShellTool` (`tools/SystemTools.kt:266`),
+  `TermuxProbe` (433 lines), `HealingAgent.compileInTermux`, `SelfFixTool`'s
+  readiness gate, the Setup card and
+  `com.termux.permission.RUN_COMMAND` in `AndroidManifest.xml` all remain.
+  There are now two shells in the app; the Termux one is the one the model is
+  told to use first, and it is the one that fails on a phone without Termux.
+- **No tests** for `LinuxSystem`, `LinuxRunTool`, `PhoneBuilder`, `BuildAppTool`;
+  the native install/launch path has never run on a device.
+- `docs/OWN-LINUX-SYSTEM.md` carries the two device proofs and the rebuild
+  command; `tools/forge/fetch-linux.sh` rebuilds every pinned payload file and
+  refuses a checksum mismatch.

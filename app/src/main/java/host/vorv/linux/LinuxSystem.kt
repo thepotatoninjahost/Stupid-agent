@@ -71,23 +71,33 @@ class LinuxSystem(private val context: Context) {
      * the guest only needs to read them, and the guest's home is a folder
      * inside the computer, so work survives between commands.
      */
-    suspend fun run(command: String, timeoutMs: Long = 180_000): Shell = withContext(Dispatchers.IO) {
+    suspend fun run(
+        command: String,
+        timeoutMs: Long = 180_000,
+        binds: List<Pair<String, String>> = emptyList(),
+        workDir: String = "/root",
+    ): Shell = withContext(Dispatchers.IO) {
         provision().onFailure { return@withContext Shell(-1, "", it.message ?: "not provisioned", true) }
         val proot = File(nativeDir, "libforge-proot.so")
         val home = File(root, "home").apply { mkdirs() }
         val tmp = File(root, "tmp").apply { mkdirs() }
-        val argv = listOf(
-            proot.absolutePath,
-            "-0",
-            "-r", rootfs.absolutePath,
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/sys",
-            "-b", "$home:/root",
-            "-b", "$tmp:/tmp",
-            "-w", "/root",
-            "/bin/sh", "-lc", command,
-        )
+        val argv = buildList {
+            add(proot.absolutePath)
+            add("-0")
+            add("-r"); add(rootfs.absolutePath)
+            add("-b"); add("/dev")
+            add("-b"); add("/proc")
+            add("-b"); add("/sys")
+            add("-b"); add("$home:/root")
+            add("-b"); add("$tmp:/tmp")
+            // Guest paths are what the command sees; host paths are real folders
+            // on the phone (the user's workspace, for instance).
+            binds.forEach { (hostPath, guestPath) ->
+                add("-b"); add(if (hostPath == guestPath) hostPath else "$hostPath:$guestPath")
+            }
+            add("-w"); add(workDir)
+            add("/bin/sh"); add("-lc"); add(command)
+        }
         val env = mapOf(
             "PROOT_LOADER" to File(loaderDir, "loader").absolutePath,
             "PROOT_TMP_DIR" to tmp.absolutePath,
