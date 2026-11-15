@@ -32,3 +32,8 @@ stay ignored forever.
 
 # Alpine root filesystem (~9 MB tar) — rebuilt by tools/forge/fetch-linux.sh.
 /app/src/main/assets/forge/linux/
+
+# screen recordings / media the user attaches
+*.mp4
+*.mov
+*.webm
