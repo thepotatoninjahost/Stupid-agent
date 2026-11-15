@@ -172,6 +172,17 @@ val healerAssetsDir = layout.buildDirectory.dir("generated/healer/assets")
  * the addGeneratedSourceDirectory wiring below.
  */
 androidComponents {
+    // F-1 (review 2026-11-13): AGP 9 disables unit tests for the release
+    // variant by default, and Compose Preview refuses to build its resource
+    // task for a variant without them — so `./gradlew tasks`, IDE sync and
+    // any `build` that materializes all tasks failed at configuration time
+    // (test/assembleDebug never touched that path, which is why CI was
+    // green). Enabling release unit tests is the supported fix; it also gives
+    // the suite a second, minify-relevant compile target.
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = true
+    }
+
     onVariants { variant ->
         val v = variant.name
         val capitalized = v.replaceFirstChar { it.uppercase() }

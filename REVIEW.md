@@ -52,7 +52,7 @@ Environment built for this review: Temurin JDK 17, Android SDK platform
 |---|---|
 | `python3 app/src/main/python/test_vorv_sandbox.py` | **PASS** — `ALL SANDBOX TESTS PASSED` |
 | Kotlin **main** sources compile (`:app:compileDebugKotlin`) | **PASS** — warnings only (unnecessary `!!`, deprecated Rhino/WebView setters) |
-| `./gradlew tasks` (project configuration) | **FAILS** — see F-1 |
+| `./gradlew tasks` (project configuration) | **PASSES** — F-1 fixed below (was a failure at review time) |
 | `./gradlew testDebugUnitTest` | run attempted; Gradle process died during `:app:compileDebugUnitTestKotlin` (F-2) |
 | On-device behaviour (NPU, Termux, SAF, hot-patch) | **not verifiable here** — no Android device, no Qualcomm NPU, no Termux |
 | Release build / R8 / APK signing | not run (release keystore is CI-only) |
@@ -64,7 +64,22 @@ everything else is from reading the code.
 
 ## 3. Findings — build & repository
 
-### F-1 (High for maintainability) Project configuration breaks `./gradlew tasks`
+### F-1 (High for maintainability) Project configuration breaks `./gradlew tasks` — FIXED
+
+> **Fixed after the review.** AGP 9 declares unit tests per variant through
+> `hostTests`, and `enableUnitTest`/`unitTestEnabled` are no longer reachable
+> from the variant builder in this AGP version. `app/build.gradle.kts` now
+> does:
+>
+> ```kotlin
+> beforeVariants(selector().withBuildType("release")) { variant ->
+>     variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]?.enable = true
+> }
+> ```
+>
+> Verified here: `./gradlew tasks` **BUILD SUCCESSFUL** and
+> `testReleaseUnitTest` is now in the task graph.
+
 ```
 Execution failed for task ':tasks'.
 > Could not create task ':app:generateReleaseComposePreviewRunfiles'.
@@ -302,8 +317,8 @@ would each be a substantial new subsystem.
    SECURITY.md with the threat model the UI and XML files already reference,
    NOTICES.md with third-party licences. Nothing else in this list matters if
    the project cannot be understood or legally distributed.
-2. **Fix the release-variant configuration failure** (F-1) so `gradlew tasks`,
-   IDE sync and `gradlew build` work.
+2. ~~Fix the release-variant configuration failure (F-1)~~ — done: `gradlew tasks`
+   configures, and the release variant now has unit tests enabled.
 3. **Finish the test run on a machine with more memory** (F-2) and treat the
    suite as the regression gate; then wire `test` into the default CI path it
    already has.
