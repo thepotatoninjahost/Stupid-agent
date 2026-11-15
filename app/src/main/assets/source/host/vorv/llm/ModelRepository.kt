@@ -50,7 +50,10 @@ class ModelRepository(private val appContext: Context) {
             require(apiKey.isNotBlank()) {
                 "Cloud mode needs a Z.ai API key — add one in Setup."
             }
-            val cloud = CloudLlm(apiKey, model = cloudModel.id)
+            val cloud: Llm = CloudChainLlm(
+                apiKey,
+                listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel },
+            )
             if (!autoFallback || !ModelManager.isDownloaded(choice)) {
                 return@withLock cloud
             }

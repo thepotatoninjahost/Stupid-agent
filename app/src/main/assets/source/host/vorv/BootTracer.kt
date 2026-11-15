@@ -41,6 +41,7 @@ import java.util.Locale
 object BootTracer {
 
     private const val TRACE_FILE = "boot_trace.txt"
+    private const val INSTALL_ID_FILE = "boot_install_id.txt"
     private const val CRASH_COUNT_FILE = "crash_count.txt"
 
     private val timestampFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -58,6 +59,30 @@ object BootTracer {
      * so every write is guarded — a disk-full or I/O failure here must not
      * take the app down unlogged.
      */
+    /**
+     * A per-install identity, so a trace left behind by an EARLIER build of
+     * the app is never read as "this install crashed".
+     *
+     * Why: traces live in the external files directory, which survives an
+     * uninstall/reinstall on Android. A trace from a build that was removed
+     * (a previous version that hung on its loading screen) therefore looked
+     * like a crash of the brand-new install — the app opened for the first
+     * time and announced "Vorv crashed last time" about a session that
+     * belonged to a different build. Sections carrying another install's id
+     * are history, not evidence.
+     */
+    fun installId(ctx: Context): String {
+        val file = File(ctx.filesDir, INSTALL_ID_FILE)
+        runCatching { file.takeIf { it.exists() }?.readText()?.trim() }
+            .getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        val created = java.util.UUID.randomUUID().toString()
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(created)
+        }
+        return created
+    }
+
     @Synchronized
     fun start(ctx: Context) {
         runCatching {
@@ -67,7 +92,7 @@ object BootTracer {
             // Instead, write a separator + new start marker.
             file.appendText("\n" + "=".repeat(60) + "\n")
         }
-        writeStep(ctx, "BOOT_STARTED", "pid=${android.os.Process.myPid()}")
+        writeStep(ctx, "BOOT_STARTED", "pid=${android.os.Process.myPid()} install=${installId(ctx)}")
     }
 
     /**
@@ -149,8 +174,18 @@ object BootTracer {
      */
     fun previousBootCompleted(ctx: Context): Boolean {
         val prev = readPreviousTrace(ctx) ?: return true // no previous = first boot
-        // Look at the last non-empty line of the previous trace.
-        val lastLine = prev.lines().filter { it.isNotBlank() }.lastOrNull() ?: return true
+        // A section from a different install (or from before install ids
+        // existed) says nothing about THIS install: ignore it.
+        return sectionCompleted(prev, installId(ctx))
+    }
+
+    /**
+     * Pure decision for one trace section: did THIS install's previous boot
+     * finish? A section without this install's marker is not evidence.
+     */
+    internal fun sectionCompleted(section: String, id: String): Boolean {
+        if (!section.contains("install=$id")) return true
+        val lastLine = section.lines().filter { it.isNotBlank() }.lastOrNull() ?: return true
         return lastLine.contains("BOOT_COMPLETE")
     }
 

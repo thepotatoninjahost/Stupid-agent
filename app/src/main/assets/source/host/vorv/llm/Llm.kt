@@ -103,6 +103,17 @@ interface Llm {
 }
 
 /**
+ * A failure that came back from Z.ai with an HTTP status, so callers can tell
+ * "the servers are busy" (429, 5xx — worth trying another model) from "this
+ * key or request is wrong" (401/403/400 — trying another model is pointless).
+ * The message keeps the historical "LLM HTTP <code>: ..." shape because
+ * [FallbackLlm.isAuthError] and the episode log already read it.
+ */
+class LlmHttpException(val code: Int, body: String) : RuntimeException("LLM HTTP $code: $body") {
+    val overloaded: Boolean get() = code == 429 || code >= 500
+}
+
+/**
  * Cloud LLM via Z.ai. Native OpenAI-style function calling.
  * Throws if apiKey is blank — caller must check first.
  *
@@ -120,9 +131,12 @@ interface Llm {
 class CloudLlm(
     private val apiKey: String,
     private val baseUrl: String = "https://api.z.ai/api/paas/v4",
-    private val model: String = CloudModel.GLM_4_7_FLASH.id,
+    val modelName: String = CloudModel.GLM_4_7_FLASH.id,
     client: OkHttpClient? = null,
+    private val maxAttempts: Int = MAX_ATTEMPTS,
+    private val backoffMs: Long = 1_500L,
 ) : Llm {
+    private val model: String get() = modelName
     override val label = "$model (cloud)"
 
     private val client: OkHttpClient = client ?: Companion.client
@@ -175,7 +189,8 @@ class CloudLlm(
             }.toString()
 
             var lastErr: String? = null
-            for (attempt in 0 until MAX_ATTEMPTS) {
+            var lastCode = 0
+            for (attempt in 0 until maxAttempts) {
                 try {
                     val req = Request.Builder()
                         .url("$baseUrl/chat/completions")
@@ -188,10 +203,11 @@ class CloudLlm(
                     client.newCall(req).execute().use { res ->
                         val responseBody = res.body?.string().orEmpty()
                         if (res.code == 429 || res.code >= 500) {
+                            lastCode = res.code
                             lastErr = "HTTP ${res.code}: ${responseBody.take(200)}"
-                            if (attempt < MAX_ATTEMPTS - 1) {
+                            if (attempt < maxAttempts - 1) {
                                 // Non-blocking backoff (was Thread.sleep — audit M-2).
-                                delay(1500L * (1L shl attempt) + (Math.random() * 500).toLong())
+                                delay(backoffMs * (1L shl attempt) + (Math.random() * 500).toLong())
                             }
                             return@use
                         }
@@ -203,8 +219,7 @@ class CloudLlm(
                             // retried them for up to 4 attempts / ~10 s of
                             // dead air and burned quota for nothing. These
                             // now fail fast via [NonRetryableLlmException].
-                            throw NonRetryableLlmException(
-                                "LLM HTTP ${res.code}: ${responseBody.take(300)}")
+                            throw LlmHttpException(res.code, responseBody.take(300))
                         }
                         val json = JsonParser.parseString(responseBody).asJsonObject
 
@@ -241,18 +256,22 @@ class CloudLlm(
                     // it would keep a dead task's worker busy for up to
                     // MAX_ATTEMPTS more calls in the background.
                     throw e
-                } catch (e: NonRetryableLlmException) {
+                } catch (e: LlmHttpException) {
                     // L-5: deterministic client-side failures fail FAST —
                     // same request, same answer, no retry theater.
                     throw e
                 } catch (e: Exception) {
                     lastErr = e.message
-                    if (attempt < MAX_ATTEMPTS - 1) {
-                        delay(1500L * (1L shl attempt))
+                    if (attempt < maxAttempts - 1) {
+                        delay(backoffMs * (1L shl attempt))
                     }
                 }
             }
-            throw RuntimeException("LLM call failed after $MAX_ATTEMPTS attempts: $lastErr")
+            throw if (lastCode != 0) {
+                LlmHttpException(lastCode, "after $maxAttempts attempts: $lastErr")
+            } else {
+                RuntimeException("LLM call failed after $maxAttempts attempts: $lastErr")
+            }
         }
 
     companion object {
@@ -263,8 +282,6 @@ class CloudLlm(
          * 4xx other than 429) that retrying cannot fix — [step] rethrows it
          * immediately instead of burning the retry budget on it.
          */
-        private class NonRetryableLlmException(message: String) : RuntimeException(message)
-
         /** Shared client — one connection pool for every CloudLlm instance. */
         private val client: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -340,7 +357,9 @@ object LlmRouter {
     fun pick(mode: String, apiKey: String, local: LocalLlm?, cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH): Llm = when (mode) {
         "cloud" -> {
             require(apiKey.isNotBlank()) { "Cloud mode needs a Z.ai API key — add one in Setup." }
-            CloudLlm(apiKey, model = cloudModel.id)
+            // The chosen model first, then the others this account can reach:
+            // one overloaded model must not end the task.
+            CloudChainLlm(apiKey, listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel })
         }
         else -> {
             requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~1.8–4.4 GB depending on choice)." }

@@ -117,8 +117,10 @@ class VorvApplication : Application() {
             // exist — the previous boot's breadcrumbs and any watchdog
             // detection — so the crash is visible to every consumer with
             // one honest artifact that says what it is.
+            BootTracer.step(this, "synthesize_native_report_begin")
             runCatching { synthesizeNativeCrashReportIfMissing() }
                 .onFailure { BootTracer.step(this, "synthesize_native_report_failed", it.message) }
+            BootTracer.step(this, "synthesize_native_report_end")
 
             // Probation gate: a patch that was followed by a crash in the
             // class it overrides, within 72h of applying, is rolled back.

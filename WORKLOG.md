@@ -1,3 +1,22 @@
+## 0.8.3 — the "crashed last time" dialog was reading another build's file, and one busy model no longer ends a task
+
+**Reported:** "just installed it, first time opening it and this popped up. It didn't crash." The dialog said *Vorv crashed last time* on a brand-new install.
+**Reported:** "the key was not the problem with GLM, I have multiple keys — the problem was the inadequate servers."
+
+**1. Stale boot trace from an earlier install was reported as a crash.**
+Boot traces live in `getExternalFilesDir`, which survives uninstall/reinstall on Android. The trace the dialog quoted (`BOOT_STARTED`, `hotpatch_load_*`, `check_previous_boot`, nothing after) belonged to a build that was removed — the previous version that hung on its loading screen. `previousBootCompleted()` only asked "does the last section end with BOOT_COMPLETE?", so a foreign section read as a crash of the new app.
+Fix: `BootTracer.installId()` (a UUID in `filesDir`), written into every `BOOT_STARTED` line; `sectionCompleted(section, id)` ignores sections that do not carry the current install's id. Fresh installs can no longer inherit another build's death. Breadcrumbs `synthesize_native_report_begin/end` were added around the crash-report synthesis so the next unexplained exit names its step.
+Tests: `BootTracerInstallTest` — foreign section ignored, legacy section ignored, real death in this install still detected, completed boot clean.
+
+**2. Cloud mode had one model and therefore one point of overload.**
+`CloudLlm` retried the SAME model four times (~10 s) and then failed the task. When Z.ai is saturated that is the whole failure mode.
+Fix: `CloudChainLlm` — the selected model first, then every other catalog model; a model that answers 429/5xx (or drops) is put on a 60 s cooldown and skipped for the next steps of the same task. A 401/403/400 is NOT retried elsewhere (the request or key is wrong and every model would say so). When all are busy the error says exactly that, names each model and its status, and points at the on-device model — it never says "something went wrong".
+`LlmHttpException(code, body)` now carries the status so the chain can tell overload from a bad key, replacing the private `NonRetryableLlmException`. `CloudLlm` gained `modelName`, `maxAttempts`, `backoffMs` (test seams).
+Wired into both engine factories: `LlmRouter.pick` and `ModelRepository.activeEngine`.
+Tests: `CloudChainLlmTest` — falls over on 429, skips the cooling model next step, "all busy" message names models and says it is not the key, 401 is not retried on other models.
+
+**Version:** versionCode 40, versionName 0.8.3. Full suite: 51 files, 441 tests, 0 failures.
+
 # Worklog — every change, why, and what was actually verified
 
 This file exists so the record of the work lives in the repository itself, not
