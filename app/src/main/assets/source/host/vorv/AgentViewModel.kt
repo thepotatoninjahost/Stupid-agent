@@ -148,6 +148,8 @@ data class AgentState(
     val linuxTesting: Boolean = false,
     /** Verbatim result of the last Linux-system test (Setup tab). */
     val linuxTestResult: String? = null,
+    /** What the payload check actually looked for, worded for the Setup card. */
+    val linuxDiagnostics: String? = null,
     /** A real command completed inside the guest this session (knowledge). */
     val shellVerifiedThisSession: Boolean = false,
     /** v0.6.17: the dead-shell circuit breaker is active (live in Setup). */
@@ -763,7 +765,11 @@ class AgentViewModel(
     fun refreshLinuxStatus() {
         val guest = linuxSystem
         _state.update {
-            it.copy(linuxAvailable = guest.isAvailable(), linuxProvisioned = guest.isProvisioned())
+            it.copy(
+                linuxAvailable = guest.isAvailable(),
+                linuxProvisioned = guest.isProvisioned(),
+                linuxDiagnostics = guest.diagnose(),
+            )
         }
     }
 
@@ -794,6 +800,7 @@ class AgentViewModel(
                     linuxTestResult = verdict,
                     linuxAvailable = guest.isAvailable(),
                     linuxProvisioned = guest.isProvisioned(),
+                    linuxDiagnostics = guest.diagnose(),
                     shellVerifiedThisSession = SessionGrants.shellVerified,
                     shellBlockedThisSession = SessionGrants.shellBlocked,
                 )

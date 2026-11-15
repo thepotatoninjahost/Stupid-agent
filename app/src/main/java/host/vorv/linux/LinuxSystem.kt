@@ -37,6 +37,35 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     fun isProvisioned(): Boolean = stamp.isFile && File(rootfs, "etc/alpine-release").isFile
 
+    /**
+     * Why the system is or is not usable on this phone, in words the owner can
+     * read off the Setup card. A missing payload is the one failure that
+     * cannot be fixed from inside the app, so it has to name itself instead of
+     * leaving a bare "not packaged".
+     */
+    fun diagnose(): String {
+        val lines = mutableListOf<String>()
+        lines += "version " + runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).let { "${it.versionName} (${it.longVersionCode})" }
+        }.getOrElse { "unknown" }
+        lines += "ABIs " + android.os.Build.SUPPORTED_ABIS.joinToString(",")
+        lines += "nativeLibraryDir " + nativeDir.absolutePath
+        val proot = File(nativeDir, "libforge-proot.so")
+        lines += "proot " + if (proot.isFile) "present ${proot.length()} B" else "MISSING"
+        if (!proot.isFile) {
+            val siblings = nativeDir.listFiles()?.map { it.name }?.sorted() ?: emptyList()
+            lines += "dir has " + if (siblings.isEmpty()) "nothing" else siblings.take(12).joinToString(",") +
+                if (siblings.size > 12) " (+${siblings.size - 12})" else ""
+        }
+        lines += "loader " + if (File(nativeDir, "libforge-proot-loader.so").isFile) "present" else "MISSING"
+        val assets = runCatching { context.assets.list("forge/linux")?.toList() ?: emptyList() }.getOrElse { emptyList() }
+        val rootfsAsset = "rootfs.tar"
+        lines += "payload " + if (assets.contains(rootfsAsset)) "rootfs.tar present" else
+            "rootfs.tar MISSING (assets/forge/linux has: " + (if (assets.isEmpty()) "nothing" else assets.joinToString(",")) + ")"
+        lines += "rootfs " + if (isProvisioned()) "unpacked" else "not unpacked yet"
+        return lines.joinToString("\n")
+    }
+
     suspend fun provision(): Result<File> = withContext(Dispatchers.IO) {
         if (!isAvailable()) {
             return@withContext Result.failure(

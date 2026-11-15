@@ -27,6 +27,40 @@ Where it and this file seem to disagree about Termux, this file is current.
 
 ---
 
+## 2026-11-15 · v0.8.1 — why the phone said "NOT PACKAGED"
+
+**Reported from the phone:** Setup → Linux system showed
+`NOT PACKAGED — this build has no Linux system` on an APK that does contain
+the payload.
+
+**Cause, found by inspection and now fixed:** the built APK had no
+`android:extractNativeLibs` attribute, so Android mapped the libraries
+straight out of the APK instead of unpacking them at install time. The app
+looks for proot in `nativeLibraryDir` (the only place Android will execute a
+binary from), that directory was empty, and the check correctly said the build
+was not packaged. The `.so` files were in the APK the whole time; they were
+never installed. This is also why the on-device NPU plugin could not find its
+libraries.
+
+- `AndroidManifest.xml`: `android:extractNativeLibs="true"` on `<application>`.
+- `LinuxSystem.diagnose()`: the Setup card now prints version, ABIs,
+  `nativeLibraryDir`, whether proot/loader are present, and whether
+  `rootfs.tar` is in the assets — so a missing payload names itself instead of
+  showing a bare verdict.
+- `NativeLibExtractionTest`: fails if the attribute is ever removed.
+- `versionCode 38`, `versionName 0.8.1`, so a build can be identified on the
+  phone by the number in the diagnostics.
+
+Verified: `assembleDebug` succeeds; `aapt2 dump xmltree` shows
+`extractNativeLibs=true` in the built APK; `rootfs.tar` 9 113 600 B and
+`libforge-proot.so` present in the zip; apksigner verifies (debug key);
+427 + 1 unit tests, 0 failures.
+
+Not verified: the install itself. Whether libs truly land in
+`nativeLibraryDir` on the S25 can only be confirmed on the S25 — that is what
+the new diagnostics line is for.
+
+
 ## 2026-11-13 → 2026-11-15 · one engagement, 14 commits
 
 Starting point: `b625e54` (the repository as delivered). Everything below is

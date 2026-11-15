@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -431,6 +432,15 @@ fun SettingsScreen(
                         Text("${i + 1}. $title  $symbol", color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Text(detail, color = OnSurfaceVariant, fontSize = 10.sp)
                     }
+                }
+
+                if (!state.linuxAvailable && !state.linuxDiagnostics.isNullOrBlank()) {
+                    Text(
+                        state.linuxDiagnostics!!,
+                        color = OnSurfaceVariant, fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                 }
 
                 if (state.workspaceUri.isBlank()) {
