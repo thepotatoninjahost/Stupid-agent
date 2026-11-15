@@ -2,8 +2,13 @@
 
 Reviewed commit: `b625e54` (2026-11-13). Reviewer: Lemon Code (AI agent).
 Scope: the whole repository, read in full for the Kotlin/Android app, build
-config, CI, resources and Python sandbox. No code was changed by this review;
-this file is the only addition.
+config, CI, resources and Python sandbox.
+
+Sections 1–8 are the review **as written at `b625e54`** and are kept as they
+were, including the findings that have since been fixed — each fix is marked
+where it happened (F-1, F-8) rather than the text being rewritten. Sections 9
+and 10 were added afterwards and record what changed. The chronological
+record of every commit and what was verified is `WORKLOG.md`.
 
 ---
 

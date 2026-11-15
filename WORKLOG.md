@@ -8,6 +8,23 @@ How to read it: **Done** is code that is in `main`. **Verified** is something
 that was actually executed and its result. **Not verified** is something that
 has never run — it is never described as working.
 
+### One source of truth per question
+Copies drift when two documents both try to answer the same question. Each of
+these questions is answered in exactly one place:
+
+| Question | File |
+| --- | --- |
+| What changed, when, and what was verified | **`WORKLOG.md`** (this file) |
+| What is wrong with the code and why | `REVIEW.md` (findings F-*, C-*) |
+| How the Linux system works and its limits | `docs/OWN-LINUX-SYSTEM.md` |
+| How the app's own runtime replaced Termux | `docs/OWN-COMPUTER.md` |
+| What the user-visible release notes say | the GitHub release `v0.8.0-linux-preview` |
+| Version | `app/build.gradle.kts` — `versionName 0.8.0`, `versionCode 37` |
+| Behaviour | the code and its tests, never a document |
+
+`CHANGES.md` is history: entries describe the build they were written for.
+Where it and this file seem to disagree about Termux, this file is current.
+
 ---
 
 ## 2026-11-13 → 2026-11-15 · one engagement, 14 commits
