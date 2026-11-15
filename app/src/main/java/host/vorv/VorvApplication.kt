@@ -403,6 +403,29 @@ class VorvApplication : Application() {
             runCatching { it.delete() }
         }
 
+        // REAL evidence first: Android records every exit of this app,
+        // native crashes and ANRs included, and hands back the tombstone for
+        // a debuggable build. Ask the OS before inventing an explanation from
+        // breadcrumbs — the old builds only guessed, and their reports said
+        // "unknown" for exactly that reason.
+        val real = runCatching { host.vorv.healer.NativeCrashHistory.latestCrash(this) }.getOrNull()
+        if (real != null) {
+            val realFile = java.io.File(crashDir, "crash_native_${real.timestampMs}.txt")
+            if (realFile.isFile) return // already written for this exit
+            runCatching {
+                existing?.takeIf { it.name.startsWith("crash_synthesized_") }?.delete()
+                realFile.writeText(host.vorv.healer.NativeCrashHistory.format(real))
+            }.onSuccess {
+                BootTracer.step(this, "native_report_from_os", "file=${realFile.name} reason=${real.reasonName}")
+                Log.w(TAG, "Real crash report from the OS: ${realFile.absolutePath}")
+            }.onFailure {
+                BootTracer.step(this, "native_report_from_os_failed", it.message)
+            }
+            if (realFile.isFile) return
+        } else {
+            BootTracer.step(this, "native_history_empty", "no crash in Android's exit history")
+        }
+
         val prevTrace = BootTracer.readPreviousTrace(this)
         val watchdogReport = java.io.File(extDir, "watchdog").listFiles()
             ?.filter { it.isFile && it.name.startsWith("crash_detected") && it.name.endsWith(".txt") }

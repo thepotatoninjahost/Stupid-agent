@@ -52,7 +52,7 @@ class ModelRepository(private val appContext: Context) {
             }
             val cloud: Llm = CloudChainLlm(
                 apiKey,
-                listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel },
+                listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free },
             )
             if (!autoFallback || !ModelManager.isDownloaded(choice)) {
                 return@withLock cloud

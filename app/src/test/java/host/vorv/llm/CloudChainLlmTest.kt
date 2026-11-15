@@ -105,6 +105,42 @@ class CloudChainLlmTest {
     }
 
     @Test
+    fun `a model the account has no credit for is skipped, not reported as an outage`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(402).setBody("""{"error":{"message":"insufficient balance"}}"""),
+        )
+        server.enqueue(reply("free model answered"))
+        val chain = chain(CloudModel.GLM_5_3, CloudModel.GLM_4_7_FLASH)
+
+        val response = chain.step(messages, emptyList())
+
+        assertEquals("free model answered", (response as Llm.LlmResponse.Text).content)
+        assertEquals("GLM-4.7-Flash", chain.lastModelUsed)
+    }
+
+    @Test
+    fun `only paid models with no credit says so instead of blaming the key`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(402).setBody("""{"error":"insufficient balance"}"""))
+        val chain = chain(CloudModel.GLM_5_3)
+
+        try {
+            chain.step(messages, emptyList())
+            fail("expected a refusal")
+        } catch (e: RuntimeException) {
+            val m = e.message.orEmpty()
+            assertTrue("must name the free option: $m", m.contains("GLM-4.7-Flash"))
+            assertTrue("must not blame the key: $m", m.contains("no key is wrong"))
+        }
+    }
+
+    @Test
+    fun `the free model is tried before the paid ones by default`() {
+        val chain = LlmRouter.pick("cloud", "k", local = null)
+        val label = chain.label
+        assertTrue("free tier must come first: $label", label.indexOf("GLM-4.7-Flash") < label.indexOf("GLM-5.3-Flash"))
+    }
+
+    @Test
     fun `a rejected key is not retried on another model`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"invalid api key"}"""))
         val chain = chain(CloudModel.GLM_4_7_FLASH, CloudModel.GLM_5_3_FLASH)

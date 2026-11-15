@@ -109,8 +109,23 @@ interface Llm {
  * The message keeps the historical "LLM HTTP <code>: ..." shape because
  * [FallbackLlm.isAuthError] and the episode log already read it.
  */
-class LlmHttpException(val code: Int, body: String) : RuntimeException("LLM HTTP $code: $body") {
+class LlmHttpException(val code: Int, private val bodyText: String) :
+    RuntimeException("LLM HTTP $code: $bodyText") {
     val overloaded: Boolean get() = code == 429 || code >= 500
+
+    /**
+     * The account cannot use this model at all — no credit, no quota, overdue
+     * balance. Retrying is pointless and so is pretending it is a busy server:
+     * a free-tier account hitting a paid model lands here, and the answer is
+     * "use the free model", not "try again".
+     */
+    val notEntitled: Boolean
+        get() {
+            if (code == 402) return true
+            val b = bodyText.lowercase()
+            return listOf("insufficient", "no quota", "quota exceeded", "arrears", "balance", "billing")
+                .any { b.contains(it) }
+        }
 }
 
 /**
@@ -359,7 +374,7 @@ object LlmRouter {
             require(apiKey.isNotBlank()) { "Cloud mode needs a Z.ai API key — add one in Setup." }
             // The chosen model first, then the others this account can reach:
             // one overloaded model must not end the task.
-            CloudChainLlm(apiKey, listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel })
+            CloudChainLlm(apiKey, listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free })
         }
         else -> {
             requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~1.8–4.4 GB depending on choice)." }

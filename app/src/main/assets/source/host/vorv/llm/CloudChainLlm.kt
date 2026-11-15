@@ -24,6 +24,7 @@ class CloudChainLlm(
     models: List<CloudModel>,
     baseUrl: String = "https://api.z.ai/api/paas/v4",
     private val cooldownMs: Long = 60_000L,
+    private val notEntitledCooldownMs: Long = 30 * 60_000L,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val engineFor: (CloudModel) -> Llm = { CloudLlm(apiKey, baseUrl, it.id) },
 ) : Llm {
@@ -59,6 +60,14 @@ class CloudChainLlm(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: LlmHttpException) {
+                if (e.notEntitled) {
+                    // No credit for this model — the account is on the free
+                    // tier. Skip it without treating it as an outage and
+                    // without pretending the key is broken.
+                    coolingUntil[i] = clock() + notEntitledCooldownMs
+                    failures += "${ordered[i].displayName}: no credit (HTTP ${e.code})"
+                    continue
+                }
                 if (!e.overloaded) throw e // the request or key is wrong; another model will say the same
                 coolingUntil[i] = clock() + cooldownMs
                 failures += "${ordered[i].displayName}: ${e.message}"
@@ -69,6 +78,14 @@ class CloudChainLlm(
                 failures += "${ordered[i].displayName}: ${e.message ?: e.javaClass.simpleName}"
                 lastOverloadReason = "${ordered[i].displayName} failed (${e.message ?: "no detail"})"
             }
+        }
+        if (failures.isNotEmpty() && failures.all { it.contains("no credit") }) {
+            throw RuntimeException(
+                "Every model tried is a paid one and this account has no credit for it — " +
+                    failures.joinToString("; ") +
+                    ". Nothing is broken and no key is wrong: switch to GLM-4.7-Flash (free) " +
+                    "or to the on-device model in Setup.",
+            )
         }
         throw RuntimeException(
             "Z.ai did not serve any model just now — " + failures.joinToString("; ") +

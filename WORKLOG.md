@@ -1,3 +1,17 @@
+## 0.8.4 — crash reports come from Android itself, and a paid model can no longer look like a broken key
+
+**Reported:** "the last crash didn't say that on the crash log — I believe it said unknown because it didn't have the tools to trace native crashes", and "I don't think it ever saved any of the crash logs."
+**Reported:** "I will never pay for an AI model."
+
+**1. Real crash evidence, not inference.** The old reports were *synthesized* from breadcrumbs because nothing asked the OS. Added `host.vorv.healer.NativeCrashHistory` — `ActivityManager.getHistoricalProcessExitReasons()` (no root; only this app's own exits) with reason, description, process, timestamp and, for a debuggable build, the tombstone/ANR trace from `getTraceInputStream()`. `VorvApplication.synthesizeNativeCrashReportIfMissing()` now writes a `crash_native_<exitTimestamp>.txt` labelled **REAL — from Android's exit history** and returns; synthesis only runs when the OS genuinely has no record, and it says so. A missing trace is named as missing instead of guessed.
+Note: the entry type is the top-level `android.app.ApplicationExitInfo` on current SDKs (constants live there, not on `ActivityManager`).
+Tests: `NativeCrashHistoryTest` — native/ANR reason names, real report quotes the tombstone, missing trace is stated as missing, unknown reason keeps its number.
+
+**2. Free tier is the only path.** A paid model with no credit answers 402/"insufficient balance"; the old client would have surfaced that as a key-ish failure after retrying. `LlmHttpException.notEntitled` now recognises it, the chain skips the model for 30 minutes without calling it an outage, and if every model tried was paid the message says the account has no credit and points at the free tier / on-device model. Free models are ordered ahead of paid ones everywhere a chain is built, and Setup marks every non-free model **PAID — needs credit** so it is never picked by surprise.
+Tests: `CloudChainLlmTest` — 402 is skipped and the free model answers, only-paid-no-credit message names the free option and says no key is wrong, free model sorts first.
+
+**Version:** versionCode 41, versionName 0.8.4.
+
 ## 0.8.3 — the "crashed last time" dialog was reading another build's file, and one busy model no longer ends a task
 
 **Reported:** "just installed it, first time opening it and this popped up. It didn't crash." The dialog said *Vorv crashed last time* on a brand-new install.

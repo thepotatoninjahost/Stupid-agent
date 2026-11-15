@@ -251,6 +251,20 @@ fun SettingsScreen(
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
                                             )
                                         }
+                                    } else {
+                                        // Stated up front so nobody picks a paid model
+                                        // expecting it to work: without credit the app
+                                        // skips it instead of failing the task.
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(shape = RoundedCornerShape(50), color = Warning.copy(alpha = 0.18f)) {
+                                            Text(
+                                                " PAID — needs credit",
+                                                color = Warning,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                            )
+                                        }
                                     }
                                 }
                                 Text(cm.shortDesc, color = OnSurfaceVariant, fontSize = 11.sp)
