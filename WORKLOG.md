@@ -1,20 +1,15 @@
-## 0.8.7 — a crash is something Vorv acts on, not something it describes
+## 0.8.8 — the boot trace can no longer grow into a startup kill
 
-**Asked:** "if it did crash, then the app should want to fucking fix the problem."
+**From the recording (recorded 08:20 PST):** the dialog is the OLD wording ("Reason: the previous boot did not complete … consistent with a NATIVE crash"), so that phone was still on a pre-0.8.6 build — 0.8.6 was not published until 15:30 that day. The trace in it ends ~2 ms after `previous_boot_crashed`, i.e. the process died inside its own crash handling, at the first thing that reads the trace file.
 
-**What was true before:** on a proven crash the app wrote a report and offered buttons. The only automatic action was the hot-patch probation quarantine. Nothing else changed, so a boot that died in the same place died there on every launch.
+**Found by reading the path it died in:** `boot_trace.txt` is appended on every launch, from 0.8.0 onward, and was never trimmed. It grows for the life of the install — hundreds of launches, plus a crash report that embeds the whole thing each time it is written, plus the dialog that renders it. Every one of those is a full `readText()` during startup on a phone. That is an out-of-memory kill in exactly the milliseconds where the crash check runs, and a process killed there leaves "the previous boot did not complete" behind — which is the loop the recording shows.
 
-**New `host.vorv.healer.CrashRepair`** — runs at boot, immediately after `DeathEvidence` confirms a crash, and needs no model (so it works with no key, no download, no network):
+**Fixed:**
+* `BootTracer.MAX_BYTES` (128 KB). `start()` calls `trimIfHuge()` first: if the file is over the cap it is rewritten with the newest half, cut at a clean section boundary. Older sessions are dropped; the current one is kept.
+* `readTrace()`, `readPreviousTrace()` and `BootTracer.tailOf()` read only the LAST 128 KB via `RandomAccessFile` — the whole file is never loaded again.
+* Crash reports embed at most 8 KB of the previous trace (`BootTracer.EMBED_BYTES`) and 8 KB of the watchdog report, with `…(older lines dropped)` when truncated. The dialog shows the same bounded text.
 
-* **Died inside GenieX/native init** (`geniex_init_begin` present, `geniex_init_success` absent) → `suppressNativeThisBoot = true`: that boot runs without native init once. A native crash on launch stops looping instead of repeating forever. One boot only; it is tried again next launch.
-* **Died while applying hot-patches** (`hotpatch_load_begin` without `hotpatch_load_end`) → recorded as suspect and handed to the fixer.
-* **A quarantined patch** from the probation gate → reported as already handled.
-* **Nothing to disable** → says exactly that, with the last breadcrumb, instead of inventing a story.
-* Every crash writes `crash_repairs/repair_<timestamp>.txt`: the evidence line, where the dying session stopped, what was done automatically, and that a code fix is still open.
+Tests (`BootTracerTrimTest`, 4): a trace over the cap is trimmed on the next boot and keeps the newest session; the previous section is still found in a huge file; `tailOf` returns exactly the bytes asked for; a small trace is untouched. `BootTracerInstallTest` wording corrected — "did not finish" is not "crashed"; that verdict belongs to `DeathEvidence` alone.
 
-**It is no longer silent.** The crash dialog gains `Done automatically: …`; the boot diagnosis task now receives `Already done automatically this boot (do not repeat it): …` plus the evidence line, and is told to read `crash_repairs/` before proposing anything. The old prompt's "consistent with a NATIVE crash … or an external process kill" was replaced with the actual evidence.
-
-Tests: `CrashRepairTest` — death mid native init suppresses it once; a successful native init never does; quarantined patches are reported; death during hot-patch load is called out; nothing-to-disable says so; a null trace is answered, not crashed on.
-
-**Version:** versionCode 44, versionName 0.8.7. 467 tests, 0 failures.
+**Version:** versionCode 45, versionName 0.8.8. 471 tests, 0 failures.
 

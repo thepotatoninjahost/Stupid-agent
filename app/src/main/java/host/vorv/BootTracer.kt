@@ -41,6 +41,19 @@ import java.util.Locale
 object BootTracer {
 
     private const val TRACE_FILE = "boot_trace.txt"
+
+    /**
+     * Hard cap on the trace file. It is appended on every launch and never
+     * used to be trimmed, so on a phone that has launched the app hundreds of
+     * times every read of it (and every crash report that embeds it) grew with
+     * it — straight into an out-of-memory kill of the process during startup,
+     * which then looks like "the previous boot did not complete" and loops.
+     * The tail is what matters; history beyond [MAX_BYTES] is dropped.
+     */
+    internal const val MAX_BYTES = 128 * 1024
+
+    /** How much of the previous trace a crash report embeds. */
+    internal const val EMBED_BYTES = 8 * 1024
     private const val INSTALL_ID_FILE = "boot_install_id.txt"
     private const val CRASH_COUNT_FILE = "crash_count.txt"
 
@@ -92,6 +105,7 @@ object BootTracer {
             // Instead, write a separator + new start marker.
             file.appendText("\n" + "=".repeat(60) + "\n")
         }
+        trimIfHuge(ctx)
         writeStep(
             ctx,
             "BOOT_STARTED",
@@ -139,12 +153,43 @@ object BootTracer {
     }
 
     /**
-     * Read the full boot trace. Used by [MainActivity] to display diagnostics.
+     * Read the boot trace, bounded to the last [MAX_BYTES]. Used by
+     * [MainActivity] to display diagnostics.
      */
     fun readTrace(ctx: Context): String {
         return runCatching {
-            traceFile(ctx).takeIf { it.exists() }?.readText() ?: "(no trace file)"
+            traceFile(ctx).takeIf { it.exists() }?.let { tailOf(it, MAX_BYTES) } ?: "(no trace file)"
         }.getOrDefault("(error reading trace)")
+    }
+
+    /** Last [max] bytes of the file, never the whole thing. */
+    internal fun tailOf(file: File, max: Int): String = runCatching {
+        val len = file.length()
+        if (len <= max) return@runCatching file.readText()
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            raf.seek(len - max)
+            val bytes = ByteArray(max)
+            raf.readFully(bytes)
+            String(bytes, Charsets.UTF_8)
+        }
+    }.getOrDefault("")
+
+    /**
+     * Keep the trace bounded. Called at the start of every boot so the file
+     * cannot grow without limit: the newest sections (the ones a crash report
+     * needs) are kept, older ones are dropped.
+     */
+    internal fun trimIfHuge(ctx: Context) {
+        runCatching {
+            val file = traceFile(ctx)
+            if (!file.exists() || file.length() <= MAX_BYTES) return
+            // Trim to half the cap: the file is appended to on every boot, so
+            // cutting exactly at the cap would exceed it again immediately.
+            val tail = tailOf(file, MAX_BYTES / 2)
+            // Drop the partial first section so the file still starts cleanly.
+            val firstSep = tail.indexOf("\n" + "=".repeat(60) + "\n")
+            file.writeText(if (firstSep >= 0) tail.substring(firstSep) else tail)
+        }
     }
 
     /**
@@ -158,7 +203,7 @@ object BootTracer {
      */
     fun readPreviousTrace(ctx: Context): String? {
         val full = runCatching {
-            traceFile(ctx).takeIf { it.exists() }?.readText()
+            traceFile(ctx).takeIf { it.exists() }?.let { tailOf(it, MAX_BYTES) }
         }.getOrNull() ?: return null
 
         val sections = full.split("\n${"=".repeat(60)}\n")

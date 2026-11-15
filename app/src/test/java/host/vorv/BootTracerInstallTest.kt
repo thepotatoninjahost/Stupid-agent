@@ -34,11 +34,14 @@ class BootTracerInstallTest {
     }
 
     @Test
-    fun `a boot of this install that died before BOOT_COMPLETE IS a crash`() {
+    fun `a boot of this install that died before BOOT_COMPLETE did not finish`() {
         val real = """
             [09:01:00.000] BOOT_STARTED - pid=200 install=$mine
             [09:01:00.010] init_room_begin
         """.trimIndent()
+        // "Did not finish" is all this answers. Whether it CRASHED is
+        // DeathEvidence's call (it needs Android's exit record, a Java report
+        // or a watchdog detection) — this check alone must never be a verdict.
         assertFalse(BootTracer.sectionCompleted(real, mine))
     }
 

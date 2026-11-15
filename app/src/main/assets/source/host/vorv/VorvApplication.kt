@@ -528,13 +528,19 @@ class VorvApplication : Application() {
         sb.appendLine("========================================")
         sb.appendLine("Previous boot trace (breadcrumbs, last steps before death):")
         sb.appendLine("========================================")
-        sb.appendLine(prevTrace ?: "(no previous trace available)")
+        sb.appendLine(
+            (prevTrace ?: "(no previous trace available)")
+                .let { if (it.length > BootTracer.EMBED_BYTES) "…(older lines dropped)\n" + it.takeLast(BootTracer.EMBED_BYTES) else it }
+        )
         sb.appendLine()
         if (watchdogReport != null && watchdogReport.isFile) {
             sb.appendLine("========================================")
             sb.appendLine("Watchdog detection (embedded verbatim, may repeat the trace):")
             sb.appendLine("========================================")
-            sb.appendLine(runCatching { watchdogReport.readText() }.getOrDefault("(watchdog report unreadable: path=${watchdogReport.name})"))
+            sb.appendLine(
+                runCatching { BootTracer.tailOf(watchdogReport, BootTracer.EMBED_BYTES) }
+                    .getOrDefault("(watchdog report unreadable: path=${watchdogReport.name})")
+            )
         } else {
             sb.appendLine("No watchdog detection on disk — the watchdog may have died too,")
             sb.appendLine("or the crash occurred before the watchdog registered the process.")
