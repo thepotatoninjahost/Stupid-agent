@@ -1,30 +1,40 @@
 package host.vorv.linux
 
+import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.apache.commons.compress.archivers.ar.ArArchiveEntry
 import org.apache.commons.compress.archivers.ar.ArArchiveOutputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
 
 /**
- * The toolchain is 203 MB from the internet, unpacked into the guest. These tests
- * exercise the two things that can silently ruin that: believing a wrong archive,
- * and writing outside the root.
+ * The toolchain is 203 MB from the internet, unpacked into the guest by dpkg-deb.
+ * These tests cover what can silently ruin that: believing a wrong archive, never
+ * noticing that dpkg-deb failed, and stamping a half-install as finished.
+ *
+ * The guest is simulated: `dpkg-deb -x` is stood in for by a plain tar extract, so
+ * the download, sha256 check, exit-code handling and stamp logic are the real ones.
+ * Whether Debian's own dpkg-deb accepts the packages is a phone question.
  */
 class LinuxToolchainTest {
 
     private val server = MockWebServer()
     private val work: File = Files.createTempDirectory("vorv-toolchain").toFile()
+    private val commands = mutableListOf<String>()
 
     @After fun tearDown() {
         server.shutdown()
@@ -36,11 +46,9 @@ class LinuxToolchainTest {
         TarArchiveOutputStream(GzipCompressorOutputStream(data)).use { tar ->
             files.forEach { (path, spec) ->
                 val bytes = spec.first.toByteArray()
-                val entry = TarArchiveEntry(path).apply {
-                    size = bytes.size.toLong()
-                    mode = spec.second
-                }
-                tar.putArchiveEntry(entry)
+                tar.putArchiveEntry(
+                    TarArchiveEntry(path).apply { size = bytes.size.toLong(); mode = spec.second },
+                )
                 tar.write(bytes)
                 tar.closeArchiveEntry()
             }
@@ -48,8 +56,7 @@ class LinuxToolchainTest {
         val out = ByteArrayOutputStream()
         ArArchiveOutputStream(out).use { ar ->
             val payload = data.toByteArray()
-            val entry = org.apache.commons.compress.archivers.ar.ArArchiveEntry("data.tar.gz", payload.size.toLong())
-            ar.putArchiveEntry(entry)
+            ar.putArchiveEntry(ArArchiveEntry("data.tar.gz", payload.size.toLong()))
             ar.write(payload)
             ar.closeArchiveEntry()
         }
@@ -68,59 +75,145 @@ class LinuxToolchainTest {
             size = bytes.size.toLong(),
         )
 
-    @Test
-    fun `a package whose bytes do not match its sha256 is refused and nothing lands`() {
-        val bytes = deb(mapOf("usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101)))
-        server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
-        val rootfs = File(work, "rootfs")
-        val result = LinuxToolchain(rootfs, File(work, "cache")).install(
-            listOf(pkg("openjdk", bytes, shaOverride = "0".repeat(64))),
-        ) { }
-        assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull()!!.message!!.startsWith("REFUSED"))
-        assertFalse(File(rootfs, "usr/bin/javac").exists())
+    /** A guest that answers like Debian would, and unpacks what it is handed. */
+    private fun guest(
+        rootfs: File,
+        hasDpkg: Boolean = true,
+        unpackExit: Int = 0,
+    ): suspend (String) -> LinuxSystem.Shell = { command ->
+        commands += command
+        when {
+            command.startsWith("command -v dpkg-deb") ->
+                if (hasDpkg) LinuxSystem.Shell(0, "/usr/bin/dpkg-deb", null, false)
+                else LinuxSystem.Shell(1, "", "not found", false)
+            command.startsWith("J=") ->
+                LinuxSystem.Shell(0, "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64", null, false)
+            command.startsWith("test -x /usr/bin/javac") ->
+                if (File(rootfs, "usr/bin/javac").canExecute() && File(rootfs, "usr/bin/aapt").canExecute()) {
+                    LinuxSystem.Shell(0, "", null, false)
+                } else {
+                    LinuxSystem.Shell(1, "", null, false)
+                }
+            command.startsWith("dpkg-deb -x ") -> {
+                if (unpackExit == 0) {
+                    val name = command.substringAfter("\'").substringBefore("\'")
+                    val deb = File(rootfs, LinuxToolchain.DEBS_IN_GUEST.trim('/') + "/" + File(name).name)
+                    unpackForTest(deb, rootfs)
+                }
+                LinuxSystem.Shell(unpackExit, if (unpackExit == 0) "" else "dpkg-deb: error", null, false)
+            }
+            else -> LinuxSystem.Shell(127, "", "unexpected command", false)
+        }
+    }
+
+    /** Stand-in for dpkg-deb: lay the payload down with the modes it carries. */
+    private fun unpackForTest(deb: File, rootfs: File) {
+        var payload: ByteArrayOutputStream? = null
+        deb.inputStream().use { raw ->
+            org.apache.commons.compress.archivers.ar.ArArchiveInputStream(raw).use { ar ->
+                while (true) {
+                    val entry = ar.nextEntry ?: break
+                    if (!entry.name.startsWith("data.tar")) continue
+                    payload = ByteArrayOutputStream().also { ar.copyTo(it) }
+                }
+            }
+        }
+        TarArchiveInputStream(GzipCompressorInputStream(ByteArrayInputStream(payload!!.toByteArray()))).use { tar ->
+            while (true) {
+                val entry = tar.nextEntry ?: break
+                val target = File(rootfs, entry.name)
+                if (entry.isDirectory) { target.mkdirs(); continue }
+                target.parentFile?.mkdirs()
+                target.outputStream().use { tar.copyTo(it) }
+                target.setExecutable((entry.mode and 0b001_000_000) != 0, false)
+            }
+        }
     }
 
     @Test
-    fun `a verified package is unpacked with its exec bit and only stamps when javac and aapt exist`() {
+    fun `a package whose bytes do not match its sha256 is refused and nothing lands`() = runTest {
+        val bytes = deb(mapOf("usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs))
+            .install(listOf(pkg("openjdk", bytes, shaOverride = "0".repeat(64)))) { }
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.startsWith("REFUSED"))
+        assertFalse(File(rootfs, "usr/bin/javac").exists())
+        assertFalse(commands.any { it.startsWith("dpkg-deb -x") })
+    }
+
+    @Test
+    fun `every verified package is handed to dpkg-deb inside the guest and an exit 0 stamps the install`() = runTest {
         val bytes = deb(
             mapOf(
                 "usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101),
                 "usr/bin/aapt" to ("#!/bin/sh\n" to 0b111_101_101),
-                "usr/lib/jvm/java-17-openjdk-arm64/lib/modules" to ("mods" to 0b110_100_100),
             ),
         )
         server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
         val rootfs = File(work, "rootfs")
-        val toolchain = LinuxToolchain(rootfs, File(work, "cache"))
-        val result = toolchain.install(listOf(pkg("jdk", bytes))) { }
+        val seen = mutableListOf<String>()
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs))
+            .install(listOf(pkg("jdk", bytes))) { seen += it.line() }
+
         assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
         assertTrue(File(rootfs, "usr/bin/javac").canExecute())
-        assertTrue(File(rootfs, "usr/lib/jvm/java-17-openjdk-arm64/lib/modules").isFile)
-        assertFalse(File(rootfs, "usr/lib/jvm/java-17-openjdk-arm64/lib/modules").canExecute())
-        assertTrue(toolchain.isInstalled())
+        assertTrue(commands.any { it == "dpkg-deb -x \'${LinuxToolchain.DEBS_IN_GUEST}/jdk_1.0.deb\' /" })
         assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).isFile)
+        // The link step is what makes /usr/bin/javac exist after dpkg-deb -x.
+        assertTrue(commands.any { it.startsWith("J=") })
+        assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).readText().contains("JAVA_HOME=/usr/lib/jvm/"))
+        assertTrue(seen.isNotEmpty())
+        assertTrue(seen.last().contains("1/1 packages"))
     }
 
     @Test
-    fun `a payload that tries to escape the guest is refused`() {
-        val bytes = deb(mapOf("../escaped.txt" to ("x" to 0b110_100_100)))
+    fun `a dpkg-deb that fails is reported and nothing is stamped`() = runTest {
+        val bytes = deb(mapOf("usr/bin/javac" to ("x" to 0b111_101_101)))
         server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
         val rootfs = File(work, "rootfs")
-        val result = LinuxToolchain(rootfs, File(work, "cache")).install(listOf(pkg("evil", bytes))) { }
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs, unpackExit = 2))
+            .install(listOf(pkg("jdk", bytes))) { }
+
         assertTrue(result.isFailure)
-        assertFalse(File(work, "escaped.txt").exists())
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("could not unpack jdk_1.0.deb"))
+        assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
     }
 
     @Test
-    fun `installing without javac or aapt is reported, not stamped`() {
+    fun `a guest without dpkg-deb is reported, not half-installed`() = runTest {
+        val bytes = deb(mapOf("usr/bin/javac" to ("x" to 0b111_101_101)))
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs, hasDpkg = false))
+            .install(listOf(pkg("jdk", bytes))) { }
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("no dpkg-deb"))
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `a package set without javac or aapt is reported by the guest check, not stamped`() = runTest {
         val bytes = deb(mapOf("usr/share/doc/readme" to ("x" to 0b110_100_100)))
         server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
         val rootfs = File(work, "rootfs")
-        val result = LinuxToolchain(rootfs, File(work, "cache")).install(listOf(pkg("docs", bytes))) { }
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs))
+            .install(listOf(pkg("docs", bytes))) { }
+
         assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull()!!.message!!.contains("still missing"))
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("no runnable javac/aapt"))
         assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `an empty plan is refused before anything runs`() = runTest {
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs)).install(emptyList()) { }
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("no package list"))
+        assertTrue(commands.isEmpty())
     }
 }

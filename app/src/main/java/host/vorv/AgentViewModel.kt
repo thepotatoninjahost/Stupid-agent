@@ -786,8 +786,7 @@ class AgentViewModel(
                 linuxPayloadInApk = guest.inspectPayload().payloadInApk,
                 linuxProvisioned = guest.isProvisioned(),
                 linuxDiagnostics = guest.diagnose(),
-                toolchainInstalled = File(guest.rootfs, host.vorv.linux.LinuxToolchain.STAMP_PATH).isFile &&
-                    File(guest.rootfs, "usr/bin/javac").isFile,
+                toolchainInstalled = host.vorv.linux.LinuxToolchain.looksInstalled(guest.rootfs),
             )
         }
     }
@@ -1484,7 +1483,15 @@ class AgentViewModel(
                 }
                 return@launch
             }
-            val toolchain = host.vorv.linux.LinuxToolchain(guest.rootfs, File(appContext.cacheDir, "debs"))
+            // The unpacking runs inside the guest: dpkg-deb resolves Debian's link
+            // chains against the guest's own root, which the app's filesystem view
+            // cannot do (0.9.5 failed with ELOOP trying it from here).
+            val toolchain = host.vorv.linux.LinuxToolchain(
+                rootfs = guest.rootfs,
+                runInGuest = { command ->
+                    guest.run(command, timeoutMs = 10 * 60_000L, binds = emptyList(), workDir = "/")
+                },
+            )
             val plan = toolchain.plan(json)
             val outcome = toolchain.install(plan) { progress ->
                 _state.update { it.copy(toolchainProgress = progress.line()) }
@@ -1499,7 +1506,7 @@ class AgentViewModel(
                 it.copy(
                     toolchainInstalling = false,
                     toolchainProgress = null,
-                    toolchainInstalled = toolchain.isInstalled(),
+                    toolchainInstalled = host.vorv.linux.LinuxToolchain.looksInstalled(guest.rootfs),
                     toolchainResult = verdict,
                 )
             }

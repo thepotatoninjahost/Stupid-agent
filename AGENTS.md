@@ -52,3 +52,15 @@ were reported as fixed and were not.
   shipping.
 - Both failures above were found by CI or the phone, never by the unit tests, so
   a green unit suite is not a reason to call a build good.
+- `dpkg-deb -x` lays a Debian package's files down but runs **no** post-install
+  script, so update-alternatives links never appear: after unpacking
+  openjdk-17-jdk-headless there is no `/usr/bin/javac` at all, only
+  `/usr/lib/jvm/java-1.17.0-openjdk-arm64/bin/javac`. Link the five JDK tools
+  into `/usr/bin` ourselves and verify with `test -x` *inside* the guest.
+- Never unpack Debian's packages with our own tar code. 0.9.5 did and died on the
+  phone with "Too many symbolic links": Debian's link chains only resolve
+  correctly inside the guest. `dpkg-deb -x` inside the guest is the answer.
+- The whole plan can be drilled on any Linux machine before shipping: fetch all
+  169 `.deb`s, check each sha256, run `dpkg-deb -x` over a copy of the rootfs, and
+  assert the tools land. That drill found the missing javac; the phone found the
+  ELOOP. Unit tests found neither.
