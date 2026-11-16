@@ -38,6 +38,24 @@ class LinuxSystem(private val context: Context) : GuestShell {
     /** The proot binary, at the path the runtime actually installed it. */
     fun prootExecutable(): File? = payload.executable()
 
+    /**
+     * proot's loader, from a place the kernel will execute.
+     *
+     * nativeLibraryDir comes first because it is the one directory Android lets
+     * an app execute a binary from. The filesDir copy kept by older builds is
+     * tried last: on Android 10+ it is expected to fail, which is the platform
+     * saying the loader must not live in app storage at all.
+     */
+    fun resolveLoader(): File? =
+        loaderCandidates(nativeDir, loaderDir).firstOrNull { it.isFile && it.canExecute() }
+
+    private fun missingLoaderMessage(): String =
+        "proot's loader cannot run on this install, so Linux cannot start. Android only runs " +
+            "a binary the installer unpacked into nativeLibraryDir, and libforge-proot-loader.so " +
+            (if (File(nativeDir, "libforge-proot-loader.so").isFile)
+                "is there but not executable — reinstall the APK."
+            else "is missing from it — uninstall Vorv and install this APK again.")
+
     fun inspectPayload(): LinuxPayload.State = payload.inspect()
 
     fun repairPayload(): LinuxPayload.State = payload.repair()
@@ -64,6 +82,8 @@ class LinuxSystem(private val context: Context) : GuestShell {
         lines += "proot in APK: " + (state.apkEntry ?: "MISSING — this build really has no payload")
         lines += "runtime resolved: " + (state.resolvedPath ?: "not found by the ClassLoader")
         lines += "extracted copy: " + if (state.extracted) "present" else "MISSING"
+        val loader = resolveLoader()
+        lines += "proot loader: " + (loader?.absolutePath ?: "NOTHING EXECUTABLE — reinstall the APK")
         if (state.listing.isEmpty()) {
             lines += "nativeLibraryDir holds nothing — the installer unpacked no libraries for this install"
         } else {
@@ -95,18 +115,14 @@ class LinuxSystem(private val context: Context) : GuestShell {
             rootfs.deleteRecursively()
             rootfs.mkdirs()
             extractRootfs()
-            loaderDir.mkdirs()
-            listOf("loader", "loader32").forEach { name ->
-                // Prefer the installed copy; fall back to the one unpacked from
-                // our own APK, so a partially-unpacked install still works.
-                val candidates = listOf(
-                    File(nativeDir, "libforge-proot-$name.so"),
-                    File(File(context.filesDir, "native"), name),
-                )
-                candidates.firstOrNull { it.isFile }
-                    ?.copyTo(File(loaderDir, name), overwrite = true)
+            // The loader is NOT copied into app storage. Android 10+ refuses to
+            // execute a file the app itself wrote there (targetSdk >= 29), so a
+            // copy in filesDir can never start proot — it has to stay where the
+            // installer unpacked it, in nativeLibraryDir.
+            if (resolveLoader() == null) {
+                rootfs.deleteRecursively()
+                return@withContext Result.failure(IllegalStateException(missingLoaderMessage()))
             }
-            File(loaderDir, "loader").setExecutable(true)
             if (!isProvisioned()) {
                 return@withContext Result.failure(IllegalStateException("the Linux root filesystem is incomplete"))
             }
@@ -143,8 +159,10 @@ class LinuxSystem(private val context: Context) : GuestShell {
             )
         val home = File(root, "home").apply { mkdirs() }
         val tmp = File(root, "tmp").apply { mkdirs() }
+        val loader = resolveLoader()
+            ?: return@withContext Shell(-1, "", missingLoaderMessage(), true)
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
-        val env = guestEnv(loaderDir, tmp)
+        val env = guestEnv(loader, tmp)
         val started = System.currentTimeMillis()
         val builder = ProcessBuilder(argv)
         builder.environment().putAll(env)
@@ -193,9 +211,23 @@ class LinuxSystem(private val context: Context) : GuestShell {
             add("/bin/sh"); add("-lc"); add(command)
         }
 
+        /**
+         * Every place a proot loader might be, in the order they may be used.
+         *
+         * Pure and ordered so a test can pin it: the installer-unpacked library
+         * in nativeLibraryDir must always be chosen over a copy in app storage.
+         */
+        internal fun loaderCandidates(nativeDir: File, legacyLoaderDir: File): List<File> = listOf(
+            File(nativeDir, "libforge-proot-loader.so"),
+            File(nativeDir, "loader"),
+            File(legacyLoaderDir, "loader"),
+        )
+
         /** proot's environment: its loader, a writable /tmp and a plain PATH. */
-        internal fun guestEnv(loaderDir: File, tmp: File): Map<String, String> = mapOf(
-            "PROOT_LOADER" to File(loaderDir, "loader").absolutePath,
+        internal fun guestEnv(loader: File, tmp: File): Map<String, String> = mapOf(
+            // PROOT_LOADER is exec'd by proot, so it must sit in a directory the
+            // platform allows execution from — never in filesDir on Android 10+.
+            "PROOT_LOADER" to loader.absolutePath,
             "PROOT_TMP_DIR" to tmp.absolutePath,
             // The app has no seccomp filter to inherit; avoids a needless probe.
             "PROOT_NO_SECCOMP" to "1",

@@ -22,11 +22,15 @@ Two things have to be true for Android to allow this at all:
    renamed only so the platform treats them as native libraries.
 2. **`proot` must find its loader.** The Termux build of `proot` has a
    compiled-in loader path of `/data/data/com.termux/...`. `PROOT_LOADER` points
-   it at Vorv's own copy instead, and `fetch-linux.sh` checks that the binary
-   actually honours that variable before anything is packaged.
+   it at `nativeLibraryDir/libforge-proot-loader.so` — the copy the installer
+   unpacked. It must **not** be a copy inside app storage: since Android 10 the
+   kernel refuses to execute a file the app itself wrote there, for any
+   `targetSdk >= 29`, which is exactly how a working payload produced "no
+   Linux". `fetch-linux.sh` checks that the binary honours `PROOT_LOADER`
+   before anything is packaged.
 
-The root filesystem itself is an asset (`assets/forge/linux/rootfs.tar.gz`,
-3.9 MB) unpacked once into `filesDir/linux/rootfs` on first use. Every entry is
+The root filesystem itself is an asset (`assets/forge/linux/rootfs.tar`, 9 MB,
+518 entries) unpacked once into `filesDir/linux/rootfs` on first use. Every entry is
 checked to resolve inside that folder, symlinks are recreated as symlinks, and
 executable bits are preserved — a rootfs that loses those looks present and
 does nothing.

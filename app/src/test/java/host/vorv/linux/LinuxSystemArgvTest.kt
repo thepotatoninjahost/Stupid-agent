@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 /**
  * The proot command line, pinned without a device.
@@ -71,11 +72,41 @@ class LinuxSystemArgvTest {
 
     @Test
     fun `environment names the loader and keeps a plain PATH`() {
-        val env = LinuxSystem.guestEnv(File("/data/user/0/host.vorv/files/linux/loader"), tmp)
-        assertEquals("/data/user/0/host.vorv/files/linux/loader/loader", env["PROOT_LOADER"])
+        val loader = File("/data/app/~~x==/host.vorv-y==/lib/arm64/libforge-proot-loader.so")
+        val env = LinuxSystem.guestEnv(loader, tmp)
+        // The exact path is passed through: proot execs it, and only
+        // nativeLibraryDir is executable on Android 10+.
+        assertEquals(loader.absolutePath, env["PROOT_LOADER"])
         assertEquals(tmp.absolutePath, env["PROOT_TMP_DIR"])
         assertEquals("1", env["PROOT_NO_SECCOMP"])
         assertEquals("/root", env["HOME"])
         assertTrue(env.getValue("PATH").contains("/usr/bin"))
+    }
+
+    @Test
+    fun `the loader is taken from nativeLibraryDir and never from app storage`() {
+        val native = Files.createTempDirectory("loader-native").toFile()
+        val appStorage = Files.createTempDirectory("loader-app-storage").toFile()
+        val installed = File(native, "libforge-proot-loader.so")
+            .apply { writeText("payload"); setExecutable(true) }
+        // A copy in app storage must not win, even when it exists and is +x:
+        // Android's exec policy, not the mode bits, is what refuses it.
+        File(appStorage, "loader").apply { writeText("payload"); setExecutable(true) }
+
+        val candidates = LinuxSystem.loaderCandidates(native, appStorage)
+        assertEquals(installed.canonicalPath, candidates.first().canonicalPath)
+        assertEquals(
+            installed.canonicalPath,
+            candidates.first { it.isFile && it.canExecute() }.canonicalPath,
+        )
+    }
+
+    @Test
+    fun `a copy already in app storage is only a last resort`() {
+        val native = Files.createTempDirectory("loader-native-empty").toFile()
+        val appStorage = Files.createTempDirectory("loader-legacy").toFile()
+        val candidates = LinuxSystem.loaderCandidates(native, appStorage)
+        assertFalse(candidates.any { it.isFile })
+        assertEquals(File(appStorage, "loader").canonicalPath, candidates.last().canonicalPath)
     }
 }

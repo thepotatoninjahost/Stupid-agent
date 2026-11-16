@@ -778,6 +778,11 @@ class AgentViewModel(
         }
     }
 
+    /** The loader proot was handed, shown with a failure so the cause is visible. */
+    private fun loaderTail(guest: host.vorv.linux.LinuxSystem): String =
+        "\n\nproot loader used: " + (guest.resolveLoader()?.absolutePath ?: "none executable") +
+            "\nproot binary: " + (guest.prootExecutable()?.absolutePath ?: "missing")
+
     /** Setup → Linux system → TEST. Runs `apk --version` in the guest — nothing else. */
     fun testLinuxSystem() {
         if (_state.value.linuxTesting) return
@@ -805,9 +810,9 @@ class AgentViewModel(
                     .getOrElse { host.vorv.linux.LinuxSystem.Shell(-1, "", it.message, true) }
                 when {
                     shell.timedOut -> "FAILED — the guest did not answer within 180s. " +
-                        (shell.error ?: "No output.")
+                        (shell.error ?: "No output.") + loaderTail(guest)
                     shell.exitCode != 0 -> "FAILED — the guest answered with exit ${shell.exitCode}:\n" +
-                        shell.output.takeLast(2_000)
+                        shell.output.takeLast(2_000) + loaderTail(guest)
                     else -> "ALL GOOD — a real command ran inside Vorv's Linux system:\n" +
                         shell.output.trim().takeLast(2_000)
                 }
