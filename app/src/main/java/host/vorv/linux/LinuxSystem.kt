@@ -35,6 +35,8 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     private val payload by lazy { LinuxPayload(context) }
 
+    private val provisioner = RootfsProvisioner(STAMP)
+
     /** The proot binary, at the path the runtime actually installed it. */
     fun prootExecutable(): File? = payload.executable()
 
@@ -62,7 +64,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     override fun isAvailable(): Boolean = payload.executable() != null
 
-    fun isProvisioned(): Boolean = stamp.isFile && File(rootfs, "etc/alpine-release").isFile
+    fun isProvisioned(): Boolean = provisioner.isProvisioned(rootfs, stamp)
 
     /**
      * Why the system is or is not usable on this phone, in words the owner can
@@ -110,28 +112,19 @@ class LinuxSystem(private val context: Context) : GuestShell {
                 ),
             )
         }
-        if (isProvisioned()) return@withContext Result.success(root)
-        try {
-            rootfs.deleteRecursively()
-            rootfs.mkdirs()
-            extractRootfs()
-            // The loader is NOT copied into app storage. Android 10+ refuses to
-            // execute a file the app itself wrote there (targetSdk >= 29), so a
-            // copy in filesDir can never start proot — it has to stay where the
-            // installer unpacked it, in nativeLibraryDir.
-            if (resolveLoader() == null) {
-                rootfs.deleteRecursively()
-                return@withContext Result.failure(IllegalStateException(missingLoaderMessage()))
-            }
-            if (!isProvisioned()) {
-                return@withContext Result.failure(IllegalStateException("the Linux root filesystem is incomplete"))
-            }
-            stamp.writeText(STAMP)
-            Result.success(root)
-        } catch (e: Exception) {
-            rootfs.deleteRecursively()
-            Result.failure(e)
-        }
+        // The loader is NOT copied into app storage. Android 10+ refuses to
+        // execute a file the app itself wrote there (targetSdk >= 29), so a copy
+        // in filesDir can never start proot — it has to stay where the installer
+        // unpacked it, in nativeLibraryDir.
+        provisioner
+            .provision(
+                rootfs = rootfs,
+                stamp = stamp,
+                loaderOk = { resolveLoader() != null },
+                loaderFailure = { IllegalStateException(missingLoaderMessage()) },
+                extract = { extractRootfs() },
+            )
+            .map { root }
     }
 
     /**
@@ -281,6 +274,67 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
 }
 
+/**
+ * The provision decision, free of Android types so a JVM test can drive it.
+ *
+ * 0.9.2 shipped this ordering wrong: `provision()` asked `isProvisioned()` — which
+ * requires the stamp — and only wrote the stamp afterwards, so on a fresh install
+ * the check could not pass and the stamp was never written. Provisioning failed on
+ * every run, on every phone, and said "the Linux root filesystem is incomplete"
+ * while the tree it had just unpacked was fine. Nothing in the suite could see it
+ * because only pure helpers were tested.
+ *
+ * The stamp is also read, not just tested for existence: the constant is bumped
+ * when the payload layout changes, and a stamp that no longer equals it means the
+ * unpacked tree is stale and must be built again.
+ */
+internal class RootfsProvisioner(private val stampValue: String) {
+
+    fun isProvisioned(rootfs: File, stamp: File): Boolean =
+        File(rootfs, MARKER).isFile &&
+            stamp.isFile &&
+            runCatching { stamp.readText().trim() == stampValue }.getOrDefault(false)
+
+    /**
+     * Extract when the tree is missing or stale, then confirm what landed and
+     * record the stamp. A failure leaves no half-built tree and no stamp.
+     */
+    fun provision(
+        rootfs: File,
+        stamp: File,
+        loaderOk: () -> Boolean = { true },
+        loaderFailure: () -> Exception = { IllegalStateException(INCOMPLETE) },
+        extract: () -> Unit,
+    ): Result<Unit> {
+        if (isProvisioned(rootfs, stamp)) return Result.success(Unit)
+        try {
+            rootfs.deleteRecursively()
+            rootfs.mkdirs()
+            extract()
+            if (!loaderOk()) {
+                rootfs.deleteRecursively()
+                return Result.failure(loaderFailure())
+            }
+            if (!File(rootfs, MARKER).isFile) {
+                rootfs.deleteRecursively()
+                return Result.failure(IllegalStateException(INCOMPLETE))
+            }
+            stamp.parentFile?.mkdirs()
+            stamp.writeText(stampValue)
+            return Result.success(Unit)
+        } catch (e: Exception) {
+            rootfs.deleteRecursively()
+            return Result.failure(e)
+        }
+    }
+
+    companion object {
+        /** Present in every Alpine rootfs and in nothing else we unpack. */
+        const val MARKER = "etc/alpine-release"
+        const val INCOMPLETE = "the Linux root filesystem is incomplete"
+    }
+}
+
 /** Tar handling for the root filesystem, kept separate so it can be tested without Android. */
 internal object RootfsTar {
 
@@ -321,6 +375,10 @@ internal object RootfsTar {
                             target.outputStream().use { tar.copyTo(it) }
                             target.setExecutable((entry.mode and 0b001_000_000) != 0, false)
                         }
+                        // Hard links (tar type 1) are deliberately not handled:
+                        // the Alpine minirootfs we ship has none — its busybox
+                        // applets are symlinks — and inventing a copy here would
+                        // hide a real payload change instead of failing on it.
                     }
                 }
             }

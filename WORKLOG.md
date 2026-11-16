@@ -1,3 +1,39 @@
+## 0.9.3 — the Linux system actually boots: provisioning was impossible
+
+**The bug, exactly.** `LinuxSystem.provision()` unpacked the root filesystem and
+then asked `isProvisioned()`, which required the stamp file `filesDir/linux/provisioned`
+to exist. The stamp was written eight lines *below* that check. On a fresh install
+the stamp cannot exist yet, so the check could never pass and the stamp was never
+written — on any phone, on every run. The app therefore reported "the Linux root
+filesystem is incomplete" over a tree it had just unpacked correctly, and
+`apk --version` never answered. That is the owner's screenshot, line for line.
+
+**The fix.** The decision now lives in `RootfsProvisioner` (no Android types):
+extract → confirm the tree (loader present, `etc/alpine-release` present) → then
+write the stamp. Failure deletes the half-built tree and writes no stamp.
+`isProvisioned()` also now *reads* the stamp instead of only testing that it
+exists, so bumping `STAMP` after a payload change really does force a re-extract,
+which is what its comment always claimed.
+
+**Why 475 green tests coexisted with this.** The suite only covered pure helpers
+(`prootArgv`, `loaderCandidates`, `guestEnv`, `RootfsTar.extract`). Nothing ran
+the ordering. `ProvisioningTest` (7 tests) now does, and was checked both ways:
+with the old ordering spliced back in, three of its tests fail; with the fix,
+all pass. Full suite: 482 tests, 0 failures.
+
+**Checked before blaming the payload.** The shipped `rootfs.tar` (518 entries)
+has `/bin/sh` → `/bin/busybox`, `/sbin/apk`, `/etc/alpine-release`, 334 symlinks,
+and zero tar hard links; no entry is nested under a symlinked directory. So the
+extractor's lack of hard-link handling (now documented in place) cannot affect
+this payload, and no extraction change was made on spec.
+
+**Build.** `:app:assembleDebug` → versionName 0.9.3 / versionCode 50, APK
+346,004,997 bytes, sha256 `0615f4c8…`, `verify-apk-payload.py` passes with 10
+required entries.
+
+**Not verified here:** the guest actually answering on the S25, and `uname -a`
+reporting aarch64. That needs the phone.
+
 ## 0.9.2 — CI goes green: the build fetches its own payload
 
 **What was red and why.** Every GitHub build from 0.9.0 onward failed at
