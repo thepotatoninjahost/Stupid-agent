@@ -377,6 +377,7 @@ dependencies {
     implementation(libs.jsoup)
     implementation(libs.gson)
     implementation(libs.commons.compress)
+    implementation(libs.xz)
     debugImplementation(libs.androidx.ui.tooling)
 
     // Test-only

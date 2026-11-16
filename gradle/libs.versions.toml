@@ -60,6 +60,10 @@ jsoup = "1.24.1"
 # because Retrofit was removed (audit L-5).
 gson = "2.15.0"
 commons-compress = "1.28.0"
+# Debian .debs ship data.tar.xz, and commons-compress only speaks XZ when this
+# library is on the classpath; without it release R8 fails and the phone throws
+# NoClassDefFoundError mid-install.
+xz = "1.10"
 # Test-only
 junit = "4.13.2"
 robolectric = "4.17"
@@ -97,6 +101,7 @@ androidx-security-crypto = { group = "androidx.security", name = "security-crypt
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commons-compress" }
+xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }
 
 # Test-only dependencies (not shipped in the APK)
 junit = { group = "junit", name = "junit", version.ref = "junit" }
