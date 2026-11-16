@@ -68,6 +68,7 @@ fun VorvApp(
                         vm::clearSetupError,
                         vm::clearAllData,
                         onTestLinuxSystem = vm::testLinuxSystem,
+                        onInstallLinuxToolchain = vm::installLinuxToolchain,
                         onRefreshLinuxStatus = vm::refreshLinuxStatus,
                         onRevokeShellSessionGrant = vm::revokeShellSessionGrant,
                         // v0.6.17: gate 1 of the Setup checklist (workspace

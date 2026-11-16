@@ -31,6 +31,7 @@ fun SettingsScreen(
     onClearSetupError: () -> Unit = {},
     onClearAllData: () -> Unit = {},
     onTestLinuxSystem: () -> Unit = {},
+    onInstallLinuxToolchain: () -> Unit = {},
     onRefreshLinuxStatus: () -> Unit = {},
     onRevokeShellSessionGrant: () -> Unit = {},
     onOpenFilesTab: () -> Unit = {},
@@ -481,7 +482,7 @@ fun SettingsScreen(
                 ) {
                     Text(
                         if (state.linuxTesting) "Testing… (first run unpacks the filesystem)"
-                        else "Test the Linux system — runs `apk --version`",
+                        else "Test the Linux system — boots Debian and reports its version",
                         fontSize = 11.sp,
                     )
                 }
@@ -495,6 +496,46 @@ fun SettingsScreen(
                     ) {
                         Text(
                             state.linuxTestResult!!,
+                            color = if (good) Success else Error,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onInstallLinuxToolchain,
+                    enabled = !state.toolchainInstalling,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text(
+                        when {
+                            state.toolchainInstalling -> "Installing the build tools… don't close Vorv"
+                            state.toolchainInstalled -> "Build tools installed — reinstall (203 MB, sha256-checked)"
+                            else -> "Install the Android build tools (203 MB, one time)"
+                        },
+                        fontSize = 11.sp,
+                    )
+                }
+
+                if (state.toolchainProgress != null) {
+                    Text(
+                        state.toolchainProgress!!,
+                        color = OnSurfaceVariant,
+                        fontSize = 10.sp,
+                    )
+                }
+
+                if (state.toolchainResult != null) {
+                    val good = state.toolchainResult!!.startsWith("ALL GOOD")
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (good) Success.copy(alpha = 0.12f) else Error.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            state.toolchainResult!!,
                             color = if (good) Success else Error,
                             fontSize = 10.sp,
                             modifier = Modifier.padding(10.dp),

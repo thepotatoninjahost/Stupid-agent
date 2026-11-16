@@ -154,6 +154,14 @@ data class AgentState(
     val linuxTestResult: String? = null,
     /** What the payload check actually looked for, worded for the Setup card. */
     val linuxDiagnostics: String? = null,
+    /** The Debian build tools are downloading/unpacking into the guest. */
+    val toolchainInstalling: Boolean = false,
+    /** One live line: "12/169 packages — 8.4 MB of 203.0 MB — fetching libc6". */
+    val toolchainProgress: String? = null,
+    /** javac and aapt really exist in the guest right now. */
+    val toolchainInstalled: Boolean = false,
+    /** Verbatim outcome of the last install attempt, shown as-is. */
+    val toolchainResult: String? = null,
     /** The APK carries proot even if Android has not unpacked it (two different facts). */
     val linuxPayloadInApk: Boolean = false,
     /** A real command completed inside the guest this session (knowledge). */
@@ -778,6 +786,8 @@ class AgentViewModel(
                 linuxPayloadInApk = guest.inspectPayload().payloadInApk,
                 linuxProvisioned = guest.isProvisioned(),
                 linuxDiagnostics = guest.diagnose(),
+                toolchainInstalled = File(guest.rootfs, host.vorv.linux.LinuxToolchain.STAMP_PATH).isFile &&
+                    File(guest.rootfs, "usr/bin/javac").isFile,
             )
         }
     }
@@ -787,7 +797,7 @@ class AgentViewModel(
         "\n\nproot loader used: " + (guest.resolveLoader()?.absolutePath ?: "none executable") +
             "\nproot binary: " + (guest.prootExecutable()?.absolutePath ?: "missing")
 
-    /** Setup → Linux system → TEST. Runs `apk --version` in the guest — nothing else. */
+    /** Setup → Linux system → TEST. Runs PROBE_COMMAND in the guest — nothing else. */
     fun testLinuxSystem() {
         if (_state.value.linuxTesting) return
         _state.update { it.copy(linuxTesting = true, linuxTestResult = null) }
@@ -1452,6 +1462,49 @@ class AgentViewModel(
         }
     }
 
+    /**
+     * Setup → INSTALL BUILD TOOLS. Downloads Debian's openjdk-17, aapt, zipalign
+     * and apksigner (203 MB, sha256-checked) and unpacks them into the guest.
+     * It reports every package as it lands, and says plainly if it stops.
+     */
+    fun installLinuxToolchain() {
+        if (_state.value.toolchainInstalling) return
+        _state.update { it.copy(toolchainInstalling = true, toolchainResult = null, toolchainProgress = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val guest = linuxSystem
+            val json = runCatching {
+                appContext.assets.open(host.vorv.linux.LinuxToolchain.ASSET).bufferedReader().use { it.readText() }
+            }.getOrElse { missing ->
+                _state.update { s ->
+                    s.copy(
+                        toolchainInstalling = false,
+                        toolchainResult = "FAILED — this build carries no toolchain plan: ${missing.message}",
+                    )
+                }
+                return@launch
+            }
+            val toolchain = host.vorv.linux.LinuxToolchain(guest.rootfs, File(appContext.cacheDir, "debs"))
+            val plan = toolchain.plan(json)
+            val outcome = toolchain.install(plan) { progress ->
+                _state.update { it.copy(toolchainProgress = progress.line()) }
+            }
+            val verdict = outcome.fold(
+                onSuccess = {
+                    "ALL GOOD — javac and aapt are installed in the guest (${plan.size} packages)."
+                },
+                onFailure = { "FAILED — ${it.message}" },
+            )
+            _state.update {
+                it.copy(
+                    toolchainInstalling = false,
+                    toolchainProgress = null,
+                    toolchainInstalled = toolchain.isInstalled(),
+                    toolchainResult = verdict,
+                )
+            }
+        }
+    }
+
     companion object {
         private const val CLOUD_TASK_TIMEOUT_MS = 5 * 60_000L
         private const val LOCAL_TASK_TIMEOUT_MS = 15 * 60_000L
@@ -1459,11 +1512,13 @@ class AgentViewModel(
 
         /**
          * Setup → TEST runs exactly this inside the guest: it answers whether
-         * the root filesystem boots and whether apk (the package manager the
-         * agent installs compilers with) is really executable.
+         * the Debian root filesystem boots, which release it is, and whether the
+         * build tools have been installed yet.
          */
         internal const val PROBE_COMMAND =
-            "uname -sr; cat /etc/alpine-release 2>/dev/null; apk --version"
+            "uname -sr; cat /etc/debian_version 2>/dev/null; " +
+                "if [ -x /usr/bin/javac ] && [ -x /usr/bin/aapt ]; then " +
+                "echo \"build tools: installed\"; else echo \"build tools: not installed yet\"; fi"
 
         fun factory(
             db: VorvDatabase,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Puts the Linux system into the app: proot, its loader, libtalloc and the
-# Alpine root filesystem.
+# Debian 12 (bookworm) arm64 root filesystem.
 #
 # Same rule as fetch-runtime.sh — every download is checked against the
 # sha256 in runtime-manifest.json before it is unpacked, so a swapped or
@@ -62,11 +62,19 @@ while IFS=$'\t' read -r kind a b c d; do
       chmod 755 "$jni/$c"
       ;;
     rootfs)
-      tgz="$cache/rootfs.tar.gz"
-      fetch "$b" "$tgz" "$c"
-      # Unpack the gzip layer here: AGP strips a .gz suffix from asset names,
-      # which would leave a file called rootfs.tar holding gzipped bytes.
-      gunzip -c "$tgz" > "$root/$d"
+      tar="$cache/debian-rootfs.tar"
+      python3 "$here/docker-rootfs.py" "$manifest" "$tar"
+      # Kept gzipped, but named rootfs.tar: AGP strips a .gz suffix from asset
+      # names, and the extractor sniffs the gzip magic on the way in.
+      gzip -9cnf "$tar" > "$root/$d.part"
+      got="$(sha256sum "$root/$d.part" | cut -d' ' -f1)"
+      if [ "$got" != "$c" ]; then
+        rm -f "$root/$d.part"
+        echo "REFUSED: rootfs.tar has sha256 $got, manifest says $c" >&2
+        exit 1
+      fi
+      mv "$root/$d.part" "$root/$d"
+      echo "rootfs.tar verified"
       ;;
   esac
 done < "$cache/linux-plan.tsv"

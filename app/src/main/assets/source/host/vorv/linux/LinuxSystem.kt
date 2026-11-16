@@ -251,7 +251,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
         )
 
         /** Bumped when the payload layout changes, so provision() re-extracts. */
-        internal const val STAMP = "alpine-3.20.0-proot-5.1.107"
+        internal const val STAMP = "debian-12-bookworm-arm64-proot-5.1.107"
 
         /**
          * Output kept in memory per command. 12k chars cut real compiler logs
@@ -330,8 +330,8 @@ internal class RootfsProvisioner(private val stampValue: String) {
 
     companion object {
         /** Present in every Alpine rootfs and in nothing else we unpack. */
-        const val MARKER = "etc/alpine-release"
-        const val INCOMPLETE = "the Linux root filesystem is incomplete"
+        const val MARKER = "etc/debian_version"
+        const val INCOMPLETE = "the Debian root filesystem is incomplete"
     }
 }
 
