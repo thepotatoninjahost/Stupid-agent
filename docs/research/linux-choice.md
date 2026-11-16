@@ -61,10 +61,15 @@ familiarity.
 
 ## 5. Prior art: full Android builds on a phone are real
 
-**AndroidIDE** (`github.com/AndroidIDEOfficial/AndroidIDE`, 3,387 stars) is an
-on-device IDE that builds full Android applications on the phone, with an SDK manager
-reachable from its terminal. That is not this project, and it is not the same pipeline,
-but it is proof that the category works on Android hardware.
+**AndroidIDE** (`github.com/AndroidIDEOfficial/AndroidIDE`, 3,387 stars) was an
+on-device IDE that built full Android applications on the phone, with an SDK manager
+reachable from its terminal. It is **dead**: the GitHub repository is archived, its last
+commit is 2024-10-18, and that commit is "docs: add deprecation message".
+
+It is cited here only as evidence that the category runs on Android hardware — not as
+anything to build on. Its death is itself an argument for depending only on maintained
+components: Debian's own native `aapt`/`zipalign`/`apksigner`, plus Google's Java tools
+(`d8.jar`, `android.jar`) which ship inside Vorv already.
 
 ## 6. Decision
 
