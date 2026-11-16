@@ -22,14 +22,15 @@ class LinuxPayload(private val context: Context) {
         val resolvedPath: String?,
         val extracted: Boolean,
         val listing: List<String>,
-        val copiedTo: File?,
-        val execVerdict: String?,
+        /** "arm64-v8a" when the APK carries a copy for this device, else null. */
+        val abi: String?,
+        /** One honest sentence saying what is wrong, or null when nothing is. */
+        val diagnosis: String?,
     ) {
         val payloadInApk: Boolean get() = apkEntry != null
     }
 
     private val nativeDir: File get() = File(context.applicationInfo.nativeLibraryDir ?: "")
-    private val cacheDir: File get() = File(context.filesDir, "native")
 
     /**
      * Ask the runtime itself where this library was installed. `findLibrary`
@@ -46,13 +47,14 @@ class LinuxPayload(private val context: Context) {
 
     fun inspect(): State {
         val listing = nativeDir.listFiles()?.map { it.name }?.sorted() ?: emptyList()
+        val entry = apkEntry()
         return State(
-            apkEntry = apkEntry(),
+            apkEntry = entry,
             resolvedPath = resolvedProotPath(),
             extracted = File(nativeDir, "libforge-proot.so").isFile,
             listing = listing,
-            copiedTo = File(cacheDir, "libforge-proot.so").takeIf { it.isFile },
-            execVerdict = null,
+            abi = entry?.let { it.removePrefix("lib/").substringBefore('/') },
+            diagnosis = null,
         )
     }
 
@@ -74,36 +76,32 @@ class LinuxPayload(private val context: Context) {
     }.getOrNull()
 
     /**
-     * Unpack proot and its loader out of our own APK into app storage and try
-     * to run it. On Android 10+ that executable bit does not help — the honest
-     * result is recorded rather than swallowed, because it is the difference
-     * between "wrong path" and "the installer never unpacked this app".
+     * Inventory only. There is nothing this class can repair: since Android 10 a
+     * binary an app writes into its own data directory cannot be executed, no
+     * matter what permission bits are set. The old version copied proot there
+     * and exec'd it to "prove" it worked, which could only ever print "app
+     * storage refuses to execute it" — a repair button that cannot repair.
+     *
+     * What actually decides whether the guest can start is whether the installer
+     * unpacked the APK's arm64 libraries into [nativeDir], so this reports that
+     * fact and the one action that changes it.
      */
-    fun repair(): State = try {
-        val entry = apkEntry() ?: return inspect()
-        cacheDir.mkdirs()
-        ZipFile(context.applicationInfo.sourceDir).use { zip ->
-            fun copy(name: String, out: String) {
-                zip.getEntry(name)?.let { e ->
-                    zip.getInputStream(e).use { input ->
-                        File(cacheDir, out).outputStream().use { input.copyTo(it) }
-                    }
-                }
-            }
-            copy(entry, "libforge-proot.so")
-            val abi = entry.substringBeforeLast('/')
-            copy("$abi/libforge-proot-loader.so", "loader")
-            copy("$abi/libforge-proot-loader32.so", "loader32")
+    fun payloadReport(): State {
+        val base = inspect()
+        val where = "${nativeDir.path}/libforge-proot.so"
+        val text = when {
+            !base.payloadInApk ->
+                "This APK carries no proot for any ABI — it was built without the payload. " +
+                    "Install a build that contains it (Setup → Linux System shows this too)."
+            !base.extracted ->
+                "proot is inside this APK for ${base.abi ?: "this device"}, but the installer never " +
+                    "unpacked it into ${nativeDir.path}. Unpacking happens at install time, so " +
+                    "uninstall Vorv and install this same APK again."
+            base.resolvedPath == null ->
+                "proot is unpacked at $where, but the runtime does not resolve it by name. " +
+                    "Reinstall the APK."
+            else -> null
         }
-        val proot = File(cacheDir, "libforge-proot.so").apply { setExecutable(true) }
-        val verdict = runCatching {
-            val p = ProcessBuilder(proot.absolutePath, "--version").redirectErrorStream(true).start()
-            val text = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            "ran from app storage: ${text.take(200)}"
-        }.getOrElse { "app storage refuses to execute it: ${it.message}" }
-        inspect().copy(copiedTo = proot.takeIf { it.isFile }, execVerdict = verdict)
-    } catch (e: Exception) {
-        inspect().copy(execVerdict = "unpacking from the APK failed: ${e.message}")
+        return base.copy(diagnosis = text)
     }
 }

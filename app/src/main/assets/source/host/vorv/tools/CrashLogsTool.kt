@@ -175,11 +175,23 @@ class CrashLogsTool(private val appContext: Context) : Tool {
         }
 
         return try {
-            val content = target.readText()
+            // F-12: read with the cap, do not read a whole tombstone into
+            // memory and then throw most of it away.
+            val (content, clipped) = target.bufferedReader().use { r ->
+                val buf = CharArray(MAX_READ_CHARS)
+                var filled = 0
+                while (filled < MAX_READ_CHARS) {
+                    val n = r.read(buf, filled, MAX_READ_CHARS - filled)
+                    if (n < 0) break
+                    filled += n
+                }
+                // One more character tells us whether anything was left.
+                String(buf, 0, filled) to (r.read() >= 0)
+            }
             ToolResult(
                 ok = true,
-                output = if (content.length > MAX_READ_CHARS) {
-                    content.take(MAX_READ_CHARS) + "\n…(truncated at $MAX_READ_CHARS chars — read the file in chunks via shell/python if you need more)"
+                output = if (clipped) {
+                    content + "\n…(truncated at $MAX_READ_CHARS chars — read the file in chunks via shell/python if you need more)"
                 } else content,
                 durationMs = System.currentTimeMillis() - t0,
                 citation = Citation("file", rel, "crash report"),

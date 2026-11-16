@@ -110,6 +110,9 @@ data class AgentState(
     val liveTrace: List<TraceStep> = emptyList(),
     val memoryCount: Int = 0,
     val skillCount: Int = 0,
+    /** Number of tools actually registered — the Setup text quotes this, not a
+     *  remembered number (F-10: it said 17 while the registry held 24). */
+    val toolCount: Int = 0,
     val recentTasks: List<AgentTask> = emptyList(),
     val skills: List<Skill> = emptyList(),
     val episodes: List<Episode> = emptyList(),
@@ -324,6 +327,7 @@ class AgentViewModel(
                 _state.update { it.copy(skills = skills, skillCount = skills.size) }
             }
         }
+        _state.update { it.copy(toolCount = tools.size) }
         viewModelScope.launch {
             db.taskDao().observeRecent(50).collect { tasks ->
                 _state.update { it.copy(recentTasks = tasks) }
@@ -789,21 +793,22 @@ class AgentViewModel(
         _state.update { it.copy(linuxTesting = true, linuxTestResult = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val guest = linuxSystem
-            var repaired: host.vorv.linux.LinuxPayload.State? = null
-            if (!guest.isAvailable()) repaired = runCatching { guest.repairPayload() }.getOrNull()
+            var inspected: host.vorv.linux.LinuxPayload.State? = null
+            if (!guest.isAvailable()) inspected = runCatching { guest.payloadReport() }.getOrNull()
             val verdict = if (!guest.isAvailable()) {
                 when {
-                    repaired == null || !repaired.payloadInApk ->
+                    inspected == null || !inspected.payloadInApk ->
                         "NO LINUX SYSTEM IN THIS BUILD — this APK has no payload at all (tools/forge/fetch-linux.sh)."
                     else ->
                         "THE PAYLOAD IS IN THIS APK BUT ANDROID DID NOT UNPACK IT FOR THIS INSTALL.\n" +
                             "That unpack happens at install time, so the fix is a clean install, not a setting:\n" +
                             "  1. uninstall Vorv,  2. install the same APK again.\n\n" +
                             "Checked on this phone:\n" +
-                            "  in the APK: " + (repaired.apkEntry ?: "no") + "\n" +
-                            "  found by the runtime: " + (repaired.resolvedPath ?: "no") + "\n" +
-                            "  unpacked copy: " + (if (repaired.extracted) "present" else "missing") + "\n" +
-                            "  app-storage attempt: " + (repaired.execVerdict ?: "not attempted")
+                            "  in the APK: " + (inspected.apkEntry ?: "no") + "\n" +
+                            "  for ABI: " + (inspected.abi ?: "none") + "\n" +
+                            "  found by the runtime: " + (inspected.resolvedPath ?: "no") + "\n" +
+                            "  unpacked copy: " + (if (inspected.extracted) "present" else "missing") + "\n" +
+                            "  assessment: " + (inspected.diagnosis ?: "the binaries look right, the guest refused to start")
                 }
             } else {
                 val shell = runCatching { guest.run(PROBE_COMMAND, 180_000, emptyList(), "/root") }
@@ -1044,7 +1049,11 @@ class AgentViewModel(
                 val errMsg = ChatMessage(role = "assistant", content = "Error: ${e.message}")
                 _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
                 persistChat(errMsg)   // M1
-                db.taskDao().fail(task.id, e.message ?: "unknown")
+                // F-11: fail() is a Room write inside the catch of a coroutine
+                // with no outer guard. If the database is unavailable the
+                // original error would be replaced by an unexplained second one
+                // and the task row would stay in_progress forever.
+                runCatching { db.taskDao().fail(task.id, e.message ?: "unknown") }
             } finally {
                 currentTaskJob = null
                 modelRepository.markBusy(false)

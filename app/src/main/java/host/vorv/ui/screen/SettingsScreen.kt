@@ -569,14 +569,16 @@ fun SettingsScreen(
         Text(
             "Vorv is a local-first autonomous agent. Coined name — no existing product.\n\n" +
                 "ReAct loop with verifiable tool-call logging. Persistent memory across reboots (Room). " +
-                "17 real tools (including self_fix, which lets you ask Vorv in chat to fix " +
-                    "or change its own code). Local engine: Qwen2.5-Coder via Qualcomm GenieX on the Hexagon NPU " +
-                "(offline after one 1.8–4.4 GB download). Cloud engine: Z.ai GLM — FREE tier by default " +
-                "(GLM-4.7-Flash), paid models optional, automatic offline fallback.\n\n" +
-                "Honest limits: real measured tok/s appears in the trace after each generation — " +
-                "expected peak ~8-12 tok/s on the 7B model, ~4-6 sustained under thermal load. " +
-                "js_exec and python_exec run in hardened in-process sandboxes; shell runs inside " +
-                "Vorv's own Alpine Linux system; every powerful action asks first. " +
+                "${state.toolCount} real tools registered (including self_fix, which lets you ask Vorv in " +
+                "chat to fix or change its own code); the Tools tab lists them, live.\n\n" +
+                "What runs it: the built-in reasoning brain on device, and any cloud model you have " +
+                "selectable in Setup (free tier first, paid models optional, automatic fallback). " +
+                "No model is required for js_exec, python_exec, file work or the Linux system.\n\n" +
+                "Honest limits: real measured tok/s appears in the trace after each generation. " +
+                "js_exec and python_exec run in hardened in-process sandboxes; every powerful action " +
+                "asks first. The Linux system is proot + Alpine inside Vorv — no root, no Termux — and " +
+                "it has not yet been seen starting on this phone: Setup → Linux System → TEST is what " +
+                "proves it, and it names the stage that fails.\n\n" +
                 "See SECURITY.md in the repository for the full threat model.",
             color = OnSurfaceVariant,
             fontSize = 11.sp,

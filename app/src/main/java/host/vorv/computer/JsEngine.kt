@@ -66,6 +66,13 @@ class JsEngine(private val maxOutput: Int = 8_000) : Engine {
             // A script stuck in a native call cannot be interrupted from here;
             // abandoning the daemon thread is the only safe option, and the
             // caller must know the output is partial.
+            //
+            // F-13 (known, accepted): Rhino has no interrupt, so a script in a
+            // tight loop that never yields (while(true){}) keeps one core busy
+            // after this returns. The deadline observer only trips loops that
+            // yield. Short scripts are fine; a runaway loop is bounded by the
+            // process living, not by this method. Not fixable without running
+            // JS out of process, which would cost ~1 s per call.
             return EngineRun(snapshot, timedOut = true, error = null)
         }
         return EngineRun(snapshot, timedOut = factory.expired, error = null)

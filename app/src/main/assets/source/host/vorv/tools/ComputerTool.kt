@@ -7,7 +7,6 @@ import host.vorv.computer.Computer
 import host.vorv.computer.ComputerHome
 import host.vorv.computer.ComputerProbe
 import host.vorv.computer.JsEngine
-import host.vorv.computer.PythonEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -19,6 +18,11 @@ import kotlinx.coroutines.withContext
  * runtime the APK actually ships (see [ComputerProbe]), runs the program with
  * a hard deadline, and reports real output — including the reason when a
  * runtime is unavailable, so the model cannot mistake refusal for success.
+ *
+ * kind=js runs through [Computer]'s JS engine. kind=python deliberately does
+ * NOT get a second engine: it delegates to `python_exec`, so there is one
+ * interpreter, one sandbox and one consent gate. A `PythonEngine` class used to
+ * sit in `computer/` for this and was never constructed by anything (F-7).
  */
 class ComputerTool(private val appContext: Context) : Tool {
 

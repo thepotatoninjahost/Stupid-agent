@@ -58,7 +58,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     fun inspectPayload(): LinuxPayload.State = payload.inspect()
 
-    fun repairPayload(): LinuxPayload.State = payload.repair()
+    fun payloadReport(): LinuxPayload.State = payload.payloadReport()
 
     override fun isAvailable(): Boolean = payload.executable() != null
 
