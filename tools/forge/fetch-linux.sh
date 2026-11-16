@@ -82,6 +82,13 @@ python3 "$here/rename-needed.py" "$jni/libforge-proot.so" libtalloc.so.2 libtall
 readelf -d "$jni/libforge-proot.so" | grep -q 'libtalloc\.so\]' \
   || { echo "proot does not reference libtalloc.so" >&2; exit 1; }
 
+# Termux's runpath does not exist in this app, so the linker cannot find
+# libtalloc.so / libandroid-shmem.so and proot dies before main(). Rewrite the
+# runpaths to $ORIGIN (the folder the binary itself lives in == nativeLibraryDir)
+# and make libtalloc's SONAME match the name it ships under. The script fails
+# loudly if either edit did not take.
+python3 "$here/fix-proot-deps.py" "$jni"
+
 # proot resolves its loader from a compiled-in Termux path; PROOT_LOADER
 # overrides it. Check that the override is actually honoured by the binary.
 grep -aq 'PROOT_LOADER' "$jni/libforge-proot.so" \

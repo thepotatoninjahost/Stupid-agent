@@ -68,6 +68,15 @@ class CloudChainLlm(
                     failures += "${ordered[i].displayName}: no credit (HTTP ${e.code})"
                     continue
                 }
+                if (e.unknownModel) {
+                    // This id is retired or renamed. The next id in the chain may
+                    // well be alive, so skip it rather than failing the request.
+                    coolingUntil[i] = clock() + notEntitledCooldownMs
+                    failures += "${ordered[i].displayName}: model id not recognised (HTTP ${e.code})"
+                    lastOverloadReason =
+                        "${ordered[i].displayName}: model id not recognised by the provider (HTTP ${e.code})"
+                    continue
+                }
                 if (!e.overloaded) throw e // the request or key is wrong; another model will say the same
                 coolingUntil[i] = clock() + cooldownMs
                 failures += "${ordered[i].displayName}: ${e.message}"

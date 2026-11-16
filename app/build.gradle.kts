@@ -27,8 +27,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 46
-        versionName = "0.8.9"
+        versionCode = 47
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -145,6 +145,55 @@ tasks.register<Sync>("syncSourceMirror") {
 }
 
 tasks.named("preBuild") { dependsOn("syncSourceMirror") }
+
+/**
+ * The computer has to be inside the APK.
+ *
+ * Every build from 0.8.0 to 0.8.9 was uploaded without the payload (the
+ * jniLibs/ and assets/forge/ trees are git-ignored and nothing fetched them in
+ * CI), so the app could only report "this build has no Linux system" after the
+ * owner had installed it. This check runs on the source tree before anything is
+ * packaged: a build that would produce a computer-less APK fails here instead.
+ *
+ * tools/forge/verify-apk-payload.py does the same check on the finished APK,
+ * because an ignore rule or a packaging change can drop files after this point.
+ */
+val requiredPayload = listOf(
+    "src/main/jniLibs/arm64-v8a/libforge-proot.so",
+    "src/main/jniLibs/arm64-v8a/libforge-proot-loader.so",
+    "src/main/jniLibs/arm64-v8a/libtalloc.so",
+    "src/main/jniLibs/arm64-v8a/libandroid-shmem.so",
+    "src/main/jniLibs/arm64-v8a/libjvm.so",
+    "src/main/assets/forge/linux/rootfs.tar",
+    "src/main/assets/forge/jvm/modules",
+    "src/main/assets/forge/tools/d8.jar",
+    "src/main/assets/forge/tools/android.jar",
+    "src/main/assets/forge/tools/apksigner.jar",
+)
+
+tasks.register("checkPayload") {
+    description = "Fails the build if the in-app computer is not in the source tree."
+    doLast {
+        val missing = requiredPayload.filterNot { File(projectDir, it).isFile }
+        val kotlinCompiler = File(projectDir, "src/main/assets/forge/tools")
+            .listFiles { f -> f.name.startsWith("kotlin-compiler-embeddable-") }
+            .orEmpty()
+        val problems = missing + if (kotlinCompiler.isEmpty()) {
+            listOf("src/main/assets/forge/tools/kotlin-compiler-embeddable-*.jar")
+        } else {
+            emptyList()
+        }
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "The Linux payload is not in this tree; the APK would have no computer in it.\n" +
+                    "Missing:\n" + problems.joinToString("\n") { "  $it" } +
+                    "\nRun tools/forge/fetch-runtime.sh and tools/forge/fetch-linux.sh first."
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn("checkPayload") }
 
 val healerAssetsDir = layout.buildDirectory.dir("generated/healer/assets")
 

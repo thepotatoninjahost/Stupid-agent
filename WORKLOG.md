@@ -1,3 +1,53 @@
+## 0.9.0 — the build actually contains the computer, and proot can find its libraries
+
+**Found by the full review (F-5, F-2, F-3, F-4).** 0.9.0 is the first build whose
+APK is checked for the payload before it is allowed to exist.
+
+**F-5 — the payload was never in the APK.** `jniLibs/` and `assets/forge/` are
+git-ignored (200 MB of binaries; the repo must stay clonable), and CI never ran
+`tools/forge/fetch-runtime.sh` or `fetch-linux.sh`. Every APK from 0.8.0 to 0.8.9
+installed fine and answered "this build has no Linux system" — because it was
+true. That message was correct and was repeatedly misread as an install problem.
+* CI (test + build jobs) now provisions the payload from the sha256-pinned
+  manifest before compiling.
+* `checkPayload` (wired into `preBuild`) fails the build when the source tree has
+  no payload, so a local build cannot produce a computer-less APK either.
+* `tools/forge/verify-apk-payload.py` inspects the finished APK and the CI "Gate"
+  step runs it before any artifact or release. A computer-less APK cannot be
+  published now.
+
+**proot's own libraries — the failure the loader fix could not reach.** The
+binaries are Termux builds: `DT_RUNPATH` is `/data/data/com.termux/files/usr/lib`,
+which does not exist in Vorv and cannot be created (another app's private data).
+proot therefore died in the dynamic linker, before `main()`.
+* `tools/forge/fix-proot-deps.py` (run by `fetch-linux.sh`) rewrites the runpath
+  of `libforge-proot.so`, `libtalloc.so` and `libandroid-shmem.so` to `$ORIGIN`
+  (the folder the binary is loaded from == `nativeLibraryDir`) and makes
+  libtalloc's `SONAME` (`libtalloc.so.2`) match the name it ships under. Both
+  edits are NUL-padded in place, so no offsets move, and the script fails the
+  build if the result is not what was asked for.
+* `guestEnv` also sets `LD_LIBRARY_PATH` to the app's native library directory,
+  so resolution does not depend on `$ORIGIN` support alone.
+
+**F-2 — the guest timeout could not fire.** `run()` read the process output on
+its own thread, so a command that hung without printing blocked forever and
+`waitFor(timeoutMs)` was never reached. The drain now runs on a dedicated thread.
+
+**F-3 — foreground-service lifecycle.** `stop()` used `startService`, which
+throws from the background — it runs in the `finally` of a finished task, i.e.
+exactly when the app is backgrounded; the uncaught exception aborted cleanup.
+It is now `stopService`, and `start()` is guarded so a denied FGS start cannot
+take the task down.
+
+**F-4 — one 404 ended the cloud chain.** `LlmHttpException.unknownModel` now
+covers 404 and "model" 400s; the chain skips a retired id instead of rethrowing,
+which is the mechanical cause of "none of the GLMs are ever available".
+
+**Tests:** 474 unit tests, 0 failures (`an unknown model id falls over to the
+next model` is the F-4 regression). The Linux stack itself is still not proven:
+no host here can execute an aarch64 proot, so Setup → Linux System → TEST on the
+phone is the only real check.
+
 ## 0.8.9 — Linux can actually start: the loader is no longer put in app storage
 
 **Found by the full review (F-1, `CODE-REVIEW.md`).** `provision()` copied

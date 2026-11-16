@@ -126,6 +126,14 @@ class LlmHttpException(val code: Int, private val bodyText: String) :
             return listOf("insufficient", "no quota", "quota exceeded", "arrears", "balance", "billing")
                 .any { b.contains(it) }
         }
+
+    /**
+     * The provider does not have this model id (retired or renamed). The next id
+     * in the chain is a genuine second chance: one stale id used to end the whole
+     * chain with "HTTP 404" while a working model sat behind it.
+     */
+    val unknownModel: Boolean
+        get() = code == 404 || (code == 400 && bodyText.lowercase().contains("model"))
 }
 
 /**

@@ -71,13 +71,17 @@ class LinuxSystemArgvTest {
     }
 
     @Test
-    fun `environment names the loader and keeps a plain PATH`() {
-        val loader = File("/data/app/~~x==/host.vorv-y==/lib/arm64/libforge-proot-loader.so")
-        val env = LinuxSystem.guestEnv(loader, tmp)
+    fun `environment names the loader and resolves proot's own libraries`() {
+        val native = File("/data/app/~~x==/host.vorv-y==/lib/arm64")
+        val loader = File(native, "libforge-proot-loader.so")
+        val env = LinuxSystem.guestEnv(loader, tmp, native)
         // The exact path is passed through: proot execs it, and only
         // nativeLibraryDir is executable on Android 10+.
         assertEquals(loader.absolutePath, env["PROOT_LOADER"])
         assertEquals(tmp.absolutePath, env["PROOT_TMP_DIR"])
+        // proot's compiled-in runpath is a Termux path that does not exist in
+        // this app; its dependencies must be looked for where they sit.
+        assertEquals(native.absolutePath, env["LD_LIBRARY_PATH"])
         assertEquals("1", env["PROOT_NO_SECCOMP"])
         assertEquals("/root", env["HOME"])
         assertTrue(env.getValue("PATH").contains("/usr/bin"))

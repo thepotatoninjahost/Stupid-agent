@@ -34,20 +34,36 @@ class AgentService : Service() {
         const val ACTION_STOP = "host.vorv.action.STOP"
         const val EXTRA_TITLE = "title"
 
+        /**
+         * Starting an FGS from the background throws
+         * ForegroundServiceStartNotAllowedException on Android 12+. This is
+         * called from a coroutine that begins a moment after the tap, so a fast
+         * app-switch can race it. A missing status notification must never take
+         * the task down with it: the work does not need the service.
+         */
         fun start(ctx: Context, title: String) {
             val intent = Intent(ctx, AgentService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TITLE, title)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ctx.startForegroundService(intent)
-            } else {
-                ctx.startService(intent)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(intent)
+                } else {
+                    ctx.startService(intent)
+                }
+            }.onFailure { e ->
+                android.util.Log.w("VorvAgentService", "status notification unavailable: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
 
+        /**
+         * stopService, never startService: from Android 8 a background
+         * startService throws, and this runs in the cleanup of a finished task —
+         * exactly when the app is no longer in the foreground.
+         */
         fun stop(ctx: Context) {
-            ctx.startService(Intent(ctx, AgentService::class.java).apply { action = ACTION_STOP })
+            runCatching { ctx.stopService(Intent(ctx, AgentService::class.java)) }
         }
     }
 

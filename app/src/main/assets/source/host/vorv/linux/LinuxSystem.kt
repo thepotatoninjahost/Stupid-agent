@@ -162,21 +162,35 @@ class LinuxSystem(private val context: Context) : GuestShell {
         val loader = resolveLoader()
             ?: return@withContext Shell(-1, "", missingLoaderMessage(), true)
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
-        val env = guestEnv(loader, tmp)
+        val env = guestEnv(loader, tmp, proot.parentFile ?: File("/"))
         val started = System.currentTimeMillis()
         val builder = ProcessBuilder(argv)
         builder.environment().putAll(env)
         builder.directory(home)
         val process = builder.redirectErrorStream(true).start()
+        // Reading on this thread would block *before* the timeout is checked: a
+        // command that never exits and never prints would never time out. The
+        // drain runs on its own thread so waitFor() is the thing that decides.
         val out = StringBuilder()
-        process.inputStream.bufferedReader().forEachLine { line ->
-            if (out.length < MAX_OUTPUT) out.appendLine(line)
-        }
-        if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+        val drain = Thread {
+            runCatching {
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    synchronized(out) { if (out.length < MAX_OUTPUT) out.appendLine(line) }
+                }
+            }
+        }.apply { isDaemon = true; name = "vorv-guest-drain"; start() }
+        val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) {
             process.destroyForcibly()
-            return@withContext Shell(-1, out.toString(), "timed out after ${timeoutMs}ms", true)
+            process.waitFor(2, TimeUnit.SECONDS)
+            drain.join(500)
+            return@withContext Shell(
+                -1, synchronized(out) { out.toString() },
+                "timed out after ${timeoutMs}ms", true,
+            )
         }
-        Shell(process.exitValue(), out.toString(), null, false)
+        drain.join(2_000)
+        Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
     }
 
     companion object {
@@ -223,12 +237,18 @@ class LinuxSystem(private val context: Context) : GuestShell {
             File(legacyLoaderDir, "loader"),
         )
 
-        /** proot's environment: its loader, a writable /tmp and a plain PATH. */
-        internal fun guestEnv(loader: File, tmp: File): Map<String, String> = mapOf(
+        /** proot's environment: its loader, its libraries, a writable /tmp. */
+        internal fun guestEnv(loader: File, tmp: File, nativeDir: File): Map<String, String> = mapOf(
             // PROOT_LOADER is exec'd by proot, so it must sit in a directory the
             // platform allows execution from — never in filesDir on Android 10+.
             "PROOT_LOADER" to loader.absolutePath,
             "PROOT_TMP_DIR" to tmp.absolutePath,
+            // proot is linked against libtalloc.so and libandroid-shmem.so, whose
+            // compiled-in runpath is /data/data/com.termux/files/usr/lib — a Termux
+            // path that does not exist here. Without this the dynamic linker fails
+            // to resolve them and proot dies before main(). Our copies sit next to
+            // the binary in nativeLibraryDir, which is where this points.
+            "LD_LIBRARY_PATH" to nativeDir.absolutePath,
             // The app has no seccomp filter to inherit; avoids a needless probe.
             "PROOT_NO_SECCOMP" to "1",
             "HOME" to "/root",

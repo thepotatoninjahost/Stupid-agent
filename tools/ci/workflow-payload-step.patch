@@ -1,0 +1,83 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index e7c0c5c..28aa09f 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -83,6 +83,23 @@ jobs:
+       # job, measured on the 2026-11-05 runs where caching was already dead).
+       # Re-enable only with an explicit, conscious choice about items 2/3.
+ 
++      # F-5 (code review, 2026-11): the payload is git-ignored, so every APK
++      # built here between 0.8.0 and 0.8.9 shipped WITHOUT the in-app computer
++      # and the app could only say so after install. CI now provisions exactly
++      # what a local build provisions, from the sha256-pinned manifest.
++      - name: Provision the in-app computer payload
++        run: |
++          set -euo pipefail
++          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
++          export ANDROID_SDK_ROOT="$ANDROID_HOME"
++          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
++          if [ ! -f "$ANDROID_HOME/platforms/android-37/android.jar" ]; then
++            yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
++            "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" >/dev/null
++          fi
++          tools/forge/fetch-runtime.sh
++          tools/forge/fetch-linux.sh
++
+       - name: Python sandbox self-test
+         run: python3 app/src/main/python/test_vorv_sandbox.py
+ 
+@@ -121,6 +138,21 @@ jobs:
+ 
+       # No setup-gradle — see the note in the test job.
+ 
++      # F-5: same provisioning as the test job — the APK is only worth building
++      # if the computer is in it.
++      - name: Provision the in-app computer payload
++        run: |
++          set -euo pipefail
++          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
++          export ANDROID_SDK_ROOT="$ANDROID_HOME"
++          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
++          if [ ! -f "$ANDROID_HOME/platforms/android-37/android.jar" ]; then
++            yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
++            "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" >/dev/null
++          fi
++          tools/forge/fetch-runtime.sh
++          tools/forge/fetch-linux.sh
++
+       - name: Decode release keystore
+         if: env.HAS_KEYSTORE == 'true'
+         run: |
+@@ -140,6 +172,24 @@ jobs:
+         env:
+           ANDROID_HOME: /usr/local/lib/android/sdk
+ 
++      # F-5: the whole point. This inspects the finished APK — not the source
++      # tree — and fails the run if proot, its loader, its libraries, the rootfs
++      # or the on-phone toolchain are absent. Nothing downstream (artifact,
++      # ci-latest, Release) may run with a computer-less build.
++      - name: Gate — the APK must contain the computer
++        run: |
++          set -euo pipefail
++          found=0
++          for apk in app/build/outputs/apk/debug/app-debug.apk \
++                     app/build/outputs/apk/release/app-release.apk \
++                     app/build/outputs/apk/release/app-release-unsigned.apk; do
++            if [ -f "$apk" ]; then
++              python3 tools/forge/verify-apk-payload.py "$apk"
++              found=$((found + 1))
++            fi
++          done
++          [ "$found" -gt 0 ] || { echo "no APK was produced"; exit 1; }
++
+       # --- Actions-storage quota hygiene -----------------------------------
+       #
+       # Free accounts get 500 MB of artifact storage SHARED across every
+@@ -329,6 +379,6 @@ jobs:
+ 
+             **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key; local needs a one-time model download).
+ 
+-            **Shell tool setup (optional):** install Termux (F-Droid/GitHub), run `termux-setup-storage` once, and grant Vorv the "Run commands in Termux" permission.
++            **Linux system:** Setup → Linux System → TEST. This build contains its own computer (proot + Alpine, no root, no Termux). TEST prints one line per stage — loader, proot, guest start, guest output — so a failure names the stage it failed at instead of just saying "no Linux".
+           files: release/app-release.apk
+           prerelease: true

@@ -153,4 +153,20 @@ class CloudChainLlmTest {
         }
         assertEquals("a 401 will be identical on every model", 1, server.requestCount)
     }
+
+    @Test
+    fun `an unknown model id falls over to the next model`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(404)
+                .setBody("""{"error":{"message":"model not found"}}"""),
+        )
+        server.enqueue(reply("free model answered"))
+        val chain = chain(CloudModel.GLM_5_3, CloudModel.GLM_4_7_FLASH)
+
+        val r = chain.step(messages, emptyList())
+
+        assertEquals("free model answered", (r as Llm.LlmResponse.Text).content)
+        assertEquals("GLM-4.7-Flash", chain.lastModelUsed)
+        assertEquals("a retired id must not end the chain", 2, server.requestCount)
+    }
 }
