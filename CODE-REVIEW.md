@@ -1,3 +1,25 @@
+# Status of this review (updated 0.9.1, commit b068f70)
+
+| Finding | State |
+|---|---|
+| F-1 loader in app storage | fixed 0.8.9 (fb1617f) |
+| F-2 guest timeout could not fire | fixed 0.9.0 |
+| F-3 foreground-service lifecycle | fixed 0.9.0 |
+| F-4 a 404 ended the cloud chain | fixed 0.9.0, test added |
+| F-5 payload absent from every APK | fixed 0.9.0 — build gate + APK gate. The CI provisioning *step* is in `tools/ci/workflow-payload-step.patch`: this account's token has no `workflow` scope, so GitHub refuses the push. |
+| F-6 Termux in release notes | replacement text is in the same patch — same block |
+| F-7 unused PythonEngine | fixed 0.9.1 (class removed, delegation documented) |
+| F-8 repair() cannot work | fixed 0.9.1 (`payloadReport()`, inventory only) |
+| F-9 test enshrined F-1 | fixed 0.8.9 |
+| F-10/F-14 outdated Setup text | fixed 0.9.1 |
+| F-11 failing write during error handling | fixed 0.9.1 |
+| F-12 unbounded crash-log read | fixed 0.9.1 |
+| F-13 Rhino cannot be interrupted | documented in place; not fixed by design |
+
+Everything claimed fixed is verified by build, unit tests or an APK inspection.
+Nothing here has been verified on the phone: Setup → Linux System → TEST is the
+check that matters for the guest, and it now names the stage that fails.
+
 # Vorv — full project code review (2026-11-13)
 
 Scope: every tracked file in `thepotatoninjahost/Stupid-agent` at `944381c`.
