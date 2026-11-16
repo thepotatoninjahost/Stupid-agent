@@ -27,8 +27,8 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 48
-        versionName = "0.9.1"
+        versionCode = 49
+        versionName = "0.9.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -171,27 +171,51 @@ val requiredPayload = listOf(
     "src/main/assets/forge/tools/apksigner.jar",
 )
 
+/**
+ * The payload is git-ignored on purpose (~250 MB), so a fresh clone — CI
+ * included — has none of it. That is exactly why every GitHub build from
+ * 0.9.0 on went red at checkPayload: the gate worked and the tree was empty.
+ * The download therefore happens inside the build, from the same
+ * sha256-pinned scripts a developer runs by hand, and only when something
+ * is missing. `-PskipPayloadFetch` turns it off for an offline build that
+ * means to fail loudly instead.
+ */
+fun payloadProblems(): List<String> {
+    val missing = requiredPayload.filterNot { File(projectDir, it).isFile }
+    val kotlinCompiler = File(projectDir, "src/main/assets/forge/tools")
+        .listFiles { f -> f.name.startsWith("kotlin-compiler-embeddable-") }
+        .orEmpty()
+    return missing + if (kotlinCompiler.isEmpty()) {
+        listOf("src/main/assets/forge/tools/kotlin-compiler-embeddable-*.jar")
+    } else {
+        emptyList()
+    }
+}
+
+val provisionPayload = tasks.register<Exec>("provisionPayload") {
+    description = "Fetches the in-app computer (proot, Alpine rootfs, JVM, on-phone toolchain) when the tree lacks it."
+    group = "build"
+    workingDir = rootDir
+    commandLine("bash", "-c", "./tools/forge/fetch-runtime.sh && ./tools/forge/fetch-linux.sh")
+    onlyIf { payloadProblems().isNotEmpty() && !project.hasProperty("skipPayloadFetch") }
+}
+
 tasks.register("checkPayload") {
     description = "Fails the build if the in-app computer is not in the source tree."
     doLast {
-        val missing = requiredPayload.filterNot { File(projectDir, it).isFile }
-        val kotlinCompiler = File(projectDir, "src/main/assets/forge/tools")
-            .listFiles { f -> f.name.startsWith("kotlin-compiler-embeddable-") }
-            .orEmpty()
-        val problems = missing + if (kotlinCompiler.isEmpty()) {
-            listOf("src/main/assets/forge/tools/kotlin-compiler-embeddable-*.jar")
-        } else {
-            emptyList()
-        }
+        val problems = payloadProblems()
         if (problems.isNotEmpty()) {
             throw GradleException(
                 "The Linux payload is not in this tree; the APK would have no computer in it.\n" +
                     "Missing:\n" + problems.joinToString("\n") { "  $it" } +
-                    "\nRun tools/forge/fetch-runtime.sh and tools/forge/fetch-linux.sh first."
+                    "\nRun tools/forge/fetch-runtime.sh and tools/forge/fetch-linux.sh first, " +
+                    "or drop -PskipPayloadFetch and let provisionPayload do it."
             )
         }
     }
 }
+
+tasks.named("checkPayload") { dependsOn(provisionPayload) }
 
 tasks.named("preBuild") { dependsOn("checkPayload") }
 
