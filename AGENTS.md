@@ -37,3 +37,18 @@ were reported as fixed and were not.
 - Every accepted piece of work is committed and pushed to `main` and, when it is
   an app change, published as a release, because the owner keeps their record
   only in this repository.
+
+## Field lessons
+
+- 0.9.4 reached the phone with Debian 12.15 booting (kernel `6.6.127-android15`)
+  but no toolchain plan: `.gitignore` excluded the whole
+  `app/src/main/assets/forge/linux/` folder, so `toolchain.json` — source, not
+  payload — never reached the GitHub builder. Only payload binaries belong in
+  that ignore rule; anything the app reads to decide *what* to download is
+  committed, and `checkPayload` now refuses a build without it.
+- Release R8 fails on any transitive class commons-compress references but that
+  is not on the classpath (`org.tukaani.xz` for Debian's `data.tar.xz`). A debug
+  build will not catch it: run `assembleRelease`/`minifyReleaseWithR8` before
+  shipping.
+- Both failures above were found by CI or the phone, never by the unit tests, so
+  a green unit suite is not a reason to call a build good.
