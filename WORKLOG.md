@@ -28,3 +28,25 @@ mentioned Termux — and `tools/ci/README.md` says so. `git apply --check` passe
 
 **Tests:** 475 unit tests, 0 failures. APK verified: 10 required entries.
 
+**0.9.2 follow-up, same release.** The first CI run after the fix showed the
+next real problem: `fetch-runtime.sh` demanded the literal path
+`platforms/android-37/android.jar`, but API 37 is published as `37.0`, so the
+directory is `android-37` on one SDK and `android-37.0` on another — and the
+CI runner had neither spelled as the script expected. Three changes:
+
+- `tools/forge/ensure-sdk.sh` (new): finds the SDK (`ANDROID_HOME`,
+  `ANDROID_SDK_ROOT`, `local.properties`, usual install paths), checks for an
+  `android-37*` platform and `build-tools/37*`, and installs them with
+  `sdkmanager` only when absent, trying `platforms;android-37.0` then
+  `platforms;android-37`. It re-checks the files afterwards, because sdkmanager
+  exits 0 even when it installed nothing.
+- `runtime-manifest.json`: the SDK entries are now globs (`android-37*`,
+  `build-tools/37*`) and `fetch-runtime.sh` expands them, so either layout works.
+- `provisionPayload` also pins `ANDROID_HOME`/`ANDROID_SDK_ROOT` for the
+  scripts from the same resolution, so the build does not depend on how the
+  shell was configured.
+
+Verified again from an empty tree: `:app:checkPayload` provisioned the SDK
+files, the JVM, the toolchain and the rootfs and succeeded in 23 s; the rebuilt
+APK is 345,994,945 bytes and passes `verify-apk-payload.py` (10 entries).
+

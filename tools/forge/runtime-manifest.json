@@ -55,19 +55,19 @@
     {
       "what": "android.jar",
       "why": "the Android API javac compiles against, and d8 links against",
-      "from": "platforms/android-37/android.jar",
+      "from": "platforms/android-37*/android.jar",
       "as": "android.jar"
     },
     {
       "what": "d8.jar",
       "why": "turns .class files into classes.dex",
-      "from": "build-tools/37.0.0/lib/d8.jar",
+      "from": "build-tools/37*/lib/d8.jar",
       "as": "d8.jar"
     },
     {
       "what": "apksigner.jar",
       "why": "signs the finished apk so Android will install it",
-      "from": "build-tools/37.0.0/lib/apksigner.jar",
+      "from": "build-tools/37*/lib/apksigner.jar",
       "as": "apksigner.jar"
     }
   ],

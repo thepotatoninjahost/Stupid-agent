@@ -61,14 +61,18 @@ while IFS=$'\t' read -r name url sha prefix take; do
 done < "$cache/plan.tsv"
 
 python3 - "$manifest" "$sdk" "$tools" <<'PY'
-import json, os, shutil, sys
+import glob, json, os, shutil, sys
 m = json.load(open(sys.argv[1])); sdk, out = sys.argv[2], sys.argv[3]
 for f in m["sdkFiles"]:
-    src = os.path.join(sdk, f["from"])
-    if not os.path.isfile(src):
-        sys.exit("missing SDK file %s — install platforms/android-37 and build-tools/37.0.0" % f["from"])
-    shutil.copyfile(src, os.path.join(out, f["as"]))
-    print("sdk %s -> %s" % (f["from"], f["as"]))
+    # The platform directory is named "android-37" on some SDKs and
+    # "android-37.0" on others (Android 17 is API "37.0"), and the whole
+    # point of ensure-sdk.sh is that either is acceptable. So each manifest
+    # "from" is a glob, not a literal path.
+    hits = sorted(glob.glob(os.path.join(sdk, f["from"])))
+    if not hits:
+        sys.exit("missing SDK file %s — run tools/forge/ensure-sdk.sh (needs android-37 and build-tools 37.0.0)" % f["from"])
+    shutil.copyfile(hits[0], os.path.join(out, f["as"]))
+    print("sdk %s -> %s" % (os.path.relpath(hits[0], sdk), f["as"]))
 PY
 
 # Kotlin compiler jars: self-repair compiles patches on the phone, so the

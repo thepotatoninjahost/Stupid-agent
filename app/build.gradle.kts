@@ -192,11 +192,26 @@ fun payloadProblems(): List<String> {
     }
 }
 
+/** The SDK the payload copies android.jar / d8 / apksigner out of. */
+val payloadSdkDir: String by lazy {
+    val fromProp = File(rootDir, "local.properties").takeIf { it.isFile }?.readLines()
+        ?.firstOrNull { it.startsWith("sdk.dir=") }
+        ?.removePrefix("sdk.dir=")?.trim()
+    sequenceOf(System.getenv("ANDROID_HOME"), System.getenv("ANDROID_SDK_ROOT"), fromProp)
+        .firstOrNull { !it.isNullOrBlank() && File(it).isDirectory }
+        ?: "/usr/local/lib/android/sdk"
+}
+
 val provisionPayload = tasks.register<Exec>("provisionPayload") {
     description = "Fetches the in-app computer (proot, Alpine rootfs, JVM, on-phone toolchain) when the tree lacks it."
     group = "build"
     workingDir = rootDir
-    commandLine("bash", "-c", "./tools/forge/fetch-runtime.sh && ./tools/forge/fetch-linux.sh")
+    environment("ANDROID_HOME", payloadSdkDir)
+    environment("ANDROID_SDK_ROOT", payloadSdkDir)
+    commandLine(
+        "bash", "-c",
+        "./tools/forge/ensure-sdk.sh && ./tools/forge/fetch-runtime.sh && ./tools/forge/fetch-linux.sh"
+    )
     onlyIf { payloadProblems().isNotEmpty() && !project.hasProperty("skipPayloadFetch") }
 }
 
