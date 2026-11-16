@@ -1478,7 +1478,8 @@ class AgentViewModel(
                 _state.update { s ->
                     s.copy(
                         toolchainInstalling = false,
-                        toolchainResult = "FAILED — this build carries no toolchain plan: ${missing.message}",
+                        toolchainResult = "FAILED — this build has no list of what to download "
+                            + "(forge/linux/toolchain.json): ${missing.message}",
                     )
                 }
                 return@launch

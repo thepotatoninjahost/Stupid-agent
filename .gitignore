@@ -30,8 +30,13 @@ stay ignored forever.
 # and launcher that every app built on the phone is packed into.
 !/app/src/main/assets/forge/template.apk
 
-# Alpine root filesystem (~9 MB tar) — rebuilt by tools/forge/fetch-linux.sh.
-/app/src/main/assets/forge/linux/
+# The Debian root filesystem (~28 MB tar) — rebuilt by tools/forge/fetch-linux.sh
+# from the digest-pinned Docker image, so it is never committed. The toolchain
+# plan beside it is source, not payload, and must be committed: without it the
+# app cannot know what to download (0.9.4 shipped without it and the phone said
+# "this build carries no toolchain plan").
+/app/src/main/assets/forge/linux/rootfs.tar
+!/app/src/main/assets/forge/linux/toolchain.json
 
 # screen recordings / media the user attaches
 *.mp4

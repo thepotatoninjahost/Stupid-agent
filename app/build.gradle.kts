@@ -165,6 +165,7 @@ val requiredPayload = listOf(
     "src/main/jniLibs/arm64-v8a/libandroid-shmem.so",
     "src/main/jniLibs/arm64-v8a/libjvm.so",
     "src/main/assets/forge/linux/rootfs.tar",
+    "src/main/assets/forge/linux/toolchain.json",
     "src/main/assets/forge/jvm/modules",
     "src/main/assets/forge/tools/d8.jar",
     "src/main/assets/forge/tools/android.jar",
