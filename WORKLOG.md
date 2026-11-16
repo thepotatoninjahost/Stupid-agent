@@ -50,3 +50,13 @@ Verified again from an empty tree: `:app:checkPayload` provisioned the SDK
 files, the JVM, the toolchain and the rootfs and succeeded in 23 s; the rebuilt
 APK is 345,994,945 bytes and passes `verify-apk-payload.py` (10 entries).
 
+**CI is green.** Run 43795325423 (commit 5d4e3e5, 12m52s): "Unit tests +
+sandbox self-test" success, "Build debug + release APKs" success, "Publish
+signed release" success — the first green GitHub build since 0.8.9. The APK that
+build produced was downloaded from the rolling `ci-latest` release and checked
+here: `payload present … 10 required entries`, so this is the first
+CI-produced APK that carries the in-app computer.
+
+Release v0.9.2 carries the freshly rebuilt debug APK (345,994,945 bytes, sha256
+9ba4b4c5…), asset HTTP 200.
+
