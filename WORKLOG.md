@@ -31,8 +31,15 @@ this payload, and no extraction change was made on spec.
 346,004,997 bytes, sha256 `0615f4c8…`, `verify-apk-payload.py` passes with 10
 required entries.
 
+**Shipped.** Commit `7993027`, release `v0.9.3` with `Vorv-0.9.3.apk` (HTTP 200).
+GitHub Actions run 43806325568 on the same commit: unit tests + sandbox
+self-test, build, and publish all succeeded. The APK that run produced was
+downloaded and checked: payload present (10 entries) and its bundled source
+mirror contains `RootfsProvisioner`, so CI builds the fixed code.
+
 **Not verified here:** the guest actually answering on the S25, and `uname -a`
-reporting aarch64. That needs the phone.
+reporting aarch64. That needs the phone: uninstall Vorv, install 0.9.3, open
+Setup, tap "Test the Linux system". Expect `ALL GOOD` plus a real `apk --version`.
 
 ## 0.9.2 — CI goes green: the build fetches its own payload
 
