@@ -129,6 +129,22 @@ class LinuxSystem(private val context: Context) : GuestShell {
         // dropped are put back in place. No re-extract: packages installed in the
         // guest survive.
         provisioned.onSuccess { RootfsLinks.repair(rootfs) }
+        if (provisioned.isSuccess) {
+            // A stamp only says the tar was unpacked, not that the pieces the guest
+            // needs are really there. Check the tree itself, and unpack it again
+            // once from the copy inside the APK before telling the owner it is bad.
+            val first = GuestTree.broken(rootfs)
+            if (first.isNotEmpty()) {
+                rootfs.deleteRecursively()
+                stamp.delete()
+                runCatching { extractRootfs() }
+                RootfsLinks.repair(rootfs)
+                val second = GuestTree.broken(rootfs)
+                if (second.isNotEmpty()) {
+                    return@withContext Result.failure(IllegalStateException(GuestTree.describe(second)))
+                }
+            }
+        }
         provisioned.map { root }
     }
 
@@ -161,11 +177,53 @@ class LinuxSystem(private val context: Context) : GuestShell {
             ?: return@withContext Shell(-1, "", missingLoaderMessage(), true)
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
         val env = guestEnv(loader, tmp, proot.parentFile ?: File("/"))
-        val started = System.currentTimeMillis()
+        val first = launch(argv, env, home, timeoutMs)
+        if (first.exitCode == 0 || first.timedOut || !first.output.contains("execve(")) {
+            return@withContext first
+        }
+        val broken = GuestTree.broken(rootfs)
+        if (broken.isNotEmpty()) {
+            return@withContext Shell(
+                first.exitCode,
+                first.output + "\nvorv: the unpacked Linux system is broken: " + broken.joinToString("; "),
+                null,
+                false,
+            )
+        }
+        // Every file the guest asks for is there, so the refusal is in the way
+        // proot was told to start it. Two things can cause that and both are
+        // reversible here: the two symlinks between /bin/sh and dash, and
+        // PROOT_NO_SECCOMP, which is a shortcut some kernels will not take.
+        val altArgv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command, program = "/usr/bin/dash")
+        val second = launch(altArgv, env - "PROOT_NO_SECCOMP", home, timeoutMs)
+        if (second.ok) {
+            return@withContext Shell(
+                second.exitCode,
+                second.output + "\nvorv: the guest only started by its fallback route " +
+                    "(dash directly, without the no-seccomp shortcut). It works, and the plain " +
+                    "route still needs fixing.",
+                null,
+                false,
+            )
+        }
+        Shell(
+            first.exitCode,
+            first.output + "\nvorv: every file the guest needs is present and both start routes " +
+                "were refused, so proot itself cannot start the guest on this phone.\n" +
+                "vorv: fallback route said: " + second.output.lineSequence().take(6).joinToString(" | "),
+            null,
+            false,
+        )
+    }
+
+    /** One proot run: start it, drain its output, enforce the timeout. */
+    private fun launch(argv: List<String>, env: Map<String, String>, home: File, timeoutMs: Long): Shell {
         val builder = ProcessBuilder(argv)
         builder.environment().putAll(env)
         builder.directory(home)
-        val process = builder.redirectErrorStream(true).start()
+        val process = runCatching { builder.redirectErrorStream(true).start() }.getOrElse {
+            return Shell(-1, "", "proot could not be started: ${it.message ?: it.javaClass.simpleName}", false)
+        }
         // Nothing is ever written to proot's stdin, and every pipe this leaves
         // open costs the app two file descriptors for the life of the process.
         runCatching { process.outputStream.close() }
@@ -186,14 +244,11 @@ class LinuxSystem(private val context: Context) : GuestShell {
             process.waitFor(2, TimeUnit.SECONDS)
             drain.join(500)
             runCatching { process.inputStream.close() }
-            return@withContext Shell(
-                -1, synchronized(out) { out.toString() },
-                "timed out after ${timeoutMs}ms", true,
-            )
+            return Shell(-1, synchronized(out) { out.toString() }, "timed out after ${timeoutMs}ms", true)
         }
         drain.join(2_000)
         runCatching { process.inputStream.close() }
-        Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
+        return Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
     }
 
     companion object {
@@ -210,6 +265,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
             binds: List<Pair<String, String>>,
             workDir: String,
             command: String,
+            program: String = "/bin/sh",
         ): List<String> = buildList {
             add(proot.absolutePath)
             add("-0")
@@ -225,7 +281,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
                 add("-b"); add(if (hostPath == guestPath) hostPath else "$hostPath:$guestPath")
             }
             add("-w"); add(workDir)
-            add("/bin/sh"); add("-lc"); add(command)
+            add(program); add("-lc"); add(command)
         }
 
         /**
@@ -379,6 +435,73 @@ internal object RootfsLinks {
                     link.setExecutable(source.canExecute(), false)
                 }
             }
+        }
+    }
+}
+
+/**
+ * The files a Debian guest must have before anything is asked of it, checked the
+ * way the guest will follow them.
+ *
+ * 0.9.10 on the owner's phone reported proot's bare `execve("/usr/bin/sh"): No
+ * such file or directory` for every command, which names the program proot tried
+ * and nothing about why. A missing or dangling piece in the unpacked tree looks
+ * exactly like that, and so does a tree that is complete; this decides which,
+ * and names the paths instead of leaving the owner with proot's guess list.
+ */
+internal object GuestTree {
+
+    val REQUIRED = listOf(
+        "bin/sh",
+        "usr/bin/dash",
+        "usr/bin/tar",
+        "usr/bin/dpkg-deb",
+        "usr/bin/apt-get",
+        "lib/ld-linux-aarch64.so.1",
+        "usr/lib/aarch64-linux-gnu/libc.so.6",
+        "etc/debian_version",
+    )
+
+    private const val MAX_LINKS = 16
+
+    /**
+     * Why each required path is unusable, one sentence per path. Empty means the
+     * tree is whole as far as can be seen from outside the guest.
+     *
+     * Symlinks are followed by hand, from the guest's root: a link written as
+     * `/lib/x` or `../usr/lib/x` must resolve inside the rootfs and nowhere else.
+     */
+    fun broken(rootfs: File): List<String> = REQUIRED.mapNotNull { path ->
+        when (val verdict = resolve(rootfs, path)) {
+            null -> null
+            else -> "$path — $verdict"
+        }
+    }
+
+    fun describe(broken: List<String>): String =
+        "The Linux system on this phone is incomplete, so it was refused rather than half-started: " +
+            broken.joinToString("; ") +
+            ". Uninstalling Vorv and installing the APK again rebuilds it from the copy in the app."
+
+    /** null when [path] resolves to a readable regular file inside [rootfs]. */
+    private fun resolve(rootfs: File, path: String): String? {
+        var current = path
+        var links = 0
+        while (true) {
+            val file = File(rootfs, current)
+            if (!file.exists() && !java.nio.file.Files.isSymbolicLink(file.toPath())) {
+                return "missing"
+            }
+            if (!java.nio.file.Files.isSymbolicLink(file.toPath())) {
+                return if (file.isFile) null else "is a folder, not a file"
+            }
+            if (++links > MAX_LINKS) return "is a symlink that never ends"
+            val target = java.nio.file.Files.readSymbolicLink(file.toPath()).toString()
+            current = if (target.startsWith("/")) target.trimStart('/') else
+                java.nio.file.Paths.get(current).parent?.resolve(target)?.normalize()?.toString()
+                    ?: target
+            if (current.startsWith("..")) return "is a symlink pointing outside the Linux system"
+            if (current == file.path) return "is a symlink to itself"
         }
     }
 }
