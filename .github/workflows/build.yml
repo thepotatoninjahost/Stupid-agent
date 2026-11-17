@@ -194,6 +194,42 @@ jobs:
           done
           [ "$found" -gt 0 ] || { echo "no APK was produced"; exit 1; }
 
+      # P1-4 (review 2026-11): nothing has ever run Android Lint here. The
+      # first pass is report-only on purpose — the finding count on this tree is
+      # unknown, and a gate that starts red teaches everyone to ignore it. The
+      # report is uploaded and the per-severity counts are printed, so the next
+      # commit can either fix them or write a baseline and flip this to
+      # blocking. Lint runs here rather than in its own job because this job
+      # already has the forge payload, which lintDebug's asset merge needs.
+      - name: Android Lint (report only, baseline unknown)
+        continue-on-error: true
+        run: ./gradlew :app:lintDebug --no-daemon --stacktrace
+
+      - name: Lint finding counts
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("app/build/reports/lint-results-debug.xml"):
+              root = ET.parse(f).getroot()
+              counts = {}
+              for issue in root.iter("issue"):
+                  counts[issue.get("severity")] = counts.get(issue.get("severity"), 0) + 1
+              print(f, {k: counts[k] for k in sorted(counts)} or "clean")
+          PY
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: warn
+          retention-days: 3
+
       # --- Actions-storage quota hygiene -----------------------------------
       #
       # Free accounts get 500 MB of artifact storage SHARED across every
