@@ -324,6 +324,10 @@ class CloudLlm(
          * flagship, ~4 thousandths of a cent.
          */
         suspend fun probe(apiKey: String, model: String): Result<String> =
+            probeAt(apiKey, "https://api.z.ai/api/paas/v4", model)
+
+        /** Same one-call proof, against any address that speaks this format. */
+        suspend fun probeAt(apiKey: String, baseUrl: String, model: String): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
                 try {
@@ -339,7 +343,7 @@ class CloudLlm(
                         })
                     }.toString()
                     val req = Request.Builder()
-                        .url("https://api.z.ai/api/paas/v4/chat/completions")
+                        .url("${baseUrl.trimEnd('/')}/chat/completions")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .addHeader("Content-Type", "application/json")
                         .post(body.toRequestBody("application/json".toMediaType()))

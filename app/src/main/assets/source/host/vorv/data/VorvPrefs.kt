@@ -41,6 +41,20 @@ class VorvPrefs(private val context: Context) {
      */
     val autoFallback: Flow<Boolean> = context.vorvPrefs.data.map { it[AUTO_FALLBACK] ?: true }
 
+    /**
+     * 0.9.13 — any address that speaks the same language as Z.ai
+     * (`POST <base>/chat/completions`, `Authorization: Bearer <key>`).
+     * Blank means Z.ai's own address, so nothing changes for an existing setup.
+     */
+    val cloudBaseUrl: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_BASE_URL] ?: "" }
+
+    /**
+     * 0.9.13 — the exact model name that address serves. Blank means the Z.ai
+     * chain in [host.vorv.llm.CloudModel]. Set both to run a different coder
+     * (any provider whose API matches the above) without a code change.
+     */
+    val cloudCustomModel: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_CUSTOM_MODEL] ?: "" }
+
     /** "qwen7b" | "qwen3b" — which local model to use when llmMode = "local". */
     val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "qwen7b" }
 
@@ -51,6 +65,14 @@ class VorvPrefs(private val context: Context) {
 
     suspend fun setWorkspaceUri(uri: String) {
         context.vorvPrefs.edit { it[WORKSPACE_URI] = uri }
+    }
+
+    suspend fun setCloudBaseUrl(url: String) {
+        context.vorvPrefs.edit { it[CLOUD_BASE_URL] = url.trim() }
+    }
+
+    suspend fun setCloudCustomModel(id: String) {
+        context.vorvPrefs.edit { it[CLOUD_CUSTOM_MODEL] = id.trim() }
     }
 
     suspend fun setLlmMode(mode: String) {
@@ -94,6 +116,8 @@ class VorvPrefs(private val context: Context) {
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
         private val CLOUD_MODEL_ID = stringPreferencesKey("cloud_model_id")
+        private val CLOUD_BASE_URL = stringPreferencesKey("cloud_base_url")
+        private val CLOUD_CUSTOM_MODEL = stringPreferencesKey("cloud_custom_model")
         private val AUTO_FALLBACK = booleanPreferencesKey("auto_fallback")
         private val LOCAL_MODEL_ID = stringPreferencesKey("local_model_id")
         private val NOTIF_ASKED = booleanPreferencesKey("notif_permission_asked")

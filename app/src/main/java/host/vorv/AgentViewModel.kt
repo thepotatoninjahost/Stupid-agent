@@ -14,6 +14,7 @@ import host.vorv.data.entity.ToolCall
 import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.RoomKernelEventSink
 import host.vorv.kernel.TraceStep
+import host.vorv.llm.BrainChoice
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.CloudModel
 import host.vorv.llm.FallbackLlm
@@ -120,6 +121,10 @@ data class AgentState(
     val hasApiKey: Boolean = false,
     /** v0.7.0 — selected Z.ai cloud model (free glm-4.7-flash by default). */
     val cloudModelId: String = CloudModel.GLM_4_7_FLASH.id,
+    /** 0.9.13 — a different provider's address; blank keeps Z.ai. */
+    val cloudBaseUrl: String = "",
+    /** 0.9.13 — that provider's model name; blank keeps the Z.ai chain. */
+    val cloudCustomModel: String = "",
     /** v0.7.0 — cloud→offline fallback armed (needs a downloaded local model). */
     val autoFallback: Boolean = true,
     /** v0.7.0 — key+model probe in flight (Setup screen). */
@@ -377,6 +382,22 @@ class AgentViewModel(
             }
         }
         viewModelScope.launch {
+            prefs.cloudBaseUrl.collect { url ->
+                _state.update { prev ->
+                    val next = prev.copy(cloudBaseUrl = url)
+                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                }
+            }
+        }
+        viewModelScope.launch {
+            prefs.cloudCustomModel.collect { name ->
+                _state.update { prev ->
+                    val next = prev.copy(cloudCustomModel = name)
+                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                }
+            }
+        }
+        viewModelScope.launch {
             prefs.autoFallback.collect { enabled ->
                 _state.update { prev ->
                     val next = prev.copy(autoFallback = enabled)
@@ -529,6 +550,31 @@ class AgentViewModel(
                     } else {
                         "✗ ${probe.exceptionOrNull()?.message ?: "unknown error"}"
                     },
+                )
+            }
+        }
+    }
+
+    /**
+     * 0.9.13 — point the cloud brain at any provider that speaks the same
+     * request format. Both fields are saved together and a key, if present,
+     * is proven with one real call before the header claims it works.
+     */
+    fun setCloudProvider(baseUrl: String, model: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.setCloudBaseUrl(baseUrl)
+            prefs.setCloudCustomModel(model)
+            val key = secrets.zaiApiKey.first()
+            if (key.isBlank() || model.isBlank()) return@launch
+            _state.update { it.copy(keyTesting = true, keyTestResult = null) }
+            val probe = CloudLlm.probeAt(key, baseUrl.ifBlank { "https://api.z.ai/api/paas/v4" }, model)
+            _state.update {
+                it.copy(
+                    keyTesting = false,
+                    keyTestResult = probe.fold(
+                        onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
+                        onFailure = { e -> "✗ $model: ${e.message ?: "unknown error"}" },
+                    ),
                 )
             }
         }
@@ -906,15 +952,12 @@ class AgentViewModel(
         }
 
         val s = _state.value
-        val engineAvailable = when (s.llmMode) {
-            "local" -> s.localModelReady
-            else -> s.hasApiKey
-        }
+        val engineAvailable = BrainChoice.usable(s.llmMode, s.hasApiKey, s.localModelReady)
         if (!engineAvailable) {
             val hint = if (s.llmMode == "local") {
-                "Local mode is selected but the model isn't downloaded yet.\n\nOpen Setup → Download local model (~1.8–4.4 GB, one time). Or switch to Cloud and paste a Z.ai API key."
+                "The on-phone coder is not downloaded yet, so I cannot answer.\n\nOpen Setup → Download model (~1.8 GB for the small coder, 4.4 GB for the big one, one time). Then I work with no internet and no key."
             } else {
-                "Cloud mode needs a Z.ai API key.\n\nOpen Setup → paste your key from z.ai/manage-apikey → Save. Or download the local model for offline mode."
+                "I have no brain to think with yet. Two ways to give me one:\n\n1. On the phone: Setup → Download model (~1.8 GB, one time). Works offline, no key, no account.\n2. In the cloud: Setup → paste a Z.ai API key → Save."
             }
             val echo = ChatMessage(role = "user", content = trimmed)
             val hintMsg = ChatMessage(role = "assistant", content = hint)
@@ -955,15 +998,33 @@ class AgentViewModel(
             host.vorv.service.AgentService.start(appContext, "Working: ${trimmed.take(40)}")
 
             try {
-                val mode = prefs.llmMode.first()
+                val chosenMode = prefs.llmMode.first()
                 val key = secrets.zaiApiKey.first()
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
+                // No cloud key but an on-phone coder in storage: the coder answers,
+                // and the header says so. Never a silent engine switch — the label
+                // and the episode log both name the brain that actually ran.
+                val mode = BrainChoice.mode(chosenMode, key.isNotBlank(), ModelManager.isDownloaded(choice))
+                if (mode != chosenMode) {
+                    runCatching {
+                        db.episodeDao().insert(
+                            Episode(
+                                kind = "lesson",
+                                summary = "No cloud key — this task ran on the on-phone coder (${choice.id})",
+                            )
+                        )
+                    }
+                }
                 val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
                 val autoFallback = prefs.autoFallback.first()
+                val cloudBaseUrl = prefs.cloudBaseUrl.first()
+                val customModel = prefs.cloudCustomModel.first()
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 modelRepository.markBusy(true)
-                val llm: Llm = modelRepository.activeEngine(mode, key, choice, cloudModel, autoFallback)
+                val llm: Llm = modelRepository.activeEngine(
+                    mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
+                )
 
                 // v0.7.0: every cloud→offline takeover is recorded with its
                 // REAL reason in the episode log — a fallback is visible,
@@ -1193,11 +1254,7 @@ class AgentViewModel(
         if (bootDiagnosisStarted) return true
         val s = _state.value
         if (s.busy) return false
-        val engineAvailable = when (s.llmMode) {
-            "local" -> s.localModelReady
-            else -> s.hasApiKey
-        }
-        if (!engineAvailable) return false
+        if (!BrainChoice.usable(s.llmMode, s.hasApiKey, s.localModelReady)) return false
         bootDiagnosisStarted = true
 
         val situation = when {
@@ -1268,15 +1325,33 @@ class AgentViewModel(
             db.taskDao().insert(task)
             host.vorv.service.AgentService.start(appContext, "Working: boot self-diagnosis")
             try {
-                val mode = prefs.llmMode.first()
+                val chosenMode = prefs.llmMode.first()
                 val key = secrets.zaiApiKey.first()
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
+                // No cloud key but an on-phone coder in storage: the coder answers,
+                // and the header says so. Never a silent engine switch — the label
+                // and the episode log both name the brain that actually ran.
+                val mode = BrainChoice.mode(chosenMode, key.isNotBlank(), ModelManager.isDownloaded(choice))
+                if (mode != chosenMode) {
+                    runCatching {
+                        db.episodeDao().insert(
+                            Episode(
+                                kind = "lesson",
+                                summary = "No cloud key — this task ran on the on-phone coder (${choice.id})",
+                            )
+                        )
+                    }
+                }
                 val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
                 val autoFallback = prefs.autoFallback.first()
+                val cloudBaseUrl = prefs.cloudBaseUrl.first()
+                val customModel = prefs.cloudCustomModel.first()
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 modelRepository.markBusy(true)
-                val llm: Llm = modelRepository.activeEngine(mode, key, choice, cloudModel, autoFallback)
+                val llm: Llm = modelRepository.activeEngine(
+                    mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
+                )
 
                 val timeoutMs = if (mode == "local") LOCAL_TASK_TIMEOUT_MS else CLOUD_TASK_TIMEOUT_MS
                 val result = try {
@@ -1499,17 +1574,32 @@ class AgentViewModel(
     }
 
     private fun engineLabel(s: AgentState, choice: ModelChoice): String {
+        val name = choice.displayName.substringBefore("(").trim()
+        val actual = BrainChoice.mode(s.llmMode, s.hasApiKey, s.localModelReady)
+        if (actual == "local") {
+            return if (s.localModelReady) {
+                val notice = BrainChoice.notice(s.llmMode, s.hasApiKey, s.localModelReady)
+                if (notice == null) "$name (NPU, offline)" else "$name (NPU, offline — $notice)"
+            } else {
+                "On-phone coder not downloaded — Setup → $name"
+            }
+        }
         return when (s.llmMode) {
             "local" -> if (s.localModelReady) {
-                "${choice.displayName.substringBefore("(").trim()} (NPU, offline)"
+                "$name (NPU, offline)"
             } else {
-                "Local — ${choice.displayName.substringBefore("(").trim()} not pulled"
+                "Local — $name not pulled"
             }
             else -> {
-                if (!s.hasApiKey) return "Cloud — needs API key"
+                if (!s.hasApiKey) return "No brain yet — download the on-phone coder in Setup"
                 val cm = CloudModel.fromId(s.cloudModelId)
                 val fb = if (s.autoFallback && s.localModelReady) " · offline fallback armed" else ""
-                "${cm.displayName} (cloud${if (cm.free) ", free" else ""})$fb"
+                if (s.cloudCustomModel.isNotBlank()) {
+                    val host = runCatching { java.net.URI(s.cloudBaseUrl).host }.getOrNull()
+                    "${s.cloudCustomModel} (cloud${if (host != null) " — $host" else ""})$fb"
+                } else {
+                    "${cm.displayName} (cloud${if (cm.free) ", free" else ""})$fb"
+                }
             }
         }
     }

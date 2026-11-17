@@ -61,6 +61,7 @@ fun VorvApp(
                         vm::setApiKey,
                         vm::setLlmMode,
                         vm::setCloudModel,
+                        vm::setCloudProvider,
                         vm::setAutoFallback,
                         vm::setLocalModel,
                         vm::downloadLocalModel,

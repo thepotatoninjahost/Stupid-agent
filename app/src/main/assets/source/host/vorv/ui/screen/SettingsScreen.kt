@@ -24,6 +24,7 @@ fun SettingsScreen(
     onSaveKey: (String) -> Unit,
     onSetMode: (String) -> Unit,
     onSetCloudModel: (String) -> Unit,
+    onSetCloudProvider: (String, String) -> Unit = { _, _ -> },
     onSetAutoFallback: (Boolean) -> Unit,
     onSetLocalModel: (String) -> Unit,
     onDownloadModel: () -> Unit,
@@ -38,6 +39,9 @@ fun SettingsScreen(
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
+    var providerUrl by remember { mutableStateOf(state.cloudBaseUrl) }
+    var providerModel by remember { mutableStateOf(state.cloudCustomModel) }
+    var providerSaved by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -360,6 +364,57 @@ fun SettingsScreen(
             Surface(shape = RoundedCornerShape(10.dp), color = Success.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
                 Text("✓ API key set — cloud mode available", color = Success, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
             }
+        }
+
+        // ------------------------------------------ a coder you choose
+        // 0.9.13 — the cloud brain used to be Z.ai only. Any provider whose API
+        // takes the same request (address .../chat/completions, Bearer key)
+        // works now; blank fields keep the Z.ai chain exactly as before.
+        Text("Use a different coder (optional)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Have a key from another provider? Put its address and the model name below and it becomes " +
+                "the cloud brain — no GLM needed. Leave both blank to stay on Z.ai. " +
+                "Saving runs one real test call, so the answer here is proof, not a promise.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+        OutlinedTextField(
+            value = providerUrl,
+            onValueChange = { providerUrl = it; providerSaved = false },
+            placeholder = { Text("Address, e.g. https://api.example.com/v1") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Primary,
+                unfocusedBorderColor = Border,
+            ),
+        )
+        OutlinedTextField(
+            value = providerModel,
+            onValueChange = { providerModel = it; providerSaved = false },
+            placeholder = { Text("Model name, e.g. kimi-k2-0905-preview") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Primary,
+                unfocusedBorderColor = Border,
+            ),
+        )
+        Button(
+            onClick = { onSetCloudProvider(providerUrl.trim(), providerModel.trim()); providerSaved = true },
+            enabled = !state.keyTesting,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(50),
+        ) {
+            Text(
+                when {
+                    state.keyTesting -> "Testing that coder…"
+                    providerSaved -> "Saved ✓ — see test result above"
+                    providerUrl.isBlank() && providerModel.isBlank() -> "Clear — use Z.ai"
+                    else -> "Save coder & Test"
+                }
+            )
         }
 
         // --------------------------------- Linux system (Vorv's own computer)

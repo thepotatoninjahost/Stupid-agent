@@ -45,15 +45,23 @@ class ModelRepository(private val appContext: Context) {
         choice: ModelChoice,
         cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH,
         autoFallback: Boolean = true,
+        baseUrl: String = "",
+        customModel: String = "",
     ): Llm = mutex.withLock {
         if (mode != "local") {
             require(apiKey.isNotBlank()) {
                 "Cloud mode needs a Z.ai API key — add one in Setup."
             }
-            val cloud: Llm = CloudChainLlm(
-                apiKey,
-                listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free },
-            )
+            // 0.9.13 — a named model at a named address wins over the Z.ai
+            // chain: one coder the owner picked, not a catalog he did not.
+            val cloud: Llm = if (customModel.isNotBlank()) {
+                CloudLlm(apiKey, baseUrl.ifBlank { "https://api.z.ai/api/paas/v4" }, customModel)
+            } else {
+                CloudChainLlm(
+                    apiKey,
+                    listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free },
+                )
+            }
             if (!autoFallback || !ModelManager.isDownloaded(choice)) {
                 return@withLock cloud
             }
