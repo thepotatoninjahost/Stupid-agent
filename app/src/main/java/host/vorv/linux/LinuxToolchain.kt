@@ -65,6 +65,9 @@ class LinuxToolchain(
     private val debsDir: File get() = File(rootfs, DEBS_IN_GUEST.trim('/'))
     private val stampFile: File get() = File(rootfs, STAMP_PATH)
 
+    /** First reason the guest gave for a package it refused. Cleared per install. */
+    private var lastWhy: String = ""
+
     fun plan(planJson: String): List<Package> =
         (gson.fromJson(planJson, Plan::class.java)?.packages ?: emptyList())
 
@@ -73,6 +76,7 @@ class LinuxToolchain(
         onProgress: (Progress) -> Unit,
     ): Result<Unit> = try {
         if (plan.isEmpty()) error("the toolchain plan is empty — this build carries no package list")
+        lastWhy = ""
         rootfs.mkdirs()
         debsDir.mkdirs()
         requireDpkg()
@@ -94,6 +98,7 @@ class LinuxToolchain(
         // a few sessions instead is what proot-distro does, and it means 169
         // package installs cost six proot starts rather than 169.
         val batches = files.chunked(BATCH_SIZE)
+        val failed = mutableListOf<String>()
         batches.forEachIndexed { index, batch ->
             val last = (index * BATCH_SIZE) + batch.size
             onProgress(
@@ -102,8 +107,13 @@ class LinuxToolchain(
                     "unpacking packages ${index * BATCH_SIZE + 1}-$last of ${plan.size}",
                 ),
             )
-            unpackBatch(batch)
+            // A dead session is retried package by package inside unpackBatch.
+            // Whatever survives that is collected here and the remaining batches
+            // still run: one bad session must not throw away the other 144
+            // packages, and a retried install skips what already landed.
+            failed += unpackBatch(batch)
         }
+        if (failed.isNotEmpty()) error(unpackFailure(failed))
 
         val javaHome = linkJavaTools()
 
@@ -191,9 +201,9 @@ class LinuxToolchain(
      * named in the message together with the first thing proot or dpkg said,
      * because "exit 1" alone told us nothing on the phone in 0.9.6.
      */
-    private suspend fun unpackBatch(paths: List<String>) {
+    private suspend fun unpackBatch(paths: List<String>): List<String> {
         var shell = runInGuest(batchScript(paths))
-        if (shell.ok) return
+        if (shell.ok) return emptyList()
 
         // proot's own child can be refused by the phone (fork/exec under memory
         // or process pressure). One clean retry costs seconds and is what the
@@ -203,7 +213,7 @@ class LinuxToolchain(
         if (blip) {
             kotlinx.coroutines.delay(1_500)
             shell = runInGuest(batchScript(paths))
-            if (shell.ok) return
+            if (shell.ok) return emptyList()
         }
 
         val lines = shell.output.lineSequence().toList()
@@ -213,67 +223,63 @@ class LinuxToolchain(
             ?.split(' ')
             ?.filter { it.isNotEmpty() }
             ?: emptyList()
-        var retryWhy = ""
 
         // 0.9.7 on the owner's phone: one batch of 25 died with "tar: not found"
         // even though /usr/bin/tar is in the rootfs (verified in the shipped
         // rootfs.tar). proot had refused to exec a child inside that session, so
         // every package in that batch looked broken. A batch-sized session is
         // convenient, not required — retry only the casualties, each alone, in a
-        // session of its own, before telling the owner anything failed.
-        if (missing.isNotEmpty()) {
-            val stillFailing = mutableListOf<String>()
-            missing.forEach { name ->
-                val path = paths.firstOrNull { it.endsWith("/$name") } ?: name
-                var ok = false
-                repeat(2) { attempt ->
-                    if (!ok) {
-                        if (attempt > 0) kotlinx.coroutines.delay(700)
-                        val one = runInGuest(batchScript(listOf(path)))
-                        ok = one.ok
-                        if (!ok && retryWhy.isEmpty()) {
-                            retryWhy = one.output.lineSequence()
-                                .filter {
-                                    it.contains("proot error") || it.startsWith("tar:") ||
-                                        it.startsWith("dpkg-deb:")
-                                }
-                                .take(2).joinToString(" | ")
-                        }
+        // session of its own, before anything is called failed.
+        if (missing.isEmpty()) {
+            // A failed session that printed no marker: retry the whole batch once
+            // more alone, package at a time, rather than blaming the packages.
+            missing = paths
+        }
+        val stillFailing = mutableListOf<String>()
+        missing.forEach { name ->
+            val path = paths.firstOrNull { it.endsWith("/$name") } ?: name
+            var ok = false
+            repeat(2) { attempt ->
+                if (!ok) {
+                    if (attempt > 0) kotlinx.coroutines.delay(700)
+                    val one = runInGuest(batchScript(listOf(path)))
+                    ok = one.ok
+                    if (!ok && lastWhy.isEmpty()) {
+                        lastWhy = one.output.lineSequence()
+                            .filter {
+                                it.contains("proot error") || it.startsWith("tar:") ||
+                                    it.startsWith("dpkg-deb:")
+                            }
+                            .take(2).joinToString(" | ")
                     }
                 }
-                if (!ok) stillFailing += name
             }
-            if (stillFailing.isEmpty()) return
-            missing = stillFailing
+            if (!ok) stillFailing += File(name).name
         }
+        if (stillFailing.isEmpty()) return emptyList()
 
-        val why = lines
-            .filter {
-                it.contains("proot error") || it.startsWith("dpkg-deb:") ||
-                    it.startsWith("tar:") || it.startsWith("sh:")
-            }
-            .take(4)
-            .joinToString(" | ")
-            .take(400)
-
-        val headline = when {
-            missing.isNotEmpty() ->
-                "${missing.size} package(s) could not be unpacked inside the guest: " +
-                    missing.joinToString(", ").take(300)
-            shell.timedOut ->
-                "the guest took longer than the timeout while unpacking " +
-                    "${paths.first()} … ${paths.last()}"
-            else ->
-                "unpacking ${paths.first()} … ${paths.last()} failed in the guest " +
-                    "(exit ${shell.exitCode})"
+        if (lastWhy.isEmpty()) {
+            lastWhy = lines
+                .filter {
+                    it.contains("proot error") || it.startsWith("dpkg-deb:") ||
+                        it.startsWith("tar:") || it.startsWith("sh:")
+                }
+                .take(4)
+                .joinToString(" | ")
         }
-        error(
-            headline + (when {
-                why.isNotEmpty() -> " — proot/dpkg said: $why"
-                retryWhy.isNotEmpty() -> " — each retried alone, proot/dpkg said: $retryWhy"
-                else -> " — the guest said: " + lines.takeLast(4).joinToString(" | ").take(300)
-            }),
-        )
+        if (shell.timedOut) lastWhy = (lastWhy + " the guest timed out").trim()
+        return stillFailing
+    }
+
+    /** One sentence the owner can read: what is still missing, and what the guest said. */
+    private fun unpackFailure(names: List<String>): String {
+        val headline = "${names.size} package(s) could not be unpacked inside the guest: " +
+            names.joinToString(", ").take(300)
+        return headline + if (lastWhy.isNotEmpty()) {
+            " — proot/dpkg said: ${lastWhy.take(400)}"
+        } else {
+            " — the guest gave no reason; installing again skips what already landed"
+        }
     }
 
     private fun sha256(file: File): String {
@@ -306,6 +312,9 @@ class LinuxToolchain(
         /** Where the .debs live inside the guest. */
         const val DEBS_IN_GUEST = "/var/cache/vorv-debs"
 
+        /** One marker per unpacked package, so a retried install resumes. */
+        const val UNPACKED_DIR = "/var/cache/vorv-unpacked"
+
         /**
          * Packages unpacked per guest session. dpkg-deb asks the kernel for very
          * little, so a batch is cheap inside one proot; the number is about
@@ -320,12 +329,14 @@ class LinuxToolchain(
          * so a test can pin the exact text that reaches the guest.
          */
         internal fun batchScript(paths: List<String>): String = buildString {
-            append("fail=''; ")
+            append("d=").append(UNPACKED_DIR).append("; mkdir -p \"\$d\"; fail=''; ")
             append("for f in")
             paths.forEach { append(" '").append(it.replace("'", "")).append("'") }
-            append("; do n=\${f##*/}; echo \"@@PKG \$n\"; ")
-            append("if dpkg-deb -x \"\$f\" / ; then echo \"@@OK \$n\"; ")
-            append("elif dpkg-deb --fsys-tarfile \"\$f\" | tar -xf - -C / ; then echo \"@@OK \$n via tar\"; ")
+            append("; do n=\${f##*/}; ")
+            append("if [ -f \"\$d/\$n\" ]; then echo \"@@OK \$n (already unpacked)\"; continue; fi; ")
+            append("echo \"@@PKG \$n\"; ")
+            append("if dpkg-deb -x \"\$f\" / ; then : > \"\$d/\$n\"; echo \"@@OK \$n\"; ")
+            append("elif dpkg-deb --fsys-tarfile \"\$f\" | tar -xf - -C / ; then : > \"\$d/\$n\"; echo \"@@OK \$n via tar\"; ")
             append("else echo \"@@FAILED \$n\"; fail=\"\$fail \$n\"; fi; done; ")
             append("if [ -n \"\$fail\" ]; then echo \"$MISSING_MARK\$fail\"; exit 4; fi; ")
             append("echo '@@BATCH OK'")

@@ -312,6 +312,13 @@ class LinuxToolchainTest {
     }
 
     @Test
+    fun `the unpack script skips a package whose marker is already in the guest`() {
+        val script = LinuxToolchain.batchScript(listOf("/var/cache/vorv-debs/a_1.0.deb"))
+        assertTrue(script.contains(LinuxToolchain.UNPACKED_DIR))
+        assertTrue(script.contains("-f \"\$d/\$n\""))
+    }
+
+    @Test
     fun `an empty plan is refused before anything runs`() = runTest {
         val rootfs = File(work, "rootfs")
         val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs)).install(emptyList()) { }
