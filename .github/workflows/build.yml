@@ -194,42 +194,6 @@ jobs:
           done
           [ "$found" -gt 0 ] || { echo "no APK was produced"; exit 1; }
 
-      # P1-4 (review 2026-11): nothing has ever run Android Lint here. The
-      # first pass is report-only on purpose — the finding count on this tree is
-      # unknown, and a gate that starts red teaches everyone to ignore it. The
-      # report is uploaded and the per-severity counts are printed, so the next
-      # commit can either fix them or write a baseline and flip this to
-      # blocking. Lint runs here rather than in its own job because this job
-      # already has the forge payload, which lintDebug's asset merge needs.
-      - name: Android Lint (report only, baseline unknown)
-        continue-on-error: true
-        run: ./gradlew :app:lintDebug --no-daemon --stacktrace
-
-      - name: Lint finding counts
-        if: always()
-        continue-on-error: true
-        run: |
-          python3 - <<'PY'
-          import glob, xml.etree.ElementTree as ET
-          for f in glob.glob("app/build/reports/lint-results-debug.xml"):
-              root = ET.parse(f).getroot()
-              counts = {}
-              for issue in root.iter("issue"):
-                  counts[issue.get("severity")] = counts.get(issue.get("severity"), 0) + 1
-              print(f, {k: counts[k] for k in sorted(counts)} or "clean")
-          PY
-
-      - name: Upload lint report
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: lint-report
-          path: |
-            app/build/reports/lint-results-debug.html
-            app/build/reports/lint-results-debug.xml
-          if-no-files-found: warn
-          retention-days: 3
-
       # --- Actions-storage quota hygiene -----------------------------------
       #
       # Free accounts get 500 MB of artifact storage SHARED across every
@@ -284,6 +248,53 @@ jobs:
       # is still flagged as a warning annotation, and the run's real gate is
       # the release-verification step below: if the APKs did not land on the
       # rolling release, the run goes red. A broken build can never hide.
+
+      # P1-4 (review 2026-11): nothing had ever run Android Lint here. The first
+      # pass was report-only; it found two errors, both real (a missing
+      # REQUEST_DELETE_PACKAGES that made uninstall impossible, and a PNG encode
+      # on the main thread), and both are fixed. Errors are now blocking, which
+      # is what the owner asked for: nothing may fail quietly.
+      #
+      # 32 warnings remain and do NOT fail the build. They are listed by id in
+      # the step below so the list cannot rot unseen; the next pass works
+      # through them and this comment goes away with the last one. Lint runs
+      # here rather than in its own job because this job already has the forge
+      # payload, which lintDebug's asset merge needs.
+      #
+      # It also has to run AFTER the artifact cleanup above: that step deletes
+      # every artifact in the repo, including the lint report this one uploads.
+      - name: Android Lint (errors block, warnings do not)
+        run: ./gradlew :app:lintDebug --no-daemon --stacktrace
+
+      - name: Lint finding counts
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("app/build/reports/lint-results-debug.xml"):
+              root = ET.parse(f).getroot()
+              counts, ids = {}, {}
+              for issue in root.iter("issue"):
+                  sev = issue.get("severity")
+                  counts[sev] = counts.get(sev, 0) + 1
+                  ids[issue.get("id")] = ids.get(issue.get("id"), 0) + 1
+              print(f, {k: counts[k] for k in sorted(counts)} or "clean")
+              for i in sorted(ids, key=lambda k: -ids[k]):
+                  print(f"  {ids[i]:>3}  {i}")
+          PY
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: warn
+          retention-days: 3
+
       - name: Upload debug APK artifact
         continue-on-error: true
         # I-2: artifacts are a push-run deliverable; pull_request runs gate
