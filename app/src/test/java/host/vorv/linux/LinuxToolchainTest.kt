@@ -358,30 +358,39 @@ class LinuxToolchainTest {
         // corrupt package. The script now says GONE, with the path, first.
         val script = LinuxToolchain.batchScript(listOf("/var/cache/vorv-debs/a_1.0.deb"))
         val gone = script.indexOf("@@GONE")
-        val unpack = script.indexOf("dpkg-deb -x")
+        val unpack = script.indexOf("--fsys-tarfile")
         assertTrue("the script must test for the archive", gone > 0)
         assertTrue("the GONE test must come before dpkg-deb", gone < unpack)
         assertTrue(script.contains("[ ! -f \"\$f\" ]"))
     }
 
     @Test
-    fun `a downloaded package that vanished is fetched again before its batch`() = runTest {
-        // Nothing on disk, so every path in the plan must be fetched again.
+    fun `unpacking keeps the merged-usr links, because -x alone replaces them`() {
+        // 0.9.14: with the real debs, `dpkg-deb -x` turned /lib (a link into
+        // /usr/lib) into a folder holding only libaudit, and the program loader
+        // disappeared. The script must extract through the links instead.
+        val script = LinuxToolchain.batchScript(listOf("/var/cache/vorv-debs/a_1.0.deb"))
+        val keeps = script.indexOf("tar -x --keep-directory-symlink -C /")
+        val plain = script.indexOf("dpkg-deb -x")
+        assertTrue("tar with --keep-directory-symlink must be tried", keeps > 0)
+        assertTrue("it must come before any plain -x: $script", keeps < plain)
+        assertTrue("the loader must be checked after every package", script.contains("[ -e /lib/ld-linux-aarch64.so.1 ]"))
+        assertTrue(script.contains("@@BROKEN"))
+    }
+
+    @Test
+    fun `a package that vanished from the guest folder is downloaded again`() = runTest {
+        val bytes = deb(mapOf("usr/bin/javac" to ("" to 493)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
         val rootfs = File(work, "rootfs")
-        val pkg = LinuxToolchain.Package(
-            name = "a",
-            version = "1.0",
-            url = "https://invalid.test/a_1.0.deb",
-            sha256 = "00",
-            size = 1,
-        )
-        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs)).install(listOf(pkg)) { }
-        // The fetch is attempted before any guest command runs, and its failure
-        // names the package rather than reaching dpkg-deb with a dead path.
-        assertTrue(result.isFailure)
-        val message = result.exceptionOrNull()!!.message.orEmpty()
-        assertTrue(message, message.contains("a"))
-        assertTrue("no unpack must be attempted: $commands", commands.none { it.contains("dpkg-deb") })
+        val p = pkg("a", bytes)
+        val toolchain = LinuxToolchain(rootfs, runInGuest = guest(rootfs))
+        assertFalse(File(rootfs, "var/cache/vorv-debs/a_1.0.deb").exists())
+        toolchain.ensureOnDisk(listOf("/var/cache/vorv-debs/a_1.0.deb"), listOf(p))
+        val landed = File(rootfs, "var/cache/vorv-debs/a_1.0.deb")
+        assertTrue("the archive must be back on disk", landed.isFile)
+        assertEquals(sha(bytes), sha(landed.readBytes()))
+        assertTrue(commands.isEmpty())
     }
 
     @Test

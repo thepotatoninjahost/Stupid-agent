@@ -151,7 +151,7 @@ class LinuxToolchain(
      * again here, and if it cannot be, the install names it instead of handing
      * dpkg-deb a path to a file that is not there.
      */
-    private fun ensureOnDisk(batch: List<String>, plan: List<Package>): List<String> {
+    internal fun ensureOnDisk(batch: List<String>, plan: List<Package>): List<String> {
         val byName = plan.associateBy { it.name + "_" + it.version + ".deb" }
         return batch.map { path ->
             val name = File(path).name
@@ -305,7 +305,7 @@ class LinuxToolchain(
                         lastWhy = one.output.lineSequence()
                             .filter {
                                 it.contains("proot error") || it.startsWith("tar:") ||
-                                    it.startsWith("dpkg-deb:") || it.startsWith("@@GONE")
+                                    it.startsWith("dpkg-deb:") || it.startsWith("@@GONE") || it.startsWith("@@BROKEN")
                             }
                             .take(2).joinToString(" | ")
                     }
@@ -319,7 +319,7 @@ class LinuxToolchain(
             lastWhy = lines
                 .filter {
                     it.contains("proot error") || it.startsWith("dpkg-deb:") ||
-                        it.startsWith("tar:") || it.startsWith("sh:") || it.startsWith("@@GONE")
+                        it.startsWith("tar:") || it.startsWith("sh:") || it.startsWith("@@GONE") || it.startsWith("@@BROKEN")
                 }
                 .take(4)
                 .joinToString(" | ")
@@ -399,9 +399,26 @@ class LinuxToolchain(
             // fault from a corrupt archive, and must not be reported the same.
             append("if [ ! -f \"\$f\" ]; then echo \"@@GONE \$f\"; fail=\"\$fail \$n\"; continue; fi; ")
             append("echo \"@@PKG \$n\"; ")
-            append("if dpkg-deb -x \"\$f\" / ; then : > \"\$d/\$n\"; echo \"@@OK \$n\"; ")
-            append("elif dpkg-deb --fsys-tarfile \"\$f\" | tar -xf - -C / ; then : > \"\$d/\$n\"; echo \"@@OK \$n via tar\"; ")
-            append("else echo \"@@FAILED \$n\"; fail=\"\$fail \$n\"; fi; done; ")
+            // 0.9.14 — unpack with tar keeping directory links, never with
+            // `dpkg-deb -x` alone.
+            //
+            // Debian bookworm is merged-usr: /lib and /bin are links into
+            // /usr/lib and /usr/bin. Packages such as libaudit1 still ship
+            // ./lib/aarch64-linux-gnu/... entries. `dpkg-deb -x` runs plain
+            // tar, which replaces the /lib link with a real folder holding only
+            // that one package's files, and /lib/ld-linux-aarch64.so.1 — the
+            // program loader — stops existing. The tree check then found the
+            // loader gone, rebuilt the rootfs from the APK, and threw away the
+            // 139 downloads already in it, which is why 0.9.13 reported 20
+            // archives "not found" that had just been verified. Reproduced here
+            // with the real debs: -x breaks it, --keep-directory-symlink does not.
+            append("if dpkg-deb --fsys-tarfile \"\$f\" | tar -x --keep-directory-symlink -C / 2>/dev/null; then : > \"\$d/\$n\"; echo \"@@OK \$n\"; ")
+            append("elif dpkg-deb -x \"\$f\" / && [ -e /lib/ld-linux-aarch64.so.1 ]; then : > \"\$d/\$n\"; echo \"@@OK \$n (plain tar)\"; ")
+            append("else echo \"@@FAILED \$n\"; fail=\"\$fail \$n\"; fi; ")
+            // The loader is checked after every package: if any unpack broke the
+            // merged-usr links, the install stops on the package that did it,
+            // before more downloads are lost to a rebuild.
+            append("if [ ! -e /lib/ld-linux-aarch64.so.1 ]; then echo \"@@BROKEN \$n lost /lib/ld-linux-aarch64.so.1\"; fail=\"\$fail \$n\"; fi; done; ")
             append("if [ -n \"\$fail\" ]; then echo \"$MISSING_MARK\$fail\"; exit 4; fi; ")
             append("echo '@@BATCH OK'")
         }
