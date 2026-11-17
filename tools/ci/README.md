@@ -16,7 +16,8 @@ Since 0.9.2 this file matters much less than it did:
   that Gradle cannot: the APK gate step (inspect the *finished* APK before
   anything is uploaded, so a computer-less build can never become an artifact or
   a release) and the release-notes text, which still told the owner to install
-  Termux.
+  Termux (R-3, review 2026-11-14). The notes now say what the build actually
+  contains: Debian 12 under proot, no root, no Termux, packages via `apt-get`.
 
 To apply it: grant the `workflow` scope, then
 

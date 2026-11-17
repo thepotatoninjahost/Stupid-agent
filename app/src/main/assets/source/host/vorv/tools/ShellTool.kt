@@ -10,7 +10,7 @@ import kotlinx.coroutines.withContext
 /**
  * shell — run commands in Vorv's own Linux system.
  *
- * The guest is [LinuxSystem]: a real Alpine userland under proot, inside this
+ * The guest is [LinuxSystem]: a real Debian 12 userland under proot, inside this
  * app, needing no root, no Termux and no other installed app. The tool returns
  * the REAL exit code, stdout and stderr; when the guest is missing or a
  * command overruns its limit it says exactly that and never invents output.
@@ -31,10 +31,11 @@ class ShellTool(
     override val name = "shell"
 
     override val description =
-        "Run a shell command inside Vorv's own Linux system (Alpine, on this phone, no root " +
+        "Run a shell command inside Vorv's own Linux system (Debian 12, on this phone, no root " +
             "and no Termux) and get the REAL stdout, stderr and exit code. This IS a full Linux " +
-            "environment with a package manager: install software with 'apk add -y <name>' " +
-            "(e.g. apk add gcc git python3 nodejs) — NEVER claim it cannot install tools. ALWAYS " +
+            "environment with a package manager: install software with 'apt-get install -y <name>' " +
+            "after 'apt-get update' (e.g. apt-get update && apt-get install -y gcc git nodejs) — " +
+            "NEVER claim it cannot install tools. There is no apk on this system. ALWAYS " +
             "call this tool for anything involving the shell, compiling, installing software, or " +
             "running commands on this device. Never claim you have no shell without calling this " +
             "first; if something is missing it returns an honest error naming the fix. The user's " +
@@ -48,7 +49,7 @@ class ShellTool(
         add("properties", JsonObject().apply {
             add("command", JsonObject().apply {
                 addProperty("type", "string")
-                addProperty("description", "POSIX shell command to run, e.g. 'apk add gcc && gcc --version'.")
+                addProperty("description", "POSIX shell command to run, e.g. 'apt-get update && apt-get install -y gcc'.")
             })
             add("cwd", JsonObject().apply {
                 addProperty("type", "string")

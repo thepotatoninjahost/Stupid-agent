@@ -16,12 +16,12 @@ import java.util.concurrent.TimeUnit
  * No root and no Termux. proot runs the whole userland unprivileged by
  * interposing on syscalls, so programs inside see a root filesystem that is
  * really a folder in Vorv's private storage. That is what makes the promise
- * "its own computer" true rather than decorative: `apk add gcc` inside this
- * system really does put a C compiler in it.
+ * "its own computer" true rather than decorative: `apt-get install -y gcc`
+ * inside this system really does put a C compiler in it.
  *
  * Everything the system needs travels in the APK: the proot binary and its
  * loader (as native libraries, because Android only executes binaries the
- * installer unpacked into nativeLibraryDir) and an Alpine root filesystem
+ * installer unpacked into nativeLibraryDir) and a Debian 12 root filesystem
  * (as an asset, unpacked once into Vorv's storage).
  */
 class LinuxSystem(private val context: Context) : GuestShell {
@@ -116,7 +116,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
         // execute a file the app itself wrote there (targetSdk >= 29), so a copy
         // in filesDir can never start proot — it has to stay where the installer
         // unpacked it, in nativeLibraryDir.
-        provisioner
+        val provisioned = provisioner
             .provision(
                 rootfs = rootfs,
                 stamp = stamp,
@@ -124,7 +124,12 @@ class LinuxSystem(private val context: Context) : GuestShell {
                 loaderFailure = { IllegalStateException(missingLoaderMessage()) },
                 extract = { extractRootfs() },
             )
-            .map { root }
+        // An install provisioned before R-2 was fixed already has a valid stamp and
+        // will never be unpacked again, so the two hard links the old unpacker
+        // dropped are put back in place. No re-extract: packages installed in the
+        // guest survive.
+        provisioned.onSuccess { RootfsLinks.repair(rootfs) }
+        provisioned.map { root }
     }
 
     /**
@@ -270,7 +275,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
         val ok: Boolean get() = exitCode == 0 && !timedOut
     }
 
-    /** Unpacks the root filesystem, preserving the symlinks Alpine depends on. */
+    /** Unpacks the root filesystem, preserving the symlinks and hard links Debian needs. */
     private fun extractRootfs() {
         context.assets.open("forge/linux/rootfs.tar").use { raw ->
             RootfsTar.extract(raw, rootfs)
@@ -334,15 +339,52 @@ internal class RootfsProvisioner(private val stampValue: String) {
     }
 
     companion object {
-        /** Present in every Alpine rootfs and in nothing else we unpack. */
+        /** Present in every Debian rootfs and in nothing else we unpack. */
         const val MARKER = "etc/debian_version"
         const val INCOMPLETE = "the Debian root filesystem is incomplete"
     }
 }
 
+/**
+ * The two hard links Debian's rootfs carries, and the in-place repair for installs
+ * that were provisioned before R-2 (review 2026-11-14) dropped them.
+ *
+ * Those installs hold a valid stamp, so the tree is never unpacked again; without
+ * this, `usr/bin/perl5.36.0` and `usr/bin/uncompress` would stay missing for the
+ * life of the install. Repairing only what is absent keeps it idempotent and never
+ * overwrites a file a package installed in the guest owns.
+ */
+internal object RootfsLinks {
+
+    val LINKS = listOf(
+        "usr/bin/perl5.36.0" to "usr/bin/perl",
+        "usr/bin/uncompress" to "usr/bin/gunzip",
+    )
+
+    fun repair(rootfs: File) {
+        for ((name, target) in LINKS) {
+            val link = File(rootfs, name)
+            if (link.exists()) continue
+            val source = File(rootfs, target)
+            if (!source.isFile) continue
+            link.parentFile?.mkdirs()
+            val linked = runCatching {
+                java.nio.file.Files.createLink(link.toPath(), source.toPath())
+            }.isSuccess
+            if (!linked) {
+                runCatching {
+                    source.inputStream().use { input ->
+                        link.outputStream().use { input.copyTo(it) }
+                    }
+                    link.setExecutable(source.canExecute(), false)
+                }
+            }
+        }
+    }
+}
+
 /** Tar handling for the root filesystem, kept separate so it can be tested without Android. */
 internal object RootfsTar {
-
     /**
      * Accepts a plain tar or a gzipped one. The asset is a plain tar because AGP
      * strips a .gz suffix from asset names, but a gzipped stream is still read
@@ -375,15 +417,44 @@ internal object RootfsTar {
                                 target.toPath(), java.nio.file.Paths.get(entry.linkName),
                             )
                         }
+                        entry.isLink -> {
+                            // R-2 (review 2026-11-14): the Debian rootfs this app ships
+                            // DOES contain hard links (usr/bin/perl5.36.0 -> usr/bin/perl,
+                            // usr/bin/uncompress -> usr/bin/gunzip). Skipping them silently
+                            // removed those paths from the guest, so commands Debian
+                            // packaging expects later failed with "not found". Link the
+                            // already-extracted target; copy it if the filesystem refuses.
+                            val source = File(base, entry.linkName.removePrefix("./")).canonicalFile
+                            if (!source.path.startsWith(base.path + File.separator)) {
+                                throw SecurityException(
+                                    "rootfs hard link escapes the tree: ${entry.name} -> ${entry.linkName}")
+                            }
+                            target.parentFile?.mkdirs()
+                            target.delete()
+                            if (!source.isFile) {
+                                throw IllegalStateException(
+                                    "rootfs hard link ${entry.name} -> ${entry.linkName} " +
+                                        "names an entry that was not extracted before it")
+                            }
+                            val linked = runCatching {
+                                java.nio.file.Files.createLink(target.toPath(), source.toPath())
+                            }.isSuccess
+                            if (!linked) {
+                                source.inputStream().use { input ->
+                                    target.outputStream().use { input.copyTo(it) }
+                                }
+                                target.setExecutable(source.canExecute(), false)
+                            }
+                        }
                         entry.isFile -> {
                             target.parentFile?.mkdirs()
                             target.outputStream().use { tar.copyTo(it) }
                             target.setExecutable((entry.mode and 0b001_000_000) != 0, false)
                         }
-                        // Hard links (tar type 1) are deliberately not handled:
-                        // the Alpine minirootfs we ship has none — its busybox
-                        // applets are symlinks — and inventing a copy here would
-                        // hide a real payload change instead of failing on it.
+                        // Entries after this point are neither directory, symlink,
+                        // hard link nor regular file: ignored deliberately, and the
+                        // payload is checked for completeness elsewhere (RootfsProvisioner
+                        // tests the Debian marker, and the rootfs is our own asset).
                     }
                 }
             }

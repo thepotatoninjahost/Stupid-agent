@@ -11,6 +11,7 @@ import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlin.coroutines.resume
 
@@ -82,39 +83,62 @@ class AppInstaller(private val context: Context) {
             }
 
             // Commit, then wait for the real verdict from the system.
-            val result = suspendCancellableCoroutine<Pair<Boolean, String>> { cont ->
-                val action = "$ACTION_PREFIX${System.nanoTime()}"
-                val receiver = object : BroadcastReceiver() {
-                    override fun onReceive(c: Context?, intent: Intent?) {
-                        val status = intent?.getIntExtra(PackageInstaller.EXTRA_STATUS, -1) ?: -1
-                        val message = intent?.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()
-                        val ok = status == PackageInstaller.STATUS_SUCCESS
-                        runCatching { context.unregisterReceiver(this) }
-                        if (cont.isActive) {
-                            cont.resume(ok to if (ok) "" else "installer said: $message (status $status)")
+            //
+            // R-4 (review 2026-11-14): this wait had no timeout and released
+            // nothing when the caller was cancelled. A verdict that never arrived
+            // — or a task the owner stopped — left an ACTION_PREFIX receiver
+            // registered and a PackageInstaller session open, one of each per
+            // failed install. Both are now released on every exit path, and a
+            // silent installer is abandoned with an honest message instead of
+            // hanging the tool forever.
+            var receiver: BroadcastReceiver? = null
+            var verdictArrived = false
+            val result = try {
+                withTimeoutOrNull(INSTALL_VERDICT_TIMEOUT_MS) {
+                    suspendCancellableCoroutine<Pair<Boolean, String>> { cont ->
+                        val action = "$ACTION_PREFIX${System.nanoTime()}"
+                        val r = object : BroadcastReceiver() {
+                            override fun onReceive(c: Context?, intent: Intent?) {
+                                val status = intent?.getIntExtra(PackageInstaller.EXTRA_STATUS, -1) ?: -1
+                                val message = intent?.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()
+                                val ok = status == PackageInstaller.STATUS_SUCCESS
+                                runCatching { context.unregisterReceiver(this) }
+                                verdictArrived = true
+                                if (cont.isActive) {
+                                    cont.resume(ok to if (ok) "" else "installer said: $message (status $status)")
+                                }
+                            }
+                        }
+                        receiver = r
+                        val filter = IntentFilter(action)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            context.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
+                        } else {
+                            @Suppress("UnspecifiedRegisterReceiverFlag")
+                            context.registerReceiver(r, filter)
+                        }
+                        val pending = PendingIntent.getBroadcast(
+                            context,
+                            sessionId,
+                            Intent(action).setPackage(context.packageName),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                        )
+                        try {
+                            context.packageManager.packageInstaller
+                                .openSession(sessionId).use { session -> session.commit(pending.intentSender!!) }
+                        } catch (e: Exception) {
+                            runCatching { context.unregisterReceiver(r) }
+                            verdictArrived = true
+                            if (cont.isActive) cont.resume(false to "commit failed: ${e.message}")
                         }
                     }
-                }
-                val filter = IntentFilter(action)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-                } else {
-                    @Suppress("UnspecifiedRegisterReceiverFlag")
-                    context.registerReceiver(receiver, filter)
-                }
-                val pending = PendingIntent.getBroadcast(
-                    context,
-                    sessionId,
-                    Intent(action).setPackage(context.packageName),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-                )
-                try {
-                    context.packageManager.packageInstaller
-                        .openSession(sessionId).use { session -> session.commit(pending.intentSender!!) }
-                } catch (e: Exception) {
-                    runCatching { context.unregisterReceiver(receiver) }
-                    if (cont.isActive) cont.resume(false to "commit failed: ${e.message}")
-                }
+                } ?: (false to "the installer did not answer within " +
+                    "${INSTALL_VERDICT_TIMEOUT_MS / 1000}s, so the install was abandoned — try again")
+            } finally {
+                receiver?.let { runCatching { context.unregisterReceiver(it) } }
+                // Cancelled (the owner pressed STOP) or no verdict: release the
+                // session, or the write we already made stays allocated.
+                if (!verdictArrived) runCatching { installer.abandonSession(sessionId) }
             }
 
             if (result.first) {
@@ -143,6 +167,12 @@ class AppInstaller(private val context: Context) {
     }
 
     private companion object {
+        /**
+         * How long the system gets to answer a committed install. PackageInstaller
+         * normally answers in under a second; a verdict that has not arrived in a
+         * minute is not coming. (R-4)
+         */
+        const val INSTALL_VERDICT_TIMEOUT_MS = 60_000L
         const val ACTION_PREFIX = "host.vorv.INSTALL_RESULT."
         const val UNINSTALL_ACTION = "host.vorv.UNINSTALL_RESULT"
     }

@@ -312,9 +312,10 @@ class CognitiveKernel(
                                         "essay about how you would learn is NOT an answer to an " +
                                         "action request.")
                                     appendLine("Call the matching tool NOW. The shell runs inside " +
-                                        "Vorv's own Linux system and CAN install software: call " +
-                                        "shell with e.g. apk add git — the user will be asked " +
-                                        "to approve the execution.")
+                                        "Vorv's own Debian 12 Linux system and CAN install " +
+                                        "software: call shell with e.g. " +
+                                        "apt-get update && apt-get install -y git — the user " +
+                                        "will be asked to approve the execution.")
                                     appendLine("If the user genuinely only asked for information, " +
                                         "reply with a SHORT final answer — no essay.")
                                 }))
@@ -731,8 +732,9 @@ class CognitiveKernel(
         appendLine("11. Never answer an action request with a lecture, a curriculum, a plan, or")
         appendLine("   an essay (including essays about \"learning\" or how you would learn) —")
         appendLine("   that is a non-answer. Either call the tool that does it, or ask ONE short")
-        appendLine("   clarifying question. The shell runs inside Vorv's own Alpine Linux")
-        appendLine("   system: it CAN install software with apk add <name>.")
+        appendLine("   clarifying question. The shell runs inside Vorv's own Debian 12 Linux")
+        appendLine("   system: it CAN install software with apt-get install -y <name>, after")
+        appendLine("   apt-get update. There is no apk on this system — it is Debian, not Alpine.")
         // v0.7.3: the standing principle, promoted to a hard rule. Rule 1
         // already banned inventing tool OUTPUT; v0.6.15 banned guessing
         // AVAILABILITY from descriptions. This bans the guesses still left:

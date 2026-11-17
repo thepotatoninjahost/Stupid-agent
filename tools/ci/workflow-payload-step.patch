@@ -33,6 +33,6 @@ index e7c0c5c..dd8d54d 100644
              **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key; local needs a one-time model download).
  
 -            **Shell tool setup (optional):** install Termux (F-Droid/GitHub), run `termux-setup-storage` once, and grant Vorv the "Run commands in Termux" permission.
-+            **Linux system:** Setup → Linux System → TEST. This build contains its own computer (proot + Alpine, no root, no Termux). TEST prints one line per stage — loader, proot, guest start, guest output — so a failure names the stage it failed at instead of just saying "no Linux".
++            **Linux system:** Setup → Linux System → TEST. This build contains its own computer (Debian 12 under proot, no root, no Termux); packages install with `apt-get update && apt-get install -y <name>`. TEST prints one line per stage — loader, proot, guest start, guest output — so a failure names the stage it failed at instead of just saying "no Linux".
            files: release/app-release.apk
            prerelease: true

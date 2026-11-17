@@ -65,7 +65,14 @@ class LocalAppServer(
                 return
             }
             drainHeaders(input)
-            val target = resolve(parts[1])
+            val target = try {
+                resolve(parts[1])
+            } catch (bad: IllegalArgumentException) {
+                // R-5: a malformed escape ("/a%zz") used to throw out of the worker
+                // thread, so the client saw a dropped connection instead of an answer.
+                respond(output, 400, "text/plain", "bad request path".toByteArray())
+                return
+            }
             when {
                 target == null -> respond(output, 403, "text/plain", "forbidden".toByteArray())
                 target.isDirectory -> {
@@ -81,7 +88,11 @@ class LocalAppServer(
 
     /** Null when the path escapes [root] — traversal is refused, never clamped. */
     private fun resolve(rawTarget: String): File? {
-        val path = URLDecoder.decode(rawTarget.substringBefore('?').substringBefore('#'), "UTF-8")
+        // In a URL *path* a '+' is a literal plus, not a space; URLDecoder treats it
+        // as a space, which turned "my+file.txt" into a 404. Query strings are
+        // dropped here, so only the path form matters. (R-5)
+        val encodedPath = rawTarget.substringBefore('?').substringBefore('#')
+        val path = URLDecoder.decode(encodedPath.replace("+", "%2B"), "UTF-8")
         if (path.contains('\u0000')) return null
         val relative = path.trimStart('/')
         val candidate = File(root, relative).canonicalFile
@@ -91,17 +102,28 @@ class LocalAppServer(
     }
 
     private fun sendFile(output: OutputStream, file: File, head: Boolean) {
-        val body = file.readBytes()
+        // R-5: this used to be file.readBytes(), so one large asset in a built app
+        // was loaded whole into the phone's heap. Stream it instead, and refuse a
+        // file too big to be a page asset with an answer the caller can act on.
+        val length = file.length()
+        if (length > MAX_FILE_BYTES) {
+            respond(
+                output, 413, "text/plain",
+                ("file too large to serve: ${file.name} is $length bytes, limit is $MAX_FILE_BYTES")
+                    .toByteArray(),
+            )
+            return
+        }
         val header = buildString {
             append("HTTP/1.1 200 OK\r\n")
             append("Content-Type: ${contentType(file.name)}\r\n")
-            append("Content-Length: ${body.size}\r\n")
+            append("Content-Length: $length\r\n")
             // A test must see the file it just wrote, not a cached older one.
             append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }.toByteArray()
         output.write(header)
-        if (!head) output.write(body)
+        if (!head) file.inputStream().use { it.copyTo(output) }
         output.flush()
     }
 
@@ -143,11 +165,16 @@ class LocalAppServer(
         private const val SOCKET_TIMEOUT_MS = 5_000
         private const val MAX_LINE = 8_192
 
+        /** A page asset, not a disk image: keeps the phone's heap out of it. (R-5) */
+        private const val MAX_FILE_BYTES = 64L * 1024 * 1024
+
         private fun reason(code: Int) = when (code) {
             200 -> "OK"
+            400 -> "Bad Request"
             403 -> "Forbidden"
             404 -> "Not Found"
             405 -> "Method Not Allowed"
+            413 -> "Content Too Large"
             else -> "Error"
         }
 

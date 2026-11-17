@@ -169,7 +169,9 @@ class ShellToolTest {
     @Test
     fun `its description tells the model a package manager exists`() {
         val d = ShellTool(FakeGuest(), context).description
-        assertTrue(d.contains("apk add"))
+        // R-1 (review 2026-11-14): the guest is Debian 12, not Alpine.
+        assertTrue(d.contains("apt-get install -y"))
+        assertFalse("the description offers apk on a Debian system", d.contains("apk add"))
         assertTrue(d.contains(ShellTool.GUEST_WORKSPACE))
         assertFalse(d.contains("_"))
     }

@@ -478,9 +478,12 @@ class CognitiveKernelTest {
         assertTrue(systemMsg.content.contains("Never paste raw tool"))
         assertTrue(systemMsg.content.contains("plain English"))
         // v0.6.19: the anti-lecture rule and the package-manager fact
-        // (field finding #8) — now naming the guest's own apk.
+        // (field finding #8). R-1 (review 2026-11-14): the guest is Debian, so the
+        // prompt must name apt-get and must not tell the model to run apk — the
+        // package manager Alpine had and Debian does not.
         assertTrue(systemMsg.content.contains("Never answer an action request with a lecture"))
-        assertTrue(systemMsg.content.contains("apk add <name>"))
+        assertTrue(systemMsg.content.contains("apt-get install -y <name>"))
+        assertFalse("the prompt still tells the model to use apk", systemMsg.content.contains("apk add"))
         // v0.7.3: the never-guess rule — the standing principle, pinned.
         assertTrue(systemMsg.content.contains("NEVER guess"))
         assertTrue(systemMsg.content.contains("file_list before file_read"))
@@ -596,7 +599,7 @@ class CognitiveKernelTest {
                     "Syntax refers to the rules that govern the structure of sentences " +
                     "in a language. Example: \"The cat eats fish.\"", done = true),
             // After the nudge the model does the right thing.
-            toolUse("shell", """{"x":"apk add git"}"""),
+            toolUse("shell", """{"x":"apt-get install -y git"}"""),
             Llm.LlmResponse.Text("Installed git. [cite:exec:shell]", done = true),
         ))
         val result = kernel(sink, listOf(tool)).run(
@@ -606,8 +609,11 @@ class CognitiveKernelTest {
         assertEquals(3, llm.steps.size)
         val lastStep = llm.steps.last()
         assertTrue(lastStep.any { it.role == "user" && it.content.contains("no tool call") })
-        // The nudge names a REAL install command for the guest, not Termux's.
-        assertTrue(lastStep.any { it.role == "user" && it.content.contains("apk add git") })
+        // The nudge names a REAL install command for the guest: apt-get, which is
+        // what a Debian 12 system has. (R-1)
+        assertTrue(lastStep.any { it.role == "user" && it.content.contains("apt-get install -y git") })
+        assertFalse("the nudge names apk, which Debian does not have",
+            lastStep.any { it.role == "user" && it.content.contains("apk add") })
         // The lecture nudge is logged under its own name.
         assertTrue(sink.episodes.any {
             it.first == "nudge" && it.second == "action-request-without-tool-call" })

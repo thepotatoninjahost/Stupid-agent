@@ -104,4 +104,45 @@ class LocalAppServerTest {
         assertEquals("application/octet-stream", LocalAppServer.contentType("data.bin"))
         assertFalse(LocalAppServer.contentType("x.bin").startsWith("text/html"))
     }
+
+    /** Sends a request line exactly as written — URI parsing would reject a bad escape. */
+    private fun rawRequest(port: Int, target: String): String {
+        java.net.Socket("127.0.0.1", port).use { s ->
+            s.soTimeout = 3000
+            s.getOutputStream().apply {
+                write("GET $target HTTP/1.1\r\nHost: x\r\n\r\n".toByteArray())
+                flush()
+            }
+            return s.getInputStream().readBytes().decodeToString()
+        }
+    }
+
+    @Test
+    fun `a plus in a file name is a plus, not a space`() {
+        // R-5: URLDecoder turned '+' into ' ', so every such file was a 404.
+        val dir = project()
+        File(dir, "a+b.txt").writeText("plus")
+        LocalAppServer(dir).start().use { server ->
+            assertEquals("plus", fetch(server.baseUrl + "a+b.txt").second)
+            assertEquals("plus", fetch(server.baseUrl + "a%2Bb.txt").second)
+        }
+    }
+
+    @Test
+    fun `a malformed escape is a 400, not a dropped connection`() {
+        // R-5: this used to throw out of the worker thread and close the socket.
+        LocalAppServer(project()).start().use { server ->
+            val response = rawRequest(server.port, "/a%zz")
+            assertTrue("expected a 400, got: ${response.take(40)}", response.startsWith("HTTP/1.1 400"))
+        }
+    }
+
+    @Test
+    fun `a file above the cap is refused instead of loaded into the heap`() {
+        val dir = project()
+        java.io.RandomAccessFile(File(dir, "huge.bin"), "rw").use { it.setLength(65L * 1024 * 1024) }
+        LocalAppServer(dir).start().use { server ->
+            assertEquals(413, fetch(server.baseUrl + "huge.bin").first)
+        }
+    }
 }

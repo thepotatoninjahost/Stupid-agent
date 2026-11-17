@@ -48,6 +48,11 @@ class RootfsTarTest {
         closeArchiveEntry()
     }
 
+    private fun TarArchiveOutputStream.hardLink(name: String, target: String) {
+        putArchiveEntry(TarArchiveEntry(name, TarConstants.LF_LINK).apply { linkName = target })
+        closeArchiveEntry()
+    }
+
     @Test
     fun `unpacks files, keeps exec bits and recreates symlinks`() {
         val dest = Files.createTempDirectory("rootfs").toFile()
@@ -79,6 +84,65 @@ class RootfsTarTest {
         val dest = Files.createTempDirectory("rootfs").toFile()
         bytes.toByteArray().inputStream().use { RootfsTar.extract(it, dest) }
         assertEquals("ID=alpine\n", File(dest, "etc/os-release").readText())
+        dest.deleteRecursively()
+    }
+
+    @Test
+    fun `recreates hard links instead of dropping them`() {
+        // R-2: the Debian rootfs we ship carries exactly this shape
+        // (usr/bin/perl5.36.0 -> usr/bin/perl). Dropping the link entry left the
+        // path missing in the guest, so Debian tooling that expects it failed
+        // with "not found" long after provisioning looked successful.
+        val dest = Files.createTempDirectory("rootfs").toFile()
+        val tar = tarGz {
+            dir("./")
+            dir("./usr/bin/")
+            file("./usr/bin/perl", "#!/usr/bin/perl\nprint 1;\n", mode = 0b111_101_101)
+            hardLink("./usr/bin/perl5.36.0", "./usr/bin/perl")
+        }
+        tar.inputStream().use { RootfsTar.extract(it, dest) }
+
+        val linked = File(dest, "usr/bin/perl5.36.0")
+        assertTrue("the hard link was dropped, so the path is missing", linked.isFile)
+        assertEquals(File(dest, "usr/bin/perl").readText(), linked.readText())
+        assertTrue("the linked copy is not executable", linked.canExecute())
+        dest.deleteRecursively()
+    }
+
+    @Test
+    fun `a hard link with no earlier target fails loudly`() {
+        val dest = Files.createTempDirectory("rootfs").toFile()
+        val tar = tarGz { hardLink("./usr/bin/uncompress", "./usr/bin/gunzip") }
+        try {
+            tar.inputStream().use { RootfsTar.extract(it, dest) }
+            fail("a hard link pointing at something that was never extracted was accepted")
+        } catch (expected: IllegalStateException) {
+            assertTrue(expected.message!!.contains("uncompress"))
+        }
+        dest.deleteRecursively()
+    }
+
+    @Test
+    fun `repair puts back the Debian hard links an older build dropped`() {
+        // An install provisioned before R-2 keeps its stamp and is never unpacked
+        // again, so the repair is the only thing that can fix it in place.
+        val dest = Files.createTempDirectory("rootfs").toFile()
+        val bin = File(dest, "usr/bin").apply { mkdirs() }
+        File(bin, "perl").writeText("#!/usr/bin/perl\n")
+        File(bin, "perl").setExecutable(true)
+        assertTrue("fixture: perl5.36.0 should start absent", !File(bin, "perl5.36.0").exists())
+
+        RootfsLinks.repair(dest)
+
+        assertTrue("repair did not recreate perl5.36.0", File(bin, "perl5.36.0").isFile)
+        assertEquals("#!/usr/bin/perl\n", File(bin, "perl5.36.0").readText())
+        // gunzip is absent in this fixture: repair must skip it, not throw.
+        assertTrue("repair invented a link with no target", !File(bin, "uncompress").exists())
+
+        // Idempotent, and it never rewrites an existing file.
+        File(bin, "perl5.36.0").writeText("local change\n")
+        RootfsLinks.repair(dest)
+        assertEquals("local change\n", File(bin, "perl5.36.0").readText())
         dest.deleteRecursively()
     }
 

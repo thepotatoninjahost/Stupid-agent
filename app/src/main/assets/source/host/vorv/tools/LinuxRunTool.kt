@@ -17,8 +17,9 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
 
     override val name = "linux_run"
     override val description =
-        "Run a shell command inside Vorv's own Linux system (Alpine, on the phone, no root, no " +
-            "Termux). 'apk add' installs packages; the app filesystem persists between calls; files written to " +
+        "Run a shell command inside Vorv's own Linux system (Debian 12, on the phone, no root, no " +
+            "Termux). 'apt-get install -y' installs packages after 'apt-get update'; there is no apk " +
+            "here. The app filesystem persists between calls; files written to " +
             "~ survive. Use it to compile or run code in any language the system can install, and " +
             "to inspect results. Long commands should be split so each stays under a minute."
 
@@ -30,7 +31,7 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
         add("properties", JsonObject().apply {
             add("command", JsonObject().apply {
                 addProperty("type", "string")
-                addProperty("description", "POSIX shell command, e.g. 'apk add gcc && gcc --version'.")
+                addProperty("description", "POSIX shell command, e.g. 'apt-get install -y gcc && gcc --version'.")
             })
             add("timeout_ms", JsonObject().apply {
                 addProperty("type", "integer")

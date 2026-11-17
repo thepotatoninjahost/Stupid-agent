@@ -367,9 +367,9 @@ fun SettingsScreen(
         // and no permission to grant any more: the guest ships inside the APK.
         Text("Linux System (the shell's computer)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "The shell and linux_run tools execute inside an Alpine Linux system that " +
+            "The shell and linux_run tools execute inside a Debian 12 Linux system that " +
                 "lives in this app's own storage — no root, no Termux, no other app. " +
-                "Packages install with 'apk add'.",
+                "Packages install with 'apt-get install' (run 'apt-get update' first).",
             color = OnSurfaceVariant, fontSize = 11.sp,
         )
 
@@ -406,7 +406,7 @@ fun SettingsScreen(
             Triple(
                 "Filesystem unpacked",
                 if (state.linuxProvisioned) "✓" else "?",
-                if (state.linuxProvisioned) "the Alpine tree is extracted and stamped"
+                if (state.linuxProvisioned) "the Debian 12 tree is extracted and stamped"
                 else "unpacks once on the first command (about 9 MB, a few seconds)",
             ),
             Triple(
@@ -617,7 +617,7 @@ fun SettingsScreen(
                 "No model is required for js_exec, python_exec, file work or the Linux system.\n\n" +
                 "Honest limits: real measured tok/s appears in the trace after each generation. " +
                 "js_exec and python_exec run in hardened in-process sandboxes; every powerful action " +
-                "asks first. The Linux system is proot + Alpine inside Vorv — no root, no Termux — and " +
+                "asks first. The Linux system is Debian 12 under proot inside Vorv — no root, no Termux — and " +
                 "it has not yet been seen starting on this phone: Setup → Linux System → TEST is what " +
                 "proves it, and it names the stage that fails.\n\n" +
                 "See SECURITY.md in the repository for the full threat model.",

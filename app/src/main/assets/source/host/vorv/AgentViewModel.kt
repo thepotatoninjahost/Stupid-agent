@@ -144,7 +144,7 @@ data class AgentState(
     val pendingConfirmation: PendingConfirmation? = null,
     /** Active Android runtime-permission request (v0.6.14; one at a time). */
     val pendingPermissionRequest: PendingPermissionRequest? = null,
-    /** The app carries the Linux payload (proot + Alpine rootfs). */
+    /** The app carries the Linux payload (proot + Debian rootfs). */
     val linuxAvailable: Boolean = false,
     /** The guest filesystem has been unpacked and stamped. */
     val linuxProvisioned: Boolean = false,

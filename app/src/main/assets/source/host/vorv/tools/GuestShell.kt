@@ -7,7 +7,7 @@ import host.vorv.linux.LinuxSystem
  *
  * It exists so the tool can be tested without an Android device: a test hands
  * it a fake that answers whatever the test needs, and the production path
- * hands it [LinuxSystem] — Vorv's own Alpine guest.
+ * hands it [LinuxSystem] — Vorv's own Debian guest.
  */
 interface GuestShell {
 
