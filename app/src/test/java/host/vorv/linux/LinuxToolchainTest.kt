@@ -305,10 +305,10 @@ class LinuxToolchainTest {
         assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
         assertTrue(File(rootfs, "usr/bin/javac").exists())
         assertTrue(File(rootfs, "usr/lib/libfoo.so").exists())
-        // One batch session, then each of the two casualties retried four
-        // times alone before the install is allowed to believe them broken.
+        // One batch session that dies, then one session per casualty: alone, in
+        // a fresh session, each package unpacks first time.
         val sessions = commands.count { it.contains("for f in") }
-        assertEquals(1 + 2 * 4, sessions)
+        assertEquals(3, sessions)
         assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
     }
 
