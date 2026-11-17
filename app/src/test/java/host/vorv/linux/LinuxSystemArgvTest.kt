@@ -35,13 +35,25 @@ class LinuxSystemArgvTest {
         assertEquals(proot.absolutePath, a[0])
         // -0 fakes root inside the guest without real privileges.
         assertEquals("-0", a[1])
-        assertEquals(listOf("-r", rootfs.absolutePath), a.subList(2, 4))
+        // Android storage refused hard links and proot said "Permission denied"
+        // for libgl1-mesa-dri; --link2symlink turns a link into a symlink, which
+        // is the Termux fix for exactly that.
+        assertEquals("--link2symlink", a[2])
+        assertEquals(listOf("-r", rootfs.absolutePath), a.subList(3, 5))
         for (sys in listOf("/dev", "/proc", "/sys")) {
             val i = a.indexOf(sys)
             assertTrue("$sys must be bound", i > 0 && a[i - 1] == "-b")
         }
         assertTrue(a.contains("$home:/root"))
         assertTrue(a.contains("$tmp:/tmp"))
+    }
+
+    @Test
+    fun `a package full of hard links must be able to unpack`() {
+        // libgl1-mesa-dri ships twelve drivers hard-linked to armada-drm_dri.so.
+        // Without --link2symlink every one of them fails with "Permission denied"
+        // and the whole package is reported as un-unpackable.
+        assertTrue(argv().contains("--link2symlink"))
     }
 
     @Test

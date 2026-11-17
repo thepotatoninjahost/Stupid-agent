@@ -281,6 +281,12 @@ class LinuxSystem(private val context: Context) : GuestShell {
         ): List<String> = buildList {
             add(proot.absolutePath)
             add("-0")
+            // Android's storage refuses hard links for some files and proot then
+            // answers "Permission denied". Packages such as libgl1-mesa-dri carry
+            // a dozen files hard-linked to one another, so dpkg could not unpack
+            // them. This proot build has the Termux fix: a link request becomes a
+            // symlink instead of failing.
+            add("--link2symlink")
             add("-r"); add(rootfs.absolutePath)
             add("-b"); add("/dev")
             add("-b"); add("/proc")
