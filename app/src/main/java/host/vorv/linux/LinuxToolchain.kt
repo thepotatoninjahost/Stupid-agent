@@ -77,8 +77,8 @@ class LinuxToolchain(
     ): Result<Unit> = try {
         if (plan.isEmpty()) error("the toolchain plan is empty — this build carries no package list")
         lastWhy = ""
-        rootfs.mkdirs()
-        debsDir.mkdirs()
+        ensureDir(rootfs)
+        ensureDir(debsDir)
         requireDpkg()
 
         val total = plan.sumOf { it.size }
@@ -137,6 +137,25 @@ class LinuxToolchain(
         Result.failure(e)
     }
 
+    /**
+     * Makes a folder and refuses to carry on without it.
+     *
+     * `mkdirs()` answers false and says nothing when it cannot make one, which is
+     * how a missing package folder turns into a bare ENOENT several lines later.
+     */
+    private fun ensureDir(dir: File) {
+        if (dir.isDirectory) return
+        val cause = runCatching { java.nio.file.Files.createDirectories(dir.toPath()) }.exceptionOrNull()
+        if (dir.isDirectory) return
+        error(
+            "the Linux system cannot make this folder: ${dir.absolutePath}" +
+                (cause?.let { " (${it.javaClass.simpleName}: ${it.message ?: "no reason given"})" } ?: "") +
+                " — its parent " + (dir.parentFile?.absolutePath ?: "?") +
+                " exists: " + (dir.parentFile?.isDirectory == true) +
+                ", that parent is writable: " + (dir.parentFile?.canWrite() == true),
+        )
+    }
+
     private suspend fun requireDpkg() {
         val probe = runInGuest("command -v dpkg-deb")
         if (!probe.ok) {
@@ -153,12 +172,25 @@ class LinuxToolchain(
         val dest = debPath(pkg)
         if (dest.isFile && sha256(dest) == pkg.sha256) return dest
         dest.delete()
+        // 0.9.11 on the owner's phone reached this line with the folder gone and
+        // reported only "open failed: ENOENT". A directory that is not there is
+        // made again here, and if it cannot be made the reason is named instead
+        // of being left to a bare errno.
+        ensureDir(debsDir)
         val part = File(dest.parentFile, dest.name + ".part")
         val request = Request.Builder().url(pkg.url).build()
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("${pkg.name}: HTTP ${response.code} from ${pkg.url}")
             val body = response.body ?: error("${pkg.name}: empty response")
-            part.outputStream().use { out -> body.byteStream().copyTo(out) }
+            val stream = runCatching { part.outputStream() }.getOrElse {
+                error(
+                    "${pkg.name}: the package cannot be written into the Linux system — " +
+                        "${part.absolutePath} (${it.javaClass.simpleName}: ${it.message ?: "no reason given"}; " +
+                        "folder exists: ${debsDir.isDirectory}, " +
+                        "writable: ${debsDir.canWrite()})",
+                )
+            }
+            stream.use { out -> body.byteStream().copyTo(out) }
         }
         val got = sha256(part)
         if (got != pkg.sha256) {
