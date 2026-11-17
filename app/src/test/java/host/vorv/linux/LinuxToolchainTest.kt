@@ -241,7 +241,9 @@ class LinuxToolchainTest {
             .install(listOf(pkg("docs", bytes))) { }
 
         assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull()!!.message!!.contains("no runnable javac/aapt"))
+        val why = result.exceptionOrNull()!!.message!!
+        assertTrue("the message must say the tools cannot run: $why", why.contains("cannot run them"))
+        assertTrue("and it must name what was checked: $why", why.contains("javac") && why.contains("ld-linux"))
         assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
         assertEquals(1, server.requestCount)
     }
@@ -374,7 +376,10 @@ class LinuxToolchainTest {
         val plain = script.indexOf("dpkg-deb -x")
         assertTrue("tar with --keep-directory-symlink must be tried", keeps > 0)
         assertTrue("it must come before any plain -x: $script", keeps < plain)
-        assertTrue("the loader must be checked after every package", script.contains("[ -e /lib/ld-linux-aarch64.so.1 ]"))
+        assertTrue(
+            "the loader must be checked after every package",
+            script.contains("[ ! -e /lib/ld-linux-aarch64.so.1 ]"),
+        )
         assertTrue(script.contains("@@BROKEN"))
     }
 

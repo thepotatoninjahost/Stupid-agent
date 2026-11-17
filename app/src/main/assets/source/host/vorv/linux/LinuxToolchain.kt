@@ -129,8 +129,9 @@ class LinuxToolchain(
         val check = runInGuest(VERIFY_COMMAND)
         if (!check.ok) {
             error(
-                "all packages unpacked, but the guest cannot run them (exit ${check.exitCode}): " +
-                    check.output.trim().take(300),
+                "all packages unpacked, but the guest cannot run them: its own check of " +
+                    "/lib/ld-linux-aarch64.so.1, javac and aapt failed (exit ${check.exitCode})" +
+                    check.output.trim().take(300).let { if (it.isEmpty()) "" else ": $it" },
             )
         }
         stampFile.parentFile?.mkdirs()
