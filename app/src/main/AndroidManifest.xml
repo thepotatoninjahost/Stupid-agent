@@ -10,6 +10,9 @@
     <!-- Installing APKs the agent built for the user: a normal PackageInstaller
          session, and Android still shows its own install consent. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Needed for PackageInstaller.uninstall() of apps the agent installed; without it
+         the call throws SecurityException and uninstall silently reports "failed". -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <!--
       Removed vs v0.5.x (audit supply-chain hygiene):

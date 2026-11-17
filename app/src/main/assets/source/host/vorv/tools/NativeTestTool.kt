@@ -112,7 +112,10 @@ class NativeTestTool(private val appContext: Context) : Tool {
             val open = openAndWait(pkg, 20_000)
             record("app opens", open.ok, open.detail)
             if (!open.ok) {
-                if (input.get("uninstall_after")?.asBoolean == true) installer.uninstall(pkg)
+                if (input.get("uninstall_after")?.asBoolean == true) {
+                    val u = installer.uninstall(pkg)
+                    record("uninstall", u.ok, u.detail)
+                }
                 return@withContext result(checks, failures, started, pkg)
             }
 
@@ -165,7 +168,10 @@ class NativeTestTool(private val appContext: Context) : Tool {
                 }
             }
 
-            if (input.get("uninstall_after")?.asBoolean == true) installer.uninstall(pkg)
+            if (input.get("uninstall_after")?.asBoolean == true) {
+                val u = installer.uninstall(pkg)
+                record("uninstall", u.ok, u.detail)
+            }
             result(checks, failures, started, pkg)
         }
 

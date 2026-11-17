@@ -148,8 +148,15 @@ class AppInstaller(private val context: Context) {
             }
         }
 
-    /** Uninstalls a package the agent installed. Never touches anything else. */
-    suspend fun uninstall(pkg: String): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Uninstalls a package the agent installed. Never touches anything else.
+     *
+     * Returns a [Result] rather than a bare Boolean: the system call can fail
+     * (no REQUEST_DELETE_PACKAGES on some OEM builds, package not found, policy
+     * refusal) and a caller that only sees `false` has no way to say why, which
+     * turns a real failure into "it did not work" for the model.
+     */
+    suspend fun uninstall(pkg: String): Result = withContext(Dispatchers.IO) {
         try {
             // The platform API wants a non-null result sender; this one is
             // fire-and-forget, so the intent goes nowhere and is not exported.
@@ -160,9 +167,11 @@ class AppInstaller(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
             ).intentSender
             context.packageManager.packageInstaller.uninstall(pkg, done)
-            true
+            // uninstall() only accepts the request; Android removes the package
+            // asynchronously, so this says "asked", not "gone".
+            Result(true, pkg, "asked the system to uninstall $pkg")
         } catch (e: Exception) {
-            false
+            Result(false, pkg, "uninstall of $pkg failed: ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
         }
     }
 
