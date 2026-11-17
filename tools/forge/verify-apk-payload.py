@@ -19,7 +19,7 @@ REQUIRED = [
     ("lib/arm64-v8a/libtalloc.so", "proot's libtalloc dependency"),
     ("lib/arm64-v8a/libandroid-shmem.so", "proot's shared-memory dependency"),
     ("lib/arm64-v8a/libjvm.so", "the guest JVM"),
-    ("assets/forge/linux/rootfs.tar", "the Alpine root filesystem"),
+    ("assets/forge/linux/rootfs.tar", "the Debian root filesystem"),
     ("assets/forge/jvm/modules", "the guest Java runtime image"),
     ("assets/forge/tools/d8.jar", "on-phone dexer"),
     ("assets/forge/tools/android.jar", "android.jar for on-phone compiles"),
