@@ -161,6 +161,9 @@ class LinuxSystem(private val context: Context) : GuestShell {
         builder.environment().putAll(env)
         builder.directory(home)
         val process = builder.redirectErrorStream(true).start()
+        // Nothing is ever written to proot's stdin, and every pipe this leaves
+        // open costs the app two file descriptors for the life of the process.
+        runCatching { process.outputStream.close() }
         // Reading on this thread would block *before* the timeout is checked: a
         // command that never exits and never prints would never time out. The
         // drain runs on its own thread so waitFor() is the thing that decides.
@@ -177,12 +180,14 @@ class LinuxSystem(private val context: Context) : GuestShell {
             process.destroyForcibly()
             process.waitFor(2, TimeUnit.SECONDS)
             drain.join(500)
+            runCatching { process.inputStream.close() }
             return@withContext Shell(
                 -1, synchronized(out) { out.toString() },
                 "timed out after ${timeoutMs}ms", true,
             )
         }
         drain.join(2_000)
+        runCatching { process.inputStream.close() }
         Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
     }
 

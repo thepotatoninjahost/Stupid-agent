@@ -79,13 +79,30 @@ class LinuxToolchain(
 
         val total = plan.sumOf { it.size }
         var done = 0L
+        val files = ArrayList<String>(plan.size)
         for ((index, pkg) in plan.withIndex()) {
             onProgress(Progress(index, plan.size, done, total, "fetching ${pkg.name}"))
             val file = download(pkg)
-            onProgress(Progress(index, plan.size, done, total, "unpacking ${pkg.name}"))
-            unpackInGuest(file)
+            files += DEBS_IN_GUEST.trimEnd('/') + "/" + file.name
             done += pkg.size
             onProgress(Progress(index + 1, plan.size, done, total, pkg.name))
+        }
+
+        // 0.9.6 started one proot for every one of the 169 packages and died on
+        // the 31st with proot unable to exec /bin/sh. Each of those starts was a
+        // fork, a ptrace attach and a fresh proot init on a phone; unpacking in
+        // a few sessions instead is what proot-distro does, and it means 169
+        // package installs cost six proot starts rather than 169.
+        val batches = files.chunked(BATCH_SIZE)
+        batches.forEachIndexed { index, batch ->
+            val last = (index * BATCH_SIZE) + batch.size
+            onProgress(
+                Progress(
+                    plan.size, plan.size, total, total,
+                    "unpacking packages ${index * BATCH_SIZE + 1}-$last of ${plan.size}",
+                ),
+            )
+            unpackBatch(batch)
         }
 
         val javaHome = linkJavaTools()
@@ -165,15 +182,61 @@ class LinuxToolchain(
             ?: error("the JDK unpacked but no home was reported: ${shell.output.trim().take(200)}")
     }
 
-    private suspend fun unpackInGuest(deb: File) {
-        val guestPath = DEBS_IN_GUEST.trimEnd('/') + "/" + deb.name
-        val shell = runInGuest("dpkg-deb -x '$guestPath' /")
-        if (!shell.ok) {
-            error(
-                "dpkg-deb could not unpack ${deb.name} (exit ${shell.exitCode}): " +
-                    shell.output.trim().lines().takeLast(3).joinToString(" | ").take(300),
-            )
+    /**
+     * Unpacks one batch of packages in a single guest session.
+     *
+     * Each package is unpacked by Debian's own dpkg-deb; if that refuses, the
+     * package is retried through `--fsys-tarfile | tar -xf`, which skips the
+     * helper tar process dpkg-deb starts itself. A package that still fails is
+     * named in the message together with the first thing proot or dpkg said,
+     * because "exit 1" alone told us nothing on the phone in 0.9.6.
+     */
+    private suspend fun unpackBatch(paths: List<String>) {
+        var shell = runInGuest(batchScript(paths))
+        if (shell.ok) return
+
+        // proot's own child can be refused by the phone (fork/exec under memory
+        // or process pressure). One clean retry costs seconds and is what the
+        // owner should never see as an install failure.
+        val blip = shell.output.contains("fork()") ||
+            shell.output.contains("Resource temporarily unavailable")
+        if (blip) {
+            kotlinx.coroutines.delay(1_500)
+            shell = runInGuest(batchScript(paths))
+            if (shell.ok) return
         }
+
+        val lines = shell.output.lineSequence().toList()
+        val missing = lines.firstOrNull { it.startsWith(MISSING_MARK) }
+            ?.removePrefix(MISSING_MARK)
+            ?.trim()
+            ?.split(' ')
+            ?.filter { it.isNotEmpty() }
+            ?: emptyList()
+        val why = lines
+            .filter {
+                it.contains("proot error") || it.startsWith("dpkg-deb:") ||
+                    it.startsWith("tar:") || it.startsWith("sh:")
+            }
+            .take(4)
+            .joinToString(" | ")
+            .take(400)
+
+        val headline = when {
+            missing.isNotEmpty() ->
+                "${missing.size} package(s) could not be unpacked inside the guest: " +
+                    missing.joinToString(", ").take(300)
+            shell.timedOut ->
+                "the guest took longer than the timeout while unpacking " +
+                    "${paths.first()} … ${paths.last()}"
+            else ->
+                "unpacking ${paths.first()} … ${paths.last()} failed in the guest " +
+                    "(exit ${shell.exitCode})"
+        }
+        error(
+            headline + (if (why.isNotEmpty()) " — proot/dpkg said: $why"
+            else " — the guest said: " + lines.takeLast(4).joinToString(" | ").take(300)),
+        )
     }
 
     private fun sha256(file: File): String {
@@ -205,6 +268,31 @@ class LinuxToolchain(
 
         /** Where the .debs live inside the guest. */
         const val DEBS_IN_GUEST = "/var/cache/vorv-debs"
+
+        /**
+         * Packages unpacked per guest session. dpkg-deb asks the kernel for very
+         * little, so a batch is cheap inside one proot; the number is about
+         * keeping one failed session small enough to name its packages.
+         */
+        const val BATCH_SIZE = 25
+
+        const val MISSING_MARK = "@@MISSING"
+
+        /**
+         * The shell program a batch of unpacks runs as. Built here, not inline,
+         * so a test can pin the exact text that reaches the guest.
+         */
+        internal fun batchScript(paths: List<String>): String = buildString {
+            append("fail=''; ")
+            append("for f in")
+            paths.forEach { append(" '").append(it.replace("'", "")).append("'") }
+            append("; do n=\${f##*/}; echo \"@@PKG \$n\"; ")
+            append("if dpkg-deb -x \"\$f\" / ; then echo \"@@OK \$n\"; ")
+            append("elif dpkg-deb --fsys-tarfile \"\$f\" | tar -xf - -C / ; then echo \"@@OK \$n via tar\"; ")
+            append("else echo \"@@FAILED \$n\"; fail=\"\$fail \$n\"; fi; done; ")
+            append("if [ -n \"\$fail\" ]; then echo \"$MISSING_MARK\$fail\"; exit 4; fi; ")
+            append("echo '@@BATCH OK'")
+        }
 
         /** True when javac and aapt exist on disk, independent of any guest run. */
         fun looksInstalled(rootfs: File): Boolean =

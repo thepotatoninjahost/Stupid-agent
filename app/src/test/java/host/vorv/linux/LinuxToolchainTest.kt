@@ -80,6 +80,7 @@ class LinuxToolchainTest {
         rootfs: File,
         hasDpkg: Boolean = true,
         unpackExit: Int = 0,
+        failNames: Set<String> = emptySet(),
     ): suspend (String) -> LinuxSystem.Shell = { command ->
         commands += command
         when {
@@ -94,13 +95,30 @@ class LinuxToolchainTest {
                 } else {
                     LinuxSystem.Shell(1, "", null, false)
                 }
-            command.startsWith("dpkg-deb -x ") -> {
-                if (unpackExit == 0) {
-                    val name = command.substringAfter("\'").substringBefore("\'")
-                    val deb = File(rootfs, LinuxToolchain.DEBS_IN_GUEST.trim('/') + "/" + File(name).name)
-                    unpackForTest(deb, rootfs)
+            command.contains("for f in") -> {
+                val paths = Regex("'([^']*\\.deb)'").findAll(command).map { it.groupValues[1] }.toList()
+                val log = StringBuilder()
+                val failed = mutableListOf<String>()
+                paths.forEach { path ->
+                    val name = File(path).name
+                    log.appendLine("@@PKG $name")
+                    if (unpackExit == 0 && name !in failNames) {
+                        val deb = File(rootfs, LinuxToolchain.DEBS_IN_GUEST.trim('/') + "/" + name)
+                        unpackForTest(deb, rootfs)
+                        log.appendLine("@@OK $name")
+                    } else {
+                        failed += name
+                        log.appendLine("@@FAILED $name")
+                        log.appendLine("proot error: execve(\"/bin/sh\"): No such file or directory")
+                    }
                 }
-                LinuxSystem.Shell(unpackExit, if (unpackExit == 0) "" else "dpkg-deb: error", null, false)
+                if (failed.isEmpty()) LinuxSystem.Shell(0, log.toString(), null, false)
+                else LinuxSystem.Shell(
+                    4,
+                    log.appendLine("${LinuxToolchain.MISSING_MARK} ${failed.joinToString(" ")}").toString(),
+                    null,
+                    false,
+                )
             }
             else -> LinuxSystem.Shell(127, "", "unexpected command", false)
         }
@@ -160,7 +178,11 @@ class LinuxToolchainTest {
 
         assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
         assertTrue(File(rootfs, "usr/bin/javac").canExecute())
-        assertTrue(commands.any { it == "dpkg-deb -x \'${LinuxToolchain.DEBS_IN_GUEST}/jdk_1.0.deb\' /" })
+        assertTrue(
+            commands.any {
+                it.contains("dpkg-deb -x") && it.contains("'${LinuxToolchain.DEBS_IN_GUEST}/jdk_1.0.deb'")
+            },
+        )
         assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).isFile)
         // The link step is what makes /usr/bin/javac exist after dpkg-deb -x.
         assertTrue(commands.any { it.startsWith("J=") })
@@ -178,7 +200,8 @@ class LinuxToolchainTest {
             .install(listOf(pkg("jdk", bytes))) { }
 
         assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull()!!.message!!.contains("could not unpack jdk_1.0.deb"))
+        val message = result.exceptionOrNull()!!.message!!
+        assertTrue(message, message.contains("could not be unpacked inside the guest: jdk_1.0.deb"))
         assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
     }
 
@@ -206,6 +229,42 @@ class LinuxToolchainTest {
         assertTrue(result.exceptionOrNull()!!.message!!.contains("no runnable javac/aapt"))
         assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a package the guest refuses is named, with what proot said, and nothing is stamped`() = runTest {
+        val bytes = deb(mapOf("usr/share/doc/a" to ("a" to 0b110_100_100)))
+        val other = deb(mapOf("usr/share/doc/b" to ("b" to 0b110_100_100)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(other)))
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(
+            rootfs,
+            runInGuest = guest(rootfs, failNames = setOf("bad_1.0.deb")),
+        ).install(listOf(pkg("good", bytes), pkg("bad", other))) { }
+
+        val message = result.exceptionOrNull()?.message ?: error("expected a failure")
+        assertTrue(message, message.contains("1 package(s) could not be unpacked"))
+        assertTrue(message, message.contains("bad_1.0.deb"))
+        assertTrue(message, message.contains("proot error"))
+        assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
+    }
+
+    @Test
+    fun `packages are unpacked a batch per guest session, not one proot each`() = runTest {
+        val bytes = deb(mapOf("usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101), "usr/bin/aapt" to ("x" to 0b111_101_101)))
+        val count = 60
+        repeat(count) { server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes))) }
+        val rootfs = File(work, "rootfs")
+        val plan = (1..count).map { pkg("p$it", bytes) }
+        val result = LinuxToolchain(rootfs, runInGuest = guest(rootfs)).install(plan) { }
+
+        assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
+        val sessions = commands.count { it.contains("for f in") }
+        assertEquals((count + LinuxToolchain.BATCH_SIZE - 1) / LinuxToolchain.BATCH_SIZE, sessions)
+        // Every package still reached dpkg-deb exactly once.
+        val handed = commands.sumOf { c -> Regex("'/var/cache/vorv-debs/[^']+\\.deb'").findAll(c).count() }
+        assertEquals(count, handed)
     }
 
     @Test
