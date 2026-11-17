@@ -391,8 +391,17 @@ jobs:
 
           Created by an AI agent (Lemon Code) on behalf of the repository owner."
           fi
-          # Same file each run for a given version; --clobber keeps one asset.
-          gh release upload "$TAG" "$DEBUG_APK#Vorv-$VERSION_NAME.apk" --clobber
+          # `gh release upload file#name` sets only the asset's *label*, not its
+          # file name (learned by this step failing on v0.9.9), so the file is
+          # copied to the name the phone should show and uploaded under it.
+          cp "$DEBUG_APK" "Vorv-$VERSION_NAME.apk"
+          gh release upload "$TAG" "Vorv-$VERSION_NAME.apk" --clobber
+          # One asset per version: drop anything left from an earlier attempt.
+          gh release view "$TAG" --json assets \
+            -q '.assets[] | select(.name != "Vorv-'"$VERSION_NAME"'.apk") | .name' \
+            | while read -r stale; do
+                [ -n "$stale" ] && gh release delete-asset "$TAG" "$stale" -y
+              done
           gh release view "$TAG" --json assets -q '.assets[].name' \
             | grep -Fx "Vorv-$VERSION_NAME.apk" \
             || { echo "MISSING on $TAG: Vorv-$VERSION_NAME.apk"; exit 1; }
