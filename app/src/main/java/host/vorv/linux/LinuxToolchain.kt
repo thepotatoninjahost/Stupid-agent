@@ -207,12 +207,46 @@ class LinuxToolchain(
         }
 
         val lines = shell.output.lineSequence().toList()
-        val missing = lines.firstOrNull { it.startsWith(MISSING_MARK) }
+        var missing = lines.firstOrNull { it.startsWith(MISSING_MARK) }
             ?.removePrefix(MISSING_MARK)
             ?.trim()
             ?.split(' ')
             ?.filter { it.isNotEmpty() }
             ?: emptyList()
+        var retryWhy = ""
+
+        // 0.9.7 on the owner's phone: one batch of 25 died with "tar: not found"
+        // even though /usr/bin/tar is in the rootfs (verified in the shipped
+        // rootfs.tar). proot had refused to exec a child inside that session, so
+        // every package in that batch looked broken. A batch-sized session is
+        // convenient, not required — retry only the casualties, each alone, in a
+        // session of its own, before telling the owner anything failed.
+        if (missing.isNotEmpty()) {
+            val stillFailing = mutableListOf<String>()
+            missing.forEach { name ->
+                val path = paths.firstOrNull { it.endsWith("/$name") } ?: name
+                var ok = false
+                repeat(2) { attempt ->
+                    if (!ok) {
+                        if (attempt > 0) kotlinx.coroutines.delay(700)
+                        val one = runInGuest(batchScript(listOf(path)))
+                        ok = one.ok
+                        if (!ok && retryWhy.isEmpty()) {
+                            retryWhy = one.output.lineSequence()
+                                .filter {
+                                    it.contains("proot error") || it.startsWith("tar:") ||
+                                        it.startsWith("dpkg-deb:")
+                                }
+                                .take(2).joinToString(" | ")
+                        }
+                    }
+                }
+                if (!ok) stillFailing += name
+            }
+            if (stillFailing.isEmpty()) return
+            missing = stillFailing
+        }
+
         val why = lines
             .filter {
                 it.contains("proot error") || it.startsWith("dpkg-deb:") ||
@@ -234,8 +268,11 @@ class LinuxToolchain(
                     "(exit ${shell.exitCode})"
         }
         error(
-            headline + (if (why.isNotEmpty()) " — proot/dpkg said: $why"
-            else " — the guest said: " + lines.takeLast(4).joinToString(" | ").take(300)),
+            headline + (when {
+                why.isNotEmpty() -> " — proot/dpkg said: $why"
+                retryWhy.isNotEmpty() -> " — each retried alone, proot/dpkg said: $retryWhy"
+                else -> " — the guest said: " + lines.takeLast(4).joinToString(" | ").take(300)
+            }),
         )
     }
 

@@ -81,6 +81,7 @@ class LinuxToolchainTest {
         hasDpkg: Boolean = true,
         unpackExit: Int = 0,
         failNames: Set<String> = emptySet(),
+        failMulti: Boolean = false,
     ): suspend (String) -> LinuxSystem.Shell = { command ->
         commands += command
         when {
@@ -97,28 +98,42 @@ class LinuxToolchainTest {
                 }
             command.contains("for f in") -> {
                 val paths = Regex("'([^']*\\.deb)'").findAll(command).map { it.groupValues[1] }.toList()
-                val log = StringBuilder()
-                val failed = mutableListOf<String>()
-                paths.forEach { path ->
-                    val name = File(path).name
-                    log.appendLine("@@PKG $name")
-                    if (unpackExit == 0 && name !in failNames) {
-                        val deb = File(rootfs, LinuxToolchain.DEBS_IN_GUEST.trim('/') + "/" + name)
-                        unpackForTest(deb, rootfs)
-                        log.appendLine("@@OK $name")
-                    } else {
-                        failed += name
-                        log.appendLine("@@FAILED $name")
-                        log.appendLine("proot error: execve(\"/bin/sh\"): No such file or directory")
+                if (failMulti && paths.size > 1) {
+                    // A whole session dies, exactly as proot did on the phone in
+                    // 0.9.7: every package in the batch looks broken, and none of
+                    // them is.
+                    val names = paths.map { File(it).name }
+                    LinuxSystem.Shell(
+                        4,
+                        names.joinToString("\n") { "@@FAILED $it" } + "\n" +
+                            LinuxToolchain.MISSING_MARK + " " + names.joinToString(" "),
+                        null,
+                        false,
+                    )
+                } else {
+                    val log = StringBuilder()
+                    val failed = mutableListOf<String>()
+                    paths.forEach { path ->
+                        val name = File(path).name
+                        log.appendLine("@@PKG $name")
+                        if (unpackExit == 0 && name !in failNames) {
+                            val deb = File(rootfs, LinuxToolchain.DEBS_IN_GUEST.trim('/') + "/" + name)
+                            unpackForTest(deb, rootfs)
+                            log.appendLine("@@OK $name")
+                        } else {
+                            failed += name
+                            log.appendLine("@@FAILED $name")
+                            log.appendLine("proot error: execve(\"/bin/sh\"): No such file or directory")
+                        }
                     }
+                    if (failed.isEmpty()) LinuxSystem.Shell(0, log.toString(), null, false)
+                    else LinuxSystem.Shell(
+                        4,
+                        log.appendLine("${LinuxToolchain.MISSING_MARK} ${failed.joinToString(" ")}").toString(),
+                        null,
+                        false,
+                    )
                 }
-                if (failed.isEmpty()) LinuxSystem.Shell(0, log.toString(), null, false)
-                else LinuxSystem.Shell(
-                    4,
-                    log.appendLine("${LinuxToolchain.MISSING_MARK} ${failed.joinToString(" ")}").toString(),
-                    null,
-                    false,
-                )
             }
             else -> LinuxSystem.Shell(127, "", "unexpected command", false)
         }
@@ -265,6 +280,35 @@ class LinuxToolchainTest {
         // Every package still reached dpkg-deb exactly once.
         val handed = commands.sumOf { c -> Regex("'/var/cache/vorv-debs/[^']+\\.deb'").findAll(c).count() }
         assertEquals(count, handed)
+    }
+
+    @Test
+    fun `a batch session that dies is retried package by package before anything is called failed`() = runTest {
+        // 0.9.7 on the owner's phone reported 20 packages as broken when the
+        // truth was one dead proot session: /usr/bin/tar was in the rootfs all
+        // along. The install must recover on its own.
+        val bytes = deb(
+            mapOf(
+                "usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101),
+                "usr/bin/aapt" to ("#!/bin/sh\n" to 0b111_101_101),
+            ),
+        )
+        val other = deb(mapOf("usr/lib/libfoo.so" to ("x" to 0b110_100_100)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(other)))
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(
+            rootfs,
+            runInGuest = guest(rootfs, failMulti = true),
+        ).install(listOf(pkg("jdk", bytes), pkg("libfoo", other))) { }
+
+        assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
+        assertTrue(File(rootfs, "usr/bin/javac").exists())
+        assertTrue(File(rootfs, "usr/lib/libfoo.so").exists())
+        // One batch session, then one session per casualty.
+        val sessions = commands.count { it.contains("for f in") }
+        assertEquals(3, sessions)
+        assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
     }
 
     @Test
