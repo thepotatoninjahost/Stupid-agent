@@ -122,11 +122,15 @@ class LinuxToolchain(
 
         // Verified by asking the guest, not by looking at the app's own view of
         // the tree: a file can exist on one side and not the other.
-        val check = runInGuest("test -x /usr/bin/javac && test -x /usr/bin/aapt")
+        // `test -x` only reads mode bits: it is true for a program that cannot
+        // actually start because the loader is gone. The loader is therefore
+        // checked by name here too, and one tool is really run — a computer that
+        // promises javac but cannot execute it must not be stamped "all good".
+        val check = runInGuest(VERIFY_COMMAND)
         if (!check.ok) {
             error(
-                "all packages unpacked, but the guest still has no runnable javac/aapt " +
-                    "(exit ${check.exitCode}) — the plan and this Debian root do not agree",
+                "all packages unpacked, but the guest cannot run them (exit ${check.exitCode}): " +
+                    check.output.trim().take(300),
             )
         }
         stampFile.parentFile?.mkdirs()
@@ -369,6 +373,14 @@ class LinuxToolchain(
                 "if [ -x \"\$J/bin/\$t\" ]; then ln -sf \"\$J/bin/\$t\" /usr/bin/\$t; fi; done; " +
                 "echo \"JAVA_HOME=\$J\""
 
+        /**
+         * What "the tools really work" means, asked of the guest itself: the
+         * loader exists, both tools are executable, and javac answers.
+         */
+        const val VERIFY_COMMAND =
+            "test -e /lib/ld-linux-aarch64.so.1 && test -x /usr/bin/javac && " +
+                "test -x /usr/bin/aapt && /usr/bin/javac -version >/dev/null 2>&1"
+
         /** Where the .debs live inside the guest. */
         const val DEBS_IN_GUEST = "/var/cache/vorv-debs"
 
@@ -412,13 +424,20 @@ class LinuxToolchain(
             // 139 downloads already in it, which is why 0.9.13 reported 20
             // archives "not found" that had just been verified. Reproduced here
             // with the real debs: -x breaks it, --keep-directory-symlink does not.
-            append("if dpkg-deb --fsys-tarfile \"\$f\" | tar -x --keep-directory-symlink -C / 2>/dev/null; then : > \"\$d/\$n\"; echo \"@@OK \$n\"; ")
-            append("elif dpkg-deb -x \"\$f\" / && [ -e /lib/ld-linux-aarch64.so.1 ]; then : > \"\$d/\$n\"; echo \"@@OK \$n (plain tar)\"; ")
+            // The marker is written only after the loader check below, so a
+            // package that broke the loader is never remembered as unpacked —
+            // otherwise the retry would find the marker, answer "@@OK (already
+            // unpacked)" and the install would finish on a broken system.
+            append("unpacked=0; ")
+            append("if dpkg-deb --fsys-tarfile \"\$f\" | tar -x --keep-directory-symlink -C / ; then unpacked=1; echo \"@@OK \$n\"; ")
+            append("elif dpkg-deb -x \"\$f\" / ; then unpacked=1; echo \"@@OK \$n (plain tar)\"; ")
             append("else echo \"@@FAILED \$n\"; fail=\"\$fail \$n\"; fi; ")
             // The loader is checked after every package: if any unpack broke the
             // merged-usr links, the install stops on the package that did it,
             // before more downloads are lost to a rebuild.
-            append("if [ ! -e /lib/ld-linux-aarch64.so.1 ]; then echo \"@@BROKEN \$n lost /lib/ld-linux-aarch64.so.1\"; fail=\"\$fail \$n\"; fi; done; ")
+            append("if [ ! -e /lib/ld-linux-aarch64.so.1 ]; then rm -f \"\$d/\$n\"; " +
+                "echo \"@@BROKEN \$n lost /lib/ld-linux-aarch64.so.1\"; fail=\"\$fail \$n\"; continue; fi; ")
+            append("if [ \"\$unpacked\" = 1 ]; then : > \"\$d/\$n\"; fi; done; ")
             append("if [ -n \"\$fail\" ]; then echo \"$MISSING_MARK\$fail\"; exit 4; fi; ")
             append("echo '@@BATCH OK'")
         }

@@ -90,7 +90,7 @@ class LinuxToolchainTest {
                 else LinuxSystem.Shell(1, "", "not found", false)
             command.startsWith("J=") ->
                 LinuxSystem.Shell(0, "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64", null, false)
-            command.startsWith("test -x /usr/bin/javac") ->
+            command == LinuxToolchain.VERIFY_COMMAND ->
                 if (File(rootfs, "usr/bin/javac").canExecute() && File(rootfs, "usr/bin/aapt").canExecute()) {
                     LinuxSystem.Shell(0, "", null, false)
                 } else {
@@ -376,6 +376,30 @@ class LinuxToolchainTest {
         assertTrue("it must come before any plain -x: $script", keeps < plain)
         assertTrue("the loader must be checked after every package", script.contains("[ -e /lib/ld-linux-aarch64.so.1 ]"))
         assertTrue(script.contains("@@BROKEN"))
+    }
+
+    @Test
+    fun `a package that broke the loader is not remembered as unpacked`() {
+        // The review found this: the marker was written before the loader check,
+        // so the retry read "@@OK (already unpacked)" and the install carried on
+        // on a system with no /lib/ld-linux-aarch64.so.1. The marker write must
+        // therefore sit after the @@BROKEN branch, which also clears it.
+        val script = LinuxToolchain.batchScript(listOf("/var/cache/vorv-debs/a_1.0.deb"))
+        val broken = script.indexOf("@@BROKEN")
+        val clears = script.indexOf("rm -f")
+        val marker = script.indexOf("if [ \"\$unpacked\" = 1 ]; then : > \"\$d/\$n\"")
+        assertTrue("the script must name a broken loader", broken > 0)
+        assertTrue("@@BROKEN must come before the marker is written: $script", broken < marker)
+        assertTrue("the marker must be cleared on breakage", clears in 1 until marker)
+        assertTrue("success is recorded in a flag, not before the check", script.contains("unpacked=1"))
+    }
+
+    @Test
+    fun `all good requires a loader and a javac that really runs`() {
+        val cmd = LinuxToolchain.VERIFY_COMMAND
+        assertTrue("the loader must be checked", cmd.contains("/lib/ld-linux-aarch64.so.1"))
+        assertTrue("the tools must exist", cmd.contains("test -x /usr/bin/javac"))
+        assertTrue("javac must actually answer", cmd.contains("javac -version"))
     }
 
     @Test
