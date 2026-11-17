@@ -32,10 +32,18 @@ object NativeCrashHistory {
         val trace: String?,
         val traceUnavailableReason: String?,
     ) {
+        /**
+         * Deaths worth explaining. INITIALIZATION_FAILURE belongs here: an app
+         * whose Application object threw on create exits with that reason and
+         * no exception handler ever sees it, so [DeathEvidence.isCrashReason]
+         * already counted it while this list did not — [latestCrash] therefore
+         * skipped the one record that explained the death.
+         */
         val crashed: Boolean
             get() = reason == ApplicationExitInfo.REASON_CRASH ||
                 reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
-                reason == ApplicationExitInfo.REASON_ANR
+                reason == ApplicationExitInfo.REASON_ANR ||
+                reason == ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
     }
 
     private const val MAX_TRACE_CHARS = 60_000

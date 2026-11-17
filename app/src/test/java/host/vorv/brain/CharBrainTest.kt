@@ -52,6 +52,25 @@ class CharBrainTest {
     }
 
     @Test
+    fun `a vocabulary with a newline survives a save and load`() {
+        // Training text is the user's own notes and code, so it has newlines in
+        // it. Format 1 wrote the characters raw on one line, so the reload read
+        // a truncated vocabulary and every weight from the wrong line — the
+        // brain came back as null and the tool quietly started over.
+        val prose = "line one\nline two\nline three\n"
+        val brain = CharBrain(CharBrain.vocabularyOf(prose))
+        brain.train(prose + prose, steps = 30, seed = 11)
+        val file = File(createTempDirectory("brain-nl").toFile(), "brain.txt")
+        brain.save(file)
+
+        val loaded = CharBrain.load(file)
+        assertTrue("a brain trained on multi-line text must reload", loaded != null)
+        assertEquals(brain.vocab, loaded!!.vocab)
+        assertEquals(brain.params.map { it.data }, loaded.params.map { it.data })
+        assertEquals(brain.generate("line", 10), loaded.generate("line", 10))
+    }
+
+    @Test
     fun `generation stays inside the vocabulary it learned`() {
         val brain = CharBrain(CharBrain.vocabularyOf(text))
         brain.train(text, steps = 80, seed = 9)

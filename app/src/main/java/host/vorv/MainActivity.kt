@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -735,9 +736,14 @@ private fun CrashLogDialog(
                     modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
                 )
 
+                // The log area is CAPPED: a crash log is hundreds of lines, and
+                // an uncapped LazyColumn inside this Column eats the whole
+                // dialog, pushing Analyze / Self-repair / Copy / Dismiss off
+                // the screen.
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(max = 280.dp)
                         .padding(bottom = 12.dp),
                 ) {
                     items(crashText.split("\n")) { line ->

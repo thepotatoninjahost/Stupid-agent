@@ -29,7 +29,9 @@ class CharBrain(
         const val CONTEXT = 8
         const val DIM = 12
         const val HIDDEN = 24
-        const val HEADER = "vorv-brain 1"
+        const val HEADER = "vorv-brain"
+        /** 1 wrote the vocabulary as raw characters (breaks on a newline); 2 as char codes. */
+        const val FORMAT = 2
         /** Unseen characters map here, so training never throws on new input. */
         const val UNKNOWN = 0
 
@@ -37,10 +39,18 @@ class CharBrain(
 
         fun load(file: File): CharBrain? = runCatching {
             val lines = file.readLines()
-            val head = lines.first().split(" ")
-            require(head[0] == "vorv-brain")
+            val head = lines.first().trim().split(" ")
+            require(head.size >= 5 && head[0] == HEADER)
+            val format = head[1].toInt()
             val c = head[2].toInt(); val d = head[3].toInt(); val h = head[4].toInt()
-            val vocab = lines[1].map { it }
+            // Format 1 wrote the characters raw, so a newline in the training
+            // text split the vocabulary across lines and every weight below it
+            // was read from the wrong line. Format 2 is char codes.
+            val vocab: List<Char> = when (format) {
+                1 -> lines[1].map { it }
+                2 -> lines[1].split(',').filter { it.isNotBlank() }.map { it.trim().toInt().toChar() }
+                else -> error("unknown brain format $format")
+            }
             val brain = CharBrain(vocab, c, d, h)
             brain.params.forEachIndexed { i, v -> v.data = lines[2 + i].toDouble() }
             brain
@@ -163,8 +173,8 @@ class CharBrain(
     fun save(file: File) {
         file.parentFile?.mkdirs()
         val sb = StringBuilder()
-        sb.append("$HEADER $context $dim $hidden\n")
-        sb.append(String(vocab.toCharArray())).append('\n')
+        sb.append("$HEADER $FORMAT $context $dim $hidden\n")
+        sb.append(vocab.joinToString(",") { it.code.toString() }).append('\n')
         for (p in params) sb.append(p.data).append('\n')
         file.writeText(sb.toString())
     }

@@ -98,20 +98,38 @@ class ForgeRuntime(private val context: Context) {
             args.toList()
     }
 
-    /** Runs a payload tool to completion; returns exit code and merged output. */
+    /**
+     * Runs a payload tool to completion; returns exit code and merged output.
+     *
+     * The output is drained on its own thread: reading it inline blocked on the
+     * process's stdout, so a tool that hung before printing anything also hung
+     * this call and the timeout below never got a chance to fire.
+     */
     fun exec(argv: List<String>, timeoutMs: Long = 300_000): Exec {
         val started = System.currentTimeMillis()
         val process = ProcessBuilder(argv).redirectErrorStream(true).start()
         val output = StringBuilder()
-        process.inputStream.bufferedReader().forEachLine { line ->
-            if (output.length < MAX_OUTPUT) output.appendLine(line)
-        }
+        val drain = Thread {
+            try {
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    synchronized(output) { if (output.length < MAX_OUTPUT) output.appendLine(line) }
+                }
+            } catch (_: java.io.IOException) {
+                // Process died mid-read; the exit code carries the verdict.
+            }
+        }.apply { isDaemon = true; start() }
+
         if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
             process.destroyForcibly()
-            return Exec(-1, output.toString(), System.currentTimeMillis() - started, timedOut = true)
+            process.waitFor(5, TimeUnit.SECONDS)
+            drain.join(1_000)
+            return Exec(-1, snapshot(output), System.currentTimeMillis() - started, timedOut = true)
         }
-        return Exec(process.exitValue(), output.toString(), System.currentTimeMillis() - started, timedOut = false)
+        drain.join(2_000)
+        return Exec(process.exitValue(), snapshot(output), System.currentTimeMillis() - started, timedOut = false)
     }
+
+    private fun snapshot(output: StringBuilder): String = synchronized(output) { output.toString() }
 
     data class Exec(val exitCode: Int, val output: String, val ms: Long, val timedOut: Boolean) {
         val ok: Boolean get() = exitCode == 0 && !timedOut

@@ -27,11 +27,19 @@ class ForgePaths(context: Context) {
 
     fun workDir(runId: String): File = File(workRoot, sanitize(runId))
 
-    fun ensureLayout(): List<String> {
-        val targets = listOf(root, toolchainDir, libDir, workRoot, outDir, logDir)
-        return targets.filterNot { it.isDirectory && (it.exists() || it.mkdirs()) }
-            .let { failed -> if (failed.isEmpty()) emptyList() else failed.map { "cannot create $it" } }
-            .ifEmpty { targets.filter { !it.isDirectory }.map { "cannot create $it" } }
+    fun ensureLayout(): List<String> =
+        ensureDirs(listOf(root, toolchainDir, libDir, workRoot, outDir, logDir))
+
+    companion object {
+        /**
+         * Creates what is missing; returns a line per directory that could not
+         * be created. This is a `mkdirs()` per target — the previous version
+         * tested `isDirectory && (exists() || mkdirs())`, whose left operand is
+         * already false for a missing directory, so it never created anything
+         * and reported every fresh tree as unmakeable.
+         */
+        internal fun ensureDirs(targets: List<File>): List<String> =
+            targets.filterNot { it.isDirectory || it.mkdirs() }.map { "cannot create $it" }
     }
 
     /**

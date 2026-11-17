@@ -943,6 +943,12 @@ class AgentViewModel(
         }
 
         currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+            // The task's own Job, so the tail below can tell "I am still the
+            // running task" from "the user already started a new one". send()
+            // clears busy as soon as the answer is in, while the DB writes run
+            // on, so a fast second message can own currentTaskJob before this
+            // block reaches its finally.
+            val self = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
             val task = AgentTask(prompt = trimmed, status = "in_progress", startedAt = System.currentTimeMillis())
             db.taskDao().insert(task)
 
@@ -1016,11 +1022,13 @@ class AgentViewModel(
                     content = result.answer,
                     citations = result.citations,
                 )
+                // The answer always joins the conversation; busy/liveTrace are
+                // this task's to clear only if it is still the running one.
                 _state.update {
                     it.copy(
                         messages = it.messages + assistantMsg,
-                        busy = false,
-                        liveTrace = emptyList(),
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
                     )
                 }
                 persistChat(assistantMsg)   // M1
@@ -1045,8 +1053,8 @@ class AgentViewModel(
                 _state.update {
                     it.copy(
                         messages = it.messages + stoppedMsg,
-                        busy = false,
-                        liveTrace = emptyList(),
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
                     )
                 }
                 persistChat(stoppedMsg)   // M1
@@ -1056,7 +1064,13 @@ class AgentViewModel(
                 throw e
             } catch (e: Exception) {
                 val errMsg = ChatMessage(role = "assistant", content = "Error: ${e.message}")
-                _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                _state.update {
+                    it.copy(
+                        messages = it.messages + errMsg,
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
+                    )
+                }
                 persistChat(errMsg)   // M1
                 // F-11: fail() is a Room write inside the catch of a coroutine
                 // with no outer guard. If the database is unavailable the
@@ -1064,9 +1078,15 @@ class AgentViewModel(
                 // and the task row would stay in_progress forever.
                 runCatching { db.taskDao().fail(task.id, e.message ?: "unknown") }
             } finally {
-                currentTaskJob = null
-                modelRepository.markBusy(false)
-                host.vorv.service.AgentService.stop(appContext)
+                // Only the OWNER of currentTaskJob may clear it. A second task
+                // started while this one wrote its result would otherwise lose
+                // its STOP handle, and markBusy(false) would let the local
+                // model be swapped out from under it.
+                if (currentTaskJob === self) {
+                    currentTaskJob = null
+                    modelRepository.markBusy(false)
+                    host.vorv.service.AgentService.stop(appContext)
+                }
                 // v0.6.17: the task may have tripped the dead-shell breaker
                 // or completed the first verified round-trip — the Setup
                 // checklist must show the truth the moment the task ends,
@@ -1237,6 +1257,9 @@ class AgentViewModel(
         persistChat(kickoff)
 
         currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+            // Same ownership rule as send(): the tail must not clear a task
+            // the user started in the meantime.
+            val self = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
             val task = AgentTask(
                 prompt = "[boot self-diagnosis] $situation",
                 status = "in_progress",
@@ -1277,8 +1300,8 @@ class AgentViewModel(
                 _state.update {
                     it.copy(
                         messages = it.messages + assistantMsg,
-                        busy = false,
-                        liveTrace = emptyList(),
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
                     )
                 }
                 persistChat(assistantMsg)
@@ -1297,19 +1320,49 @@ class AgentViewModel(
                 (appContext as? VorvApplication)?.let { app ->
                     app.getLatestCrashLog()?.let(app::markCrashHandled)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // STOP during boot diagnosis: the old code caught this as an
+                // ordinary Exception, so the task was recorded as a failure no
+                // one could explain and the cancelled coroutine then threw from
+                // inside its own handler.
+                val stoppedMsg = ChatMessage(
+                    role = "assistant",
+                    content = "Boot self-diagnosis stopped — you cancelled it. The crash reports are " +
+                        "still on disk — send \"diagnose the crash\" to run it again.",
+                )
+                _state.update {
+                    it.copy(
+                        messages = it.messages + stoppedMsg,
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
+                    )
+                }
+                persistChat(stoppedMsg)
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    runCatching { db.taskDao().fail(task.id, "stopped by user") }
+                }
+                throw e
             } catch (e: Exception) {
                 val errMsg = ChatMessage(
                     role = "assistant",
                     content = "Boot self-diagnosis failed: ${e.message}. The crash reports are still " +
                         "on disk — send \"diagnose the crash\" to retry.",
                 )
-                _state.update { it.copy(messages = it.messages + errMsg, busy = false, liveTrace = emptyList()) }
+                _state.update {
+                    it.copy(
+                        messages = it.messages + errMsg,
+                        busy = if (currentTaskJob === self) false else it.busy,
+                        liveTrace = if (currentTaskJob === self) emptyList() else it.liveTrace,
+                    )
+                }
                 persistChat(errMsg)
-                db.taskDao().fail(task.id, e.message ?: "unknown")
+                runCatching { db.taskDao().fail(task.id, e.message ?: "unknown") }
             } finally {
-                currentTaskJob = null
-                modelRepository.markBusy(false)
-                host.vorv.service.AgentService.stop(appContext)
+                if (currentTaskJob === self) {
+                    currentTaskJob = null
+                    modelRepository.markBusy(false)
+                    host.vorv.service.AgentService.stop(appContext)
+                }
                 refreshSessionGrants()
             }
         }
@@ -1471,44 +1524,61 @@ class AgentViewModel(
         _state.update { it.copy(toolchainInstalling = true, toolchainResult = null, toolchainProgress = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val guest = linuxSystem
-            val json = runCatching {
-                appContext.assets.open(host.vorv.linux.LinuxToolchain.ASSET).bufferedReader().use { it.readText() }
-            }.getOrElse { missing ->
-                _state.update { s ->
-                    s.copy(
+            // The whole install runs under a guard: a malformed plan or a
+            // throw from the guest used to escape this coroutine and leave
+            // toolchainInstalling = true with no result for the rest of the
+            // process — "it says installing and never stops".
+            try {
+                val json = runCatching {
+                    appContext.assets.open(host.vorv.linux.LinuxToolchain.ASSET).bufferedReader().use { it.readText() }
+                }.getOrElse { missing ->
+                    _state.update { s ->
+                        s.copy(
+                            toolchainInstalling = false,
+                            toolchainResult = "FAILED — this build has no list of what to download "
+                                + "(forge/linux/toolchain.json): ${missing.message}",
+                        )
+                    }
+                    return@launch
+                }
+                // The unpacking runs inside the guest: dpkg-deb resolves Debian's link
+                // chains against the guest's own root, which the app's filesystem view
+                // cannot do (0.9.5 failed with ELOOP trying it from here).
+                val toolchain = host.vorv.linux.LinuxToolchain(
+                    rootfs = guest.rootfs,
+                    runInGuest = { command ->
+                        guest.run(command, timeoutMs = 10 * 60_000L, binds = emptyList(), workDir = "/")
+                    },
+                )
+                val plan = toolchain.plan(json)
+                val outcome = toolchain.install(plan) { progress ->
+                    _state.update { it.copy(toolchainProgress = progress.line()) }
+                }
+                val verdict = outcome.fold(
+                    onSuccess = {
+                        "ALL GOOD — javac and aapt are installed in the guest (${plan.size} packages)."
+                    },
+                    onFailure = { "FAILED — ${it.message}" },
+                )
+                _state.update {
+                    it.copy(
                         toolchainInstalling = false,
-                        toolchainResult = "FAILED — this build has no list of what to download "
-                            + "(forge/linux/toolchain.json): ${missing.message}",
+                        toolchainProgress = null,
+                        toolchainInstalled = host.vorv.linux.LinuxToolchain.looksInstalled(guest.rootfs),
+                        toolchainResult = verdict,
                     )
                 }
-                return@launch
-            }
-            // The unpacking runs inside the guest: dpkg-deb resolves Debian's link
-            // chains against the guest's own root, which the app's filesystem view
-            // cannot do (0.9.5 failed with ELOOP trying it from here).
-            val toolchain = host.vorv.linux.LinuxToolchain(
-                rootfs = guest.rootfs,
-                runInGuest = { command ->
-                    guest.run(command, timeoutMs = 10 * 60_000L, binds = emptyList(), workDir = "/")
-                },
-            )
-            val plan = toolchain.plan(json)
-            val outcome = toolchain.install(plan) { progress ->
-                _state.update { it.copy(toolchainProgress = progress.line()) }
-            }
-            val verdict = outcome.fold(
-                onSuccess = {
-                    "ALL GOOD — javac and aapt are installed in the guest (${plan.size} packages)."
-                },
-                onFailure = { "FAILED — ${it.message}" },
-            )
-            _state.update {
-                it.copy(
-                    toolchainInstalling = false,
-                    toolchainProgress = null,
-                    toolchainInstalled = host.vorv.linux.LinuxToolchain.looksInstalled(guest.rootfs),
-                    toolchainResult = verdict,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        toolchainInstalling = false,
+                        toolchainProgress = null,
+                        toolchainResult = "FAILED — the install stopped with an error before it could " +
+                            "report a package: ${e.message ?: e.javaClass.simpleName}",
+                    )
+                }
             }
         }
     }
