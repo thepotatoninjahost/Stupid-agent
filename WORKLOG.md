@@ -1,3 +1,31 @@
+## Docs and CI — four empty files, the APK gate, and the scope that blocked it
+
+**What was wrong.** `DEVELOPMENT.md`, `CONTRIBUTING.md`, `SECURITY.md` and
+`NOTICES.md` were each one byte: the README's documentation table linked to four
+empty files. `README.md` also said the source "carries no separate licence file"
+while `LICENSE` (MIT) sat in the root. And the APK payload gate — the check that
+stops a computer-less APK leaving the builder — existed only as an unapplied
+patch, because this account's token had no `workflow` scope and GitHub refused
+any push touching `.github/workflows/`.
+
+**What changed.** The four files now say what their titles promise, and the two
+licence statements agree. `NOTICES.md` lists the payload components with the
+licences read from `tools/forge/runtime-manifest.json` and from each Maven
+artifact's published POM, including the GPL-2.0 obligation that comes with
+shipping proot. The APK gate is a step in `build.yml` (it inspects the finished
+APK with `tools/forge/verify-apk-payload.py` before any upload), the release
+notes no longer tell the owner to install Termux, and the patch and README that
+described the blocked state are deleted.
+
+**Checked.** `.github/workflows/build.yml` parses (13 steps in `build`); the
+documented commands and paths exist in the tree (`assembleDebug`,
+`testDebugUnitTest`, `test_vorv_sandbox.py`, `verify-apk-payload.py`, the four
+`RELEASE_KEYSTORE_*` names, `chaquopy { version = "3.11" }`); the licences that
+were not already in the manifest were read from the POMs of Robolectric 4.17,
+GenieX 0.10.0, jsoup 1.24.1, Rhino 1.9.2, XZ 1.10 and JUnit 4.13.2. Not
+checked: anything that needs a JDK or an Android SDK — this environment has
+neither, so the build itself was verified by CI, not here.
+
 ## 0.9.3 — the Linux system actually boots: provisioning was impossible
 
 **The bug, exactly.** `LinuxSystem.provision()` unpacked the root filesystem and

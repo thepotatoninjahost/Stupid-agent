@@ -6,7 +6,7 @@
 | F-2 guest timeout could not fire | fixed 0.9.0 |
 | F-3 foreground-service lifecycle | fixed 0.9.0 |
 | F-4 a 404 ended the cloud chain | fixed 0.9.0, test added |
-| F-5 payload absent from every APK | fixed 0.9.0 — build gate + APK gate. The CI provisioning *step* is in `tools/ci/workflow-payload-step.patch`: this account's token has no `workflow` scope, so GitHub refuses the push. |
+| F-5 payload absent from every APK | fixed 0.9.0 — build gate + APK gate. The APK gate is now a step in `.github/workflows/build.yml` (it ran for the first time under a `workflow`-scoped token on 2026-11-17); `tools/ci/workflow-payload-step.patch` has served its purpose and is gone. |
 | F-6 Termux in release notes | replacement text is in the same patch — same block |
 | F-7 unused PythonEngine | fixed 0.9.1 (class removed, delegation documented) |
 | F-8 repair() cannot work | fixed 0.9.1 (`payloadReport()`, inventory only) |

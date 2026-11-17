@@ -56,10 +56,10 @@ python3 tools/forge/verify-apk-payload.py app/build/outputs/apk/debug/app-debug.
 | `WORKLOG.md` | What each build changed, with evidence |
 | `REVIEW.md`, `CODE-REVIEW.md`, `ACCEPTANCE_LOG.md` | Review findings and how each was verified |
 | `SECURITY.md` | How to report a vulnerability |
-| `tools/ci/README.md` | The one workflow change that needs a `workflow`-scoped token |
 | `NOTICES.md` | Third-party components and licences |
 
 ## License
 
-See `NOTICES.md` for the licences of bundled components. The application source carries no
-separate licence file; ask the repository owner before redistributing.
+The application source is MIT — see `LICENSE`. Bundled components keep their own
+licences: `NOTICES.md` lists them, including the GPL-2.0 obligations that come
+with shipping proot.
