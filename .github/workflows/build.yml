@@ -61,7 +61,7 @@ jobs:
       # No gradle/actions/setup-gradle step, deliberately:
       #
       # 1. Gradle itself comes from the wrapper (./gradlew), whose
-      #    gradle-wrapper.properties pins the exact 8.9 distribution AND its
+      #    gradle-wrapper.properties pins the exact 9.8.2 distribution AND its
       #    SHA-256. Nothing needs to provision a second Gradle.
       #
       # 2. setup-gradle's User-Home caching was the source of 22 of the 28
@@ -174,6 +174,25 @@ jobs:
             app/src/main/assets/forge
             app/src/main/jniLibs/arm64-v8a
           key: forge-${{ runner.os }}-${{ hashFiles('tools/forge/runtime-manifest.json') }}
+
+      # F-5 (code review, 2026-11): the payload is git-ignored, so an APK can be
+      # built without a computer in it and only say so after install. This
+      # inspects the finished APK — not the source tree — and fails the run if
+      # proot, its loader, its libraries, the rootfs or the on-phone toolchain
+      # are absent, before anything is uploaded or made into a release.
+      - name: Gate — the APK must contain the computer
+        run: |
+          set -euo pipefail
+          found=0
+          for apk in app/build/outputs/apk/debug/app-debug.apk \
+                     app/build/outputs/apk/release/app-release.apk \
+                     app/build/outputs/apk/release/app-release-unsigned.apk; do
+            if [ -f "$apk" ]; then
+              python3 tools/forge/verify-apk-payload.py "$apk"
+              found=$((found + 1))
+            fi
+          done
+          [ "$found" -gt 0 ] || { echo "no APK was produced"; exit 1; }
 
       # --- Actions-storage quota hygiene -----------------------------------
       #
@@ -364,6 +383,6 @@ jobs:
 
             **First run:** Open Vorv → Files tab → grant a workspace folder → Setup tab → set LLM mode (cloud needs API key; local needs a one-time model download).
 
-            **Shell tool setup (optional):** install Termux (F-Droid/GitHub), run `termux-setup-storage` once, and grant Vorv the "Run commands in Termux" permission.
+            **Linux system:** Setup → Linux System → TEST. This build contains its own computer (Debian 12 under proot, no root, no Termux); packages install with `apt-get update && apt-get install -y <name>`. TEST prints one line per stage — loader, proot, guest start, guest output — so a failure names the stage it failed at instead of just saying "no Linux".
           files: release/app-release.apk
           prerelease: true
