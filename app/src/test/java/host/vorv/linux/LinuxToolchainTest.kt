@@ -305,10 +305,43 @@ class LinuxToolchainTest {
         assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
         assertTrue(File(rootfs, "usr/bin/javac").exists())
         assertTrue(File(rootfs, "usr/lib/libfoo.so").exists())
-        // One batch session, then one session per casualty.
+        // One batch session, then each of the two casualties retried four
+        // times alone before the install is allowed to believe them broken.
         val sessions = commands.count { it.contains("for f in") }
-        assertEquals(3, sessions)
+        assertEquals(1 + 2 * 4, sessions)
         assertTrue(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
+    }
+
+    @Test
+    fun `a package that still refuses stops the install and no later batch runs`() = runTest {
+        // The owner's rule: a computer missing one piece is never handed over, so
+        // the install must stop at the batch that failed instead of unpacking the
+        // rest and leaving a half-built guest behind.
+        val bytes = deb(
+            mapOf(
+                "usr/bin/javac" to ("#!/bin/sh\n" to 0b111_101_101),
+                "usr/bin/aapt" to ("#!/bin/sh\n" to 0b111_101_101),
+            ),
+        )
+        val count = LinuxToolchain.BATCH_SIZE + 5
+        val plan = (1..count).map { pkg("p$it", bytes) }
+        plan.forEach { server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes))) }
+
+        val rootfs = File(work, "rootfs")
+        val result = LinuxToolchain(
+            rootfs,
+            runInGuest = guest(rootfs, failNames = setOf("p1_1.0.deb")),
+        ).install(plan) { }
+
+        val message = result.exceptionOrNull()?.message ?: error("expected a failure")
+        assertTrue(message, message.contains("1 package(s) could not be unpacked"))
+        // One batch session, then four attempts at the single bad package, and
+        // nothing from the second batch was ever touched.
+        val sessions = commands.count { it.contains("for f in") }
+        assertEquals(1 + 4, sessions)
+        val handed = commands.flatMap { c -> Regex("'([^']*\\.deb)'").findAll(c).map { it.groupValues[1] } }
+        assertTrue(handed.none { it.contains("p${LinuxToolchain.BATCH_SIZE + 1}_") })
+        assertFalse(File(rootfs, LinuxToolchain.STAMP_PATH).exists())
     }
 
     @Test

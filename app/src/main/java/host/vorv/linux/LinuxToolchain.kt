@@ -98,7 +98,6 @@ class LinuxToolchain(
         // a few sessions instead is what proot-distro does, and it means 169
         // package installs cost six proot starts rather than 169.
         val batches = files.chunked(BATCH_SIZE)
-        val failed = mutableListOf<String>()
         batches.forEachIndexed { index, batch ->
             val last = (index * BATCH_SIZE) + batch.size
             onProgress(
@@ -107,13 +106,14 @@ class LinuxToolchain(
                     "unpacking packages ${index * BATCH_SIZE + 1}-$last of ${plan.size}",
                 ),
             )
-            // A dead session is retried package by package inside unpackBatch.
-            // Whatever survives that is collected here and the remaining batches
-            // still run: one bad session must not throw away the other 144
-            // packages, and a retried install skips what already landed.
-            failed += unpackBatch(batch)
+            // unpackBatch retries a casualty over and over, one alone in a fresh
+            // session, and only comes back with a name when that package still
+            // refuses. Anything still refusing means a piece is missing, and a
+            // computer missing a piece must never be handed to the owner: the
+            // install stops here rather than carrying on to the next batch.
+            val missing = unpackBatch(batch)
+            if (missing.isNotEmpty()) error(unpackFailure(missing))
         }
-        if (failed.isNotEmpty()) error(unpackFailure(failed))
 
         val javaHome = linkJavaTools()
 
@@ -239,9 +239,9 @@ class LinuxToolchain(
         missing.forEach { name ->
             val path = paths.firstOrNull { it.endsWith("/$name") } ?: name
             var ok = false
-            repeat(2) { attempt ->
+            repeat(4) { attempt ->
                 if (!ok) {
-                    if (attempt > 0) kotlinx.coroutines.delay(700)
+                    if (attempt > 0) kotlinx.coroutines.delay(1_500L * attempt)
                     val one = runInGuest(batchScript(listOf(path)))
                     ok = one.ok
                     if (!ok && lastWhy.isEmpty()) {
@@ -275,11 +275,14 @@ class LinuxToolchain(
     private fun unpackFailure(names: List<String>): String {
         val headline = "${names.size} package(s) could not be unpacked inside the guest: " +
             names.joinToString(", ").take(300)
-        return headline + if (lastWhy.isNotEmpty()) {
+        val why = if (lastWhy.isNotEmpty()) {
             " — proot/dpkg said: ${lastWhy.take(400)}"
         } else {
-            " — the guest gave no reason; installing again skips what already landed"
+            " — the guest gave no reason"
         }
+        return headline + why +
+            ". The install stopped here and is not marked finished — Setup still says the " +
+            "build tools are not installed. Tapping install again skips what already landed."
     }
 
     private fun sha256(file: File): String {
