@@ -110,7 +110,7 @@ class WebAppHarness(private val context: Context) {
             } else {
                 evaluateQuietly(view, wrap(script))
             }
-            val shot = if (screenshot) capture(view, projectDir) else null
+            val shot = if (screenshot) capture(view, projectDir, errors) else null
             val verdict = WebVerdict.fromEvaluation(
                 answer,
                 errors.toList(),
@@ -171,18 +171,41 @@ class WebAppHarness(private val context: Context) {
         layout(0, 0, 1080, 1920)
     }
 
-    /** Renders the page to a PNG the user can actually look at. */
-    private fun capture(view: WebView, projectDir: File): File? = try {
-        val bitmap = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888)
-        // Drawn synchronously on the main thread (the caller is already there):
-        // posting it would let the bitmap be written before anything was
-        // painted, and a blank "proof" screenshot is worse than none.
-        view.draw(Canvas(bitmap))
-        val out = File(projectDir, "test-screenshot.png")
-        FileOutputStream(out).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
-        bitmap.recycle()
-        out
-    } catch (e: Exception) {
-        null
+    /**
+     * Renders the page to a PNG the user can actually look at.
+     *
+     * The draw stays on the main thread (the caller is already there): posting
+     * it would let the bitmap be read before anything was painted, and a blank
+     * "proof" screenshot is worse than none. The PNG encode does not stay
+     * there — a 1080x1920 encode and disk write is hundreds of milliseconds.
+     * A failure is appended to [errors] so the verdict says "screenshot failed"
+     * instead of the model silently getting no picture it asked for.
+     */
+    private suspend fun capture(view: WebView, projectDir: File, errors: MutableList<String>): File? {
+        val bitmap = try {
+            Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888)
+        } catch (e: Exception) {
+            errors += "screenshot failed: ${e.javaClass.simpleName}: ${e.message ?: "no message"}"
+            return null
+        }
+        try {
+            view.draw(Canvas(bitmap))
+        } catch (e: Exception) {
+            bitmap.recycle()
+            errors += "screenshot failed while drawing: ${e.javaClass.simpleName}: ${e.message ?: "no message"}"
+            return null
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val out = File(projectDir, "test-screenshot.png")
+                FileOutputStream(out).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
+                out
+            } catch (e: Exception) {
+                errors += "screenshot failed while encoding: ${e.javaClass.simpleName}: ${e.message ?: "no message"}"
+                null
+            } finally {
+                bitmap.recycle()
+            }
+        }
     }
 }
