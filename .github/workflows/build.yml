@@ -374,6 +374,29 @@ jobs:
               || { echo "MISSING on ci-latest release: $f"; exit 1; }
           done
           echo "rolling ci-latest release verified: both APKs present"
+
+          # A versioned copy that survives the next push: ci-latest is replaced
+          # wholesale on every main push, so a link to it goes stale and the
+          # owner gets a 404 the next time he taps the bookmark on his phone.
+          # This tag is the app's own versionName, so the link for a build he is
+          # running never moves, and re-running the same version is harmless.
+          VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts | head -1)
+          TAG="v$VERSION_NAME"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --prerelease \
+              --title "Vorv $VERSION_NAME" \
+              --notes "Vorv $VERSION_NAME, built from commit $SHORT_SHA.
+
+          The APK here is debug-signed: it installs on the phone (Settings → Apps → Special access → Install unknown apps → allow the browser, then tap the file). It is NOT release-signed, because the RELEASE_KEYSTORE_* secrets are not configured; a debug build is debuggable and must not be called a production release.
+
+          Created by an AI agent (Lemon Code) on behalf of the repository owner."
+          fi
+          # Same file each run for a given version; --clobber keeps one asset.
+          gh release upload "$TAG" "$DEBUG_APK#Vorv-$VERSION_NAME.apk" --clobber
+          gh release view "$TAG" --json assets -q '.assets[].name' \
+            | grep -Fx "Vorv-$VERSION_NAME.apk" \
+            || { echo "MISSING on $TAG: Vorv-$VERSION_NAME.apk"; exit 1; }
+          echo "versioned release verified: $TAG carries Vorv-$VERSION_NAME.apk"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
