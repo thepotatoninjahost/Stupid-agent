@@ -37,6 +37,16 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
     private val provisioner = RootfsProvisioner(STAMP)
 
+    /**
+     * 0.9.14 — set when the tree check found pieces missing and the rootfs was
+     * rebuilt from the APK. Such a rebuild discards anything already inside the
+     * computer (downloaded packages included), so whoever asked for the run is
+     * told, instead of the loss being discovered later as a mystery ENOENT.
+     */
+    @Volatile
+    var lastRebuildNote: String? = null
+        private set
+
     /** The proot binary, at the path the runtime actually installed it. */
     fun prootExecutable(): File? = payload.executable()
 
@@ -135,6 +145,8 @@ class LinuxSystem(private val context: Context) : GuestShell {
             // once from the copy inside the APK before telling the owner it is bad.
             val first = GuestTree.broken(rootfs)
             if (first.isNotEmpty()) {
+                lastRebuildNote = "the Linux system was rebuilt from the APK because these pieces " +
+                    "failed the check: " + first.joinToString("; ")
                 rootfs.deleteRecursively()
                 stamp.delete()
                 runCatching { extractRootfs() }

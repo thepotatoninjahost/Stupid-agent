@@ -1639,6 +1639,7 @@ class AgentViewModel(
                     runInGuest = { command ->
                         guest.run(command, timeoutMs = 10 * 60_000L, binds = emptyList(), workDir = "/")
                     },
+                    rebuildNote = { guest.lastRebuildNote },
                 )
                 val plan = toolchain.plan(json)
                 val outcome = toolchain.install(plan) { progress ->

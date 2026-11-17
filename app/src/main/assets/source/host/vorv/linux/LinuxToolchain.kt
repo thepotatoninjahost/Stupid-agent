@@ -33,6 +33,8 @@ class LinuxToolchain(
         .build(),
     private val gson: Gson = Gson(),
     private val runInGuest: suspend (String) -> LinuxSystem.Shell,
+    /** Set by the owner of [runInGuest] when the guest was just rebuilt. */
+    private val rebuildNote: () -> String? = { null },
 ) {
 
     data class Package(
@@ -111,7 +113,8 @@ class LinuxToolchain(
             // refuses. Anything still refusing means a piece is missing, and a
             // computer missing a piece must never be handed to the owner: the
             // install stops here rather than carrying on to the next batch.
-            val missing = unpackBatch(batch)
+            val missing = unpackBatch(ensureOnDisk(batch, plan))
+            rebuildNote()?.let { note -> if (missing.isNotEmpty()) lastWhy += " (" + note + ")" }
             if (missing.isNotEmpty()) error(unpackFailure(missing))
         }
 
@@ -135,6 +138,28 @@ class LinuxToolchain(
         throw e
     } catch (e: Throwable) {
         Result.failure(e)
+    }
+
+    /**
+     * 0.9.14 — a downloaded package that is no longer on disk is fetched again
+     * before its batch runs.
+     *
+     * On the owner's phone an install reached dpkg-deb with 20 consecutive
+     * archives absent ("failed to read archive ... No such file or directory")
+     * although all 169 had downloaded and passed their sha256 minutes earlier.
+     * Whatever removed them, carrying on cannot be right: the piece is fetched
+     * again here, and if it cannot be, the install names it instead of handing
+     * dpkg-deb a path to a file that is not there.
+     */
+    private fun ensureOnDisk(batch: List<String>, plan: List<Package>): List<String> {
+        val byName = plan.associateBy { it.name + "_" + it.version + ".deb" }
+        return batch.map { path ->
+            val name = File(path).name
+            if (File(rootfs, path.trimStart('/')).isFile) return@map path
+            val pkg = byName[name] ?: error("$name is not in the toolchain plan")
+            download(pkg)
+            path
+        }
     }
 
     /**
@@ -280,7 +305,7 @@ class LinuxToolchain(
                         lastWhy = one.output.lineSequence()
                             .filter {
                                 it.contains("proot error") || it.startsWith("tar:") ||
-                                    it.startsWith("dpkg-deb:")
+                                    it.startsWith("dpkg-deb:") || it.startsWith("@@GONE")
                             }
                             .take(2).joinToString(" | ")
                     }
@@ -294,7 +319,7 @@ class LinuxToolchain(
             lastWhy = lines
                 .filter {
                     it.contains("proot error") || it.startsWith("dpkg-deb:") ||
-                        it.startsWith("tar:") || it.startsWith("sh:")
+                        it.startsWith("tar:") || it.startsWith("sh:") || it.startsWith("@@GONE")
                 }
                 .take(4)
                 .joinToString(" | ")
@@ -369,6 +394,10 @@ class LinuxToolchain(
             paths.forEach { append(" '").append(it.replace("'", "")).append("'") }
             append("; do n=\${f##*/}; ")
             append("if [ -f \"\$d/\$n\" ]; then echo \"@@OK \$n (already unpacked)\"; continue; fi; ")
+            // The archive is checked from inside the guest, where dpkg-deb reads
+            // it: a file the app can see and the guest cannot is a different
+            // fault from a corrupt archive, and must not be reported the same.
+            append("if [ ! -f \"\$f\" ]; then echo \"@@GONE \$f\"; fail=\"\$fail \$n\"; continue; fi; ")
             append("echo \"@@PKG \$n\"; ")
             append("if dpkg-deb -x \"\$f\" / ; then : > \"\$d/\$n\"; echo \"@@OK \$n\"; ")
             append("elif dpkg-deb --fsys-tarfile \"\$f\" | tar -xf - -C / ; then : > \"\$d/\$n\"; echo \"@@OK \$n via tar\"; ")
