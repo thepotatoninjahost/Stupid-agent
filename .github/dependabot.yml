@@ -6,6 +6,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # 4.18 breaks the Robolectric sandbox: 44 of 482 unit tests die with
+    # ClassNotFoundException at SandboxClassLoader.java:289 (4.18 rewrites
+    # sandbox class loading, drops shadows-httpclient and SDK 23). Ignored so a
+    # weekly bump cannot turn main red; unpin when the suite is 4.18-clean.
+    ignore:
+      - dependency-name: "org.robolectric:robolectric"
+        versions: ["4.18", "4.18.x"]
     groups:
       androidx:
         patterns:
