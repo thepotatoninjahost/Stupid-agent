@@ -121,6 +121,30 @@ jobs:
 
       # No setup-gradle — see the note in the test job.
 
+      # Forge payload cache.
+      #
+      # provisionPayload downloads ~250 MB (OpenJDK modules 125 MB, Termux d8/
+      # apksigner/android.jar 121 MB, proot + libtalloc + a 96 MB Debian rootfs)
+      # and hash-verifies every byte, on every run. The key is the manifest, so
+      # any pin, URL or version change in tools/forge/runtime-manifest.json
+      # invalidates it; the sha256 values inside that manifest stay the
+      # authority for correctness, this only saves the bandwidth.
+      #
+      # continue-on-error on both steps on purpose: the Actions cache service
+      # for this repo returned "services aren't available" / 400 for weeks
+      # (see the setup-gradle note in the test job). A dead cache must cost
+      # time, never a red build.
+      - name: Restore forge payload cache
+        id: forge-cache
+        continue-on-error: true
+        # actions/cache v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            app/src/main/assets/forge
+            app/src/main/jniLibs/arm64-v8a
+          key: forge-${{ runner.os }}-${{ hashFiles('tools/forge/runtime-manifest.json') }}
+
       - name: Decode release keystore
         if: env.HAS_KEYSTORE == 'true'
         run: |
@@ -139,6 +163,17 @@ jobs:
         run: ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
+
+      - name: Save forge payload cache
+        if: steps.forge-cache.outputs.cache-hit != 'true' && github.event_name == 'push'
+        continue-on-error: true
+        # actions/cache v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            app/src/main/assets/forge
+            app/src/main/jniLibs/arm64-v8a
+          key: forge-${{ runner.os }}-${{ hashFiles('tools/forge/runtime-manifest.json') }}
 
       # --- Actions-storage quota hygiene -----------------------------------
       #
