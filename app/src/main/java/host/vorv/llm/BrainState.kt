@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -43,7 +44,8 @@ object BrainState {
     }
 
     fun update(block: (BrainFacts) -> BrainFacts) {
-        val next = _facts.updateAndGet { block(it) }
+        _facts.update { block(it) }
+        val next = _facts.value
         saver.get()?.let { save -> runCatching { save(gson.toJson(next)) } }
     }
 

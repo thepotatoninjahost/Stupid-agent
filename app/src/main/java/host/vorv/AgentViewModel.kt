@@ -15,6 +15,9 @@ import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.RoomKernelEventSink
 import host.vorv.kernel.TraceStep
 import host.vorv.llm.BrainChoice
+import host.vorv.llm.BrainDoctor
+import host.vorv.llm.BrainFacts
+import host.vorv.llm.LlmHttpException
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.CloudModel
 import host.vorv.llm.FallbackLlm
@@ -713,7 +716,7 @@ class AgentViewModel(
             val model = _state.value.cloudCustomModel.ifBlank { CloudModel.fromId(_state.value.cloudModelId).id }
             val probe = CloudLlm.probeAt(key, base, model)
             val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
-                ?: host.vorv.llm.provider.Provider.byIdOrCustom(id, base)
+                ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, base)
             router.record(
                 id,
                 code = probe.exceptionOrNull()?.let { (it as? LlmHttpException)?.code },
@@ -740,7 +743,7 @@ class AgentViewModel(
             val s = _state.value
             val id = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
             val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
-                ?: host.vorv.llm.provider.Provider.byIdOrCustom(id, s.cloudBaseUrl)
+                ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, s.cloudBaseUrl)
             _state.update { it.copy(catalogLoading = true, catalogError = null) }
             val listing = catalog.fetch(provider, secrets.keyFor(id))
             _state.update {

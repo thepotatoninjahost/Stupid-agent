@@ -15,6 +15,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
+import host.vorv.llm.BrainDoctor
 import host.vorv.llm.CloudModel
 import host.vorv.llm.ModelChoice
 import host.vorv.ui.theme.*
@@ -520,7 +521,7 @@ fun SettingsScreen(
                     )
                 }
                 if (state.brainReport.isNotBlank()) {
-                    TextButton(onClick = { clipboard.setText(state.brainReport) }) {
+                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(state.brainReport)) }) {
                         Text("Copy brain health", fontSize = 11.sp)
                     }
                 }
