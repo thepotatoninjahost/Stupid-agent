@@ -1064,19 +1064,22 @@ class AgentViewModel(
         baseUrl: String,
         customModel: String,
         cloudModel: CloudModel,
-    ): List<host.vorv.llm.provider.ProviderChainLlm.Route> = runCatching {
-        val pid = prefs.cloudProviderId.first()
-            .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
-        val chosen = host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(pid, baseUrl)
-        val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
-        host.vorv.llm.provider.ProviderChainLlm.routes(
-            chosen = chosen,
-            chosenBaseUrl = target.baseUrl,
-            chosenModelId = target.modelId,
-            chosenUsesModelChain = target.useChain,
-            keyFor = { p -> secrets.keyFor(p.id) },
-        )
-    }.getOrElse { emptyList() }
+    ): List<host.vorv.llm.provider.ProviderChainLlm.Route> {
+        val routes = host.vorv.tools.Attempt.of("list the providers this owner holds keys for") {
+            val pid = prefs.cloudProviderId.first()
+                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val chosen = host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(pid, baseUrl)
+            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
+            host.vorv.llm.provider.ProviderChainLlm.routes(
+                chosen = chosen,
+                chosenBaseUrl = target.baseUrl,
+                chosenModelId = target.modelId,
+                chosenUsesModelChain = target.useChain,
+                keyFor = { p -> secrets.keyFor(p.id) },
+            )
+        }
+        return routes ?: emptyList()
+    }
 
     /**
      * A provider swap is never silent: the episode log keeps the reason, and
@@ -1087,7 +1090,7 @@ class AgentViewModel(
             it.copy(currentLlmLabel = "$answeredBy (cloud) — your chosen provider did not answer")
         }
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
+            host.vorv.tools.Attempt.of("record in the episode log which provider answered") {
                 db.episodeDao().insert(
                     Episode(
                         kind = "fallback",

@@ -1,3 +1,22 @@
+# One provider breaking is a detour (gate 0)
+
+Plan gate 0: two independent providers, one of them broken, chat still answers
+and the header tells the truth.
+
+- **`llm/provider/ProviderChainLlm.kt`**: the chosen provider first, then every
+  other provider this owner holds a key for. A refused key, an outage, a model
+  id the provider does not serve, or an empty balance moves to the next one; a
+  request the provider calls malformed is rethrown, because every provider would
+  say the same and hopping would turn an owner's bug into silence. When every
+  provider fails, the sentence names each one and its reason.
+- **The label names the provider that answered**, and a swap is written to the
+  episode log with its reason and shown in the header — never a silent takeover.
+- **Tests**: `ProviderChainLlmTest`, seven cases, on a mock server: dead first
+  provider, refused key, malformed request not retried, every provider failing,
+  a keyless provider never called, route order, and an empty chain refused.
+- No new silently swallowed failure: the three sites use `Attempt.of`, so
+  `SilentFailureGuardTest` stays at its baseline of 153.
+
 # The way back from the GPU (v0.9.29)
 
 Plan Step 10a. The quality model is trained off-device; this release is the

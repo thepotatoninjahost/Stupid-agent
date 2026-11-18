@@ -97,7 +97,9 @@ class ProviderChainLlm(
                 lastFailure = if (failures.isEmpty()) null else failures.joinToString("; ")
                 if (failures.isNotEmpty()) {
                     val reason = failures.joinToString("; ")
-                    runCatching { onFailover?.invoke(route.label, reason) }
+                    host.vorv.tools.Attempt.of("tell the owner which provider answered") {
+                        onFailover?.invoke(route.label, reason)
+                    }
                 }
                 return response
             } catch (e: kotlinx.coroutines.CancellationException) {
