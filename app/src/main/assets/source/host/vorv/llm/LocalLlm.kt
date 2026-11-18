@@ -156,7 +156,7 @@ class LocalLlm(
 
     /** One build attempt with an explicit model file, NPU then CPU. */
     private suspend fun buildEngine(modelPath: String, tokenizerPath: String?): Result<LlmWrapper> {
-        fun input(unit: String) = LlmCreateInput(
+        fun input(unit: String?) = LlmCreateInput(
             model_path = modelPath,
             tokenizer_path = tokenizerPath ?: "",
             config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
