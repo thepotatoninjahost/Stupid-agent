@@ -98,6 +98,18 @@
                 android:resource="@xml/ui_automation_service" />
         </service>
 
+        <!-- WorkManager's own foreground service, declared so a training run
+             can keep going while the screen is off. Same specialUse subtype as
+             the agent, because this is the same on-device work. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="specialUse"
+            tools:node="merge">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Training the on-device model while the phone charges" />
+        </service>
+
         <service
             android:name=".watchdog.WatchdogService"
             android:process=":watchdog"

@@ -21,8 +21,9 @@ import host.vorv.data.entity.*
         KnowledgeEdgeEntity::class,
         OperatorProfileEntity::class,
         LearningRowEntity::class,
+        TrainingRunEntity::class,
     ],
-    version = 5,
+    version = 6,
     // Schema JSON export is deliberately OFF: it's tooling sugar, and the
     // KSP arg-based export path is flaky across variants in clean CI
     // environments (Room 2.6.1 "Empty schema file" in kspReleaseKotlin).
@@ -41,6 +42,7 @@ abstract class VorvDatabase : RoomDatabase() {
     abstract fun chatMessageDao(): ChatMessageDao
     abstract fun knowledgeGraphDao(): KnowledgeGraphDao
     abstract fun learningDao(): LearningDao
+    abstract fun trainingRunDao(): TrainingRunDao
 
     companion object {
         /**
@@ -176,6 +178,35 @@ abstract class VorvDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        /**
+         * v5 → v6 (plan Step 9): the training-run log. A fresh table, so a
+         * run that fails or is refused is visible afterwards instead of
+         * disappearing into a log file nobody reads.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `training_runs` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `startedAt` INTEGER NOT NULL,
+                        `finishedAt` INTEGER,
+                        `state` TEXT NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `rung` TEXT NOT NULL,
+                        `steps` INTEGER NOT NULL,
+                        `corpusRows` INTEGER NOT NULL,
+                        `trainLoss` REAL,
+                        `valLoss` REAL,
+                        `seconds` REAL,
+                        `message` TEXT NOT NULL,
+                        `decision` TEXT NOT NULL
+                    )""".trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_training_runs_startedAt` ON `training_runs` (`startedAt`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_training_runs_generation` ON `training_runs` (`generation`)")
+            }
+        }
+
+        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
     }
 }

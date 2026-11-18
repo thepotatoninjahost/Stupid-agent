@@ -168,3 +168,25 @@ data class LearningRowEntity(
     val split: String = "TRAIN",
     val tokenCount: Int = 0,
 )
+
+/**
+ * Step 9: one row per training run. The Brain screen reads this table, so a
+ * run that refuses to start, gets refused by the gate, or dies in the middle
+ * leaves a visible record instead of vanishing.
+ */
+@Entity(tableName = "training_runs", indices = [Index("startedAt"), Index("generation")])
+data class TrainingRunEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val startedAt: Long,
+    val finishedAt: Long? = null,
+    val state: String,              // "running" | "promoted" | "refused" | "failed" | "stopped"
+    val generation: Int = 0,
+    val rung: String = "",
+    val steps: Int = 0,
+    val corpusRows: Int = 0,
+    val trainLoss: Double? = null,
+    val valLoss: Double? = null,
+    val seconds: Double? = null,
+    val message: String = "",
+    val decision: String = "",
+)

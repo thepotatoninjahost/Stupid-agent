@@ -25,6 +25,7 @@ import host.vorv.ui.theme.*
 import host.vorv.ui.screen.ChatScreen
 import host.vorv.ui.screen.TasksScreen
 import host.vorv.ui.screen.MemoryScreen
+import host.vorv.ui.screen.BrainScreen
 import host.vorv.ui.screen.ToolsScreen
 import host.vorv.ui.screen.FilesScreen
 import host.vorv.ui.screen.SettingsScreen
@@ -54,6 +55,7 @@ fun VorvApp(
                     "chat" -> ChatScreen(state, vm::send)
                     "tasks" -> TasksScreen(state, vm::toggleTaskDetails, vm::viewFullOutput)
                     "memory" -> MemoryScreen(state, vm::teach, vm::saveTrainingFile)
+                    "brain" -> BrainScreen(state, vm::trainNow, vm::rollbackBrain, vm::refreshBrain)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
                     "settings" -> SettingsScreen(
@@ -247,6 +249,7 @@ private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Mod
         "chat" to "Chat",
         "tasks" to "Tasks",
         "memory" to "Memory",
+        "brain" to "Brain",
         "tools" to "Tools",
         "files" to "Files",
         "settings" to "Setup",

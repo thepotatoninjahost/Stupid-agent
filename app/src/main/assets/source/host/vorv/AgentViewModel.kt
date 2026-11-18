@@ -112,6 +112,12 @@ data class AgentState(
     val messages: List<ChatMessage> = emptyList(),
     val liveTrace: List<TraceStep> = emptyList(),
     val memoryCount: Int = 0,
+    /** Step 9 — what the Brain screen shows: champion, generations, runs. */
+    val brain: host.vorv.learn.BrainReport.View? = null,
+    /** A training run is going right now (read back from the run log). */
+    val brainBusy: Boolean = false,
+    /** The last thing the Brain screen did, in the owner's words. */
+    val brainNote: String = "",
     /** Step 7 — what the learning ledger actually holds, read from the table. */
     val ledgerRows: Int = 0,
     val ledgerExamples: Int = 0,
@@ -668,8 +674,78 @@ class AgentViewModel(
         }
     }
 
+    // ---- Step 9: the Brain screen -------------------------------------------------
+
+    /** Re-reads the brain from disk and the run log from the database. */
+    fun refreshBrain() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val view = runCatching {
+                val runs = db.trainingRunDao().recent(30).map {
+                    host.vorv.learn.BrainReport.Run(
+                        id = it.id, startedAt = it.startedAt, state = it.state,
+                        generation = it.generation, rung = it.rung, corpusRows = it.corpusRows,
+                        trainLoss = it.trainLoss, valLoss = it.valLoss, seconds = it.seconds,
+                        message = it.message,
+                    )
+                }
+                host.vorv.learn.BrainReport.build(host.vorv.learn.BrainPaths.dir(appContext), runs)
+            }.getOrElse { t ->
+                _state.update { it.copy(brainNote = "Could not read the brain: ${t.javaClass.simpleName}: ${t.message}") }
+                return@launch
+            }
+            _state.update { it.copy(brain = view, brainBusy = view.runs.any { it.state == "running" }) }
+        }
+    }
+
+    /** The owner's own run, allowed on battery; the nightly one waits for the charger. */
+    fun trainNow(steps: Int = host.vorv.learn.TrainingWorker.DEFAULT_STEPS) {
+        viewModelScope.launch {
+            val rows = runCatching { learningStore.count() }.getOrElse { -1 }
+            if (rows == 0) {
+                _state.update {
+                    it.copy(brainNote = "Nothing to learn from yet: the ledger is empty. Talk to Vorv first.")
+                }
+                return@launch
+            }
+            if (rows < 0) {
+                _state.update { it.copy(brainNote = "Could not read the learning table, so no training was started.") }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    brainBusy = true,
+                    brainNote = "Training queued on $rows ledger rows. It runs when the phone is charging and cool.",
+                )
+            }
+            host.vorv.learn.TrainingWorker.enqueue(appContext, steps = steps, chargingOnly = false)
+        }
+    }
+
+    /** One tap back to the previous accepted generation. */
+    fun rollbackBrain() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = runCatching { host.vorv.learn.BrainPaths.dir(appContext) }.getOrElse { t ->
+                _state.update { it.copy(brainNote = "Could not open the brain folder: ${t.message}") }
+                return@launch
+            }
+            val result = host.vorv.learn.GenerationStore(root).rollback()
+            val note = when (result) {
+                is host.vorv.learn.GenerationStore.Result.Ok -> result.message
+                is host.vorv.learn.GenerationStore.Result.Refused -> result.message
+            }
+            if (result is host.vorv.learn.GenerationStore.Result.Ok) {
+                result.generation?.let { gen ->
+                    runCatching { host.vorv.learn.WeightsStore.setActive(root, gen.id) }
+                }
+            }
+            _state.update { it.copy(brainNote = note) }
+            refreshBrain()
+        }
+    }
+
     fun setScreen(screen: String) {
         _state.update { it.copy(screen = screen) }
+        if (screen == "brain") refreshBrain()
     }
 
     /**

@@ -183,3 +183,39 @@ interface LearningDao {
     @Query("DELETE FROM learning_rows")
     suspend fun clearAll()
 }
+
+/**
+ * Step 9: the training-run log. Newest first; the Brain screen never has to
+ * guess what happened — every run has a row with a state and a sentence.
+ */
+@Dao
+interface TrainingRunDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(run: host.vorv.data.entity.TrainingRunEntity): Long
+
+    @Query("UPDATE training_runs SET state = :state, finishedAt = :finishedAt, generation = :generation, steps = :steps, trainLoss = :trainLoss, valLoss = :valLoss, seconds = :seconds, message = :message, decision = :decision WHERE id = :id")
+    suspend fun finish(
+        id: Long,
+        state: String,
+        finishedAt: Long,
+        generation: Int,
+        steps: Int,
+        trainLoss: Double?,
+        valLoss: Double?,
+        seconds: Double?,
+        message: String,
+        decision: String,
+    )
+
+    @Query("SELECT * FROM training_runs ORDER BY startedAt DESC, id DESC LIMIT :limit")
+    suspend fun recent(limit: Int = 20): List<host.vorv.data.entity.TrainingRunEntity>
+
+    @Query("SELECT COUNT(*) FROM training_runs WHERE state = 'running'")
+    suspend fun runningCount(): Int
+
+    @Query("UPDATE training_runs SET state = 'failed', finishedAt = :now, message = :why WHERE state = 'running'")
+    suspend fun failStale(now: Long, why: String)
+
+    @Query("DELETE FROM training_runs")
+    suspend fun clearAll()
+}
