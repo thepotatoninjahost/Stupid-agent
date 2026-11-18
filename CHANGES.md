@@ -1,3 +1,35 @@
+# The on-phone brain, and the screen that tells the truth about it (v0.9.28)
+
+Plan Steps 8 and 9. The app now carries a small transformer of its own, trains
+it on the owner's ledger while the phone charges, and only lets it serve if it
+wins against the generation already serving.
+
+- **Tensor engine** (`learn/Tensor.kt`): forward and backward for matmul, bias,
+  RMSNorm, softmax cross-entropy, column slicing for grouped-query attention,
+  plus AdamW. Gradients are checked against finite differences.
+- **Model** (`learn/VorvCore.kt`): decoder-only transformer with grouped-query
+  attention. Rungs from ~8M to ~78M parameters, each with the training memory it
+  actually needs. `chooseTrainingRung` never picks one that will not fit and
+  lists the ones it skipped with the bytes each would have needed.
+- **Tokenizer** (`learn/Tokenizer.kt`): byte-level BPE trained on the owner's own
+  text; saves atomically; refuses an impossible vocabulary.
+- **Weights** (`learn/WeightsStore.kt`): one folder per generation, CRC32 inside
+  the file and SHA-256 in the manifest, so a truncated file can never serve.
+- **Trainer** (`learn/Trainer.kt`): trains a candidate, measures held-out loss
+  and bits-per-byte, runs the fixed evaluation suite, and asks the promotion
+  gate. A refusal keeps its sentence.
+- **When it runs** (`learn/TrainingWorker.kt`): a WorkManager job that waits for
+  the charger, idle and a non-low battery, runs in the foreground while it
+  trains, and writes a `training_runs` row that starts as "running" and always
+  ends as promoted, refused, stopped or failed with a sentence.
+- **Brain screen**: serving generation, every kept and refused generation with
+  its verdict, the held-out loss chart across accepted generations, the run
+  history, "Train now" and "Go back one" (a pointer swap; both generations stay
+  on disk).
+- **Database** v6 adds `training_runs`; nothing existing moves.
+- **Tests**: 60 new JVM tests for the engine, model, tokenizer, store, inference,
+  trainer, gate and screen text. CI's unit job passes with them.
+
 # Termux is gone (2026-11-13)
 
 Termux was never part of the product — it was a workaround that asked the
