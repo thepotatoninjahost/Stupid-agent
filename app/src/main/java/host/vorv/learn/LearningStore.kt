@@ -20,11 +20,11 @@ class LearningStore(private val dao: LearningDao) {
             LearningLedger.dedupeKey(row.kind, row.inputText, row.outputText)
         }
         val existing = dao.byKey(key)
-        val stored = if (existing == null) {
+        val stored: LearningRowEntity = if (existing == null) {
             row.copy(
                 dedupeKey = key,
                 weight = LearningLedger.weightFor(row.kind),
-            )
+            ).toEntity()
         } else {
             existing.copy(
                 ts = maxOf(existing.ts, row.ts),
@@ -33,7 +33,7 @@ class LearningStore(private val dao: LearningDao) {
                 errorClass = row.errorClass ?: existing.errorClass,
             )
         }
-        dao.upsert(stored.toEntity())
+        dao.upsert(stored)
         if (dao.count() > LearningLedger.MAX_ROWS) {
             dao.deleteLowestWeight(dao.count() - LearningLedger.MAX_ROWS)
         }
