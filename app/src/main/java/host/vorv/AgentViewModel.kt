@@ -756,6 +756,67 @@ class AgentViewModel(
         }
     }
 
+    /**
+     * Step 10: the owner picks the zip a GPU run produced. The phone copies it,
+     * unwraps it, hashes the model, grades it with its own suite and records the
+     * result — accepted or refused, in words. Nothing here trusts the file.
+     */
+    fun importBrainZip(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(brainBusy = true, brainNote = "Copying the GPU bundle…") }
+            val root = try {
+                host.vorv.learn.BrainPaths.dir(appContext)
+            } catch (t: Throwable) {
+                _state.update { it.copy(brainBusy = false, brainNote = "Could not open the brain folder: ${t.message}") }
+                return@launch
+            }
+            val copy = java.io.File(appContext.cacheDir, "gpu-bundle-${System.currentTimeMillis()}.zip")
+            try {
+                val input = appContext.contentResolver.openInputStream(uri)
+                    ?: throw java.io.IOException("the file picker returned nothing for this file")
+                input.use { from -> copy.outputStream().use { to -> from.copyTo(to) } }
+            } catch (t: Throwable) {
+                copy.delete()
+                _state.update {
+                    it.copy(
+                        brainBusy = false,
+                        brainNote = "The bundle could not be copied into the app: " +
+                            "${t.javaClass.simpleName}: ${t.message}. Nothing was imported.",
+                    )
+                }
+                return@launch
+            }
+
+            val champion = try {
+                host.vorv.learn.GenerationStore(root).champion()?.let { gen ->
+                    host.vorv.learn.Trainer(root).evalRecord(gen.id)
+                        ?: host.vorv.learn.PromotionGate.Report(gen.id, emptyMap(), emptyMap(), gen.valLoss)
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "could not read the champion's evaluation: ${t.message}", t)
+                null
+            }
+
+            val result = try {
+                host.vorv.learn.GpuIntake.import(copy, root, champion)
+            } catch (t: Throwable) {
+                android.util.Log.e("Vorv/Learn", "GPU import failed: ${t.message}", t)
+                host.vorv.learn.GpuIntake.Result.Failed(
+                    "The bundle was not imported: ${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+            copy.delete()
+            val note = when (result) {
+                is host.vorv.learn.GpuIntake.Result.Done ->
+                    "GPU generation ${result.outcome.generation}: ${result.outcome.message}"
+
+                is host.vorv.learn.GpuIntake.Result.Failed -> result.message
+            }
+            _state.update { it.copy(brainBusy = false, brainNote = note) }
+            refreshBrain()
+        }
+    }
+
     fun setScreen(screen: String) {
         _state.update { it.copy(screen = screen) }
         if (screen == "brain") refreshBrain()

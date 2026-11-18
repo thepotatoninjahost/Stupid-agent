@@ -94,6 +94,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-seq", type=int, default=2048)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--gguf", type=Path, default=None,
+                        help="merged model in .gguf form, needed to build the phone bundle")
+    parser.add_argument("--probes", type=Path, default=None,
+                        help="probe results for this app's suite, needed to build the phone bundle")
+    parser.add_argument("--bundle", type=Path, default=None,
+                        help="where to write the zip the phone imports")
     args = parser.parse_args(argv)
 
     try:
@@ -215,7 +221,49 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     print(f"kept: tuned loss {tuned_loss:.4f} beat base {base_loss:.4f}; adapter in {adapter}")
+
+    if args.bundle is None:
+        print(
+            "no phone bundle was written: pass --gguf and --probes and --bundle, or run "
+            "tools/train/make_bundle.py afterwards. Without probe counts the phone cannot "
+            "grade this model and will refuse it.",
+            file=sys.stderr,
+        )
+        return 0
+    if args.gguf is None or args.probes is None:
+        print(
+            "bundle not written: --bundle needs --gguf (the merged model) and --probes "
+            "(this app's suite results). Train succeeded; nothing was packed.",
+            file=sys.stderr,
+        )
+        return 6
+    import make_bundle
+
+    try:
+        bundle_manifest = make_bundle.build_manifest(
+            str(args.gguf),
+            make_bundle.read_json(str(args.probes)),
+            metrics,
+            args.base,
+            corpus_sha256_of(args.corpus),
+            json.dumps(config),
+        )
+        make_bundle.write_bundle(str(args.gguf), bundle_manifest, str(args.out / "metrics.json"), str(args.bundle))
+    except make_bundle.BundleError as exc:
+        print(f"bundle not written: {exc}", file=sys.stderr)
+        return 6
+    print(f"phone bundle: {args.bundle} — copy it to the phone and pick it on the Brain screen")
+    print(f"model sha256 {bundle_manifest['model']['sha256']}")
     return 0
+
+
+def corpus_sha256_of(corpus: Path) -> str:
+    """The fingerprint the phone compares against its own export."""
+    digest = hashlib.sha256()
+    for part in sorted(corpus.glob("*.jsonl")):
+        digest.update(part.name.encode())
+        digest.update(part.read_bytes())
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

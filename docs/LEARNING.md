@@ -41,6 +41,36 @@ not silently substituted.
 - Held-out loss is measured in bits per byte, so it can be compared against
   published 9B results later without a unit change.
 
+## The way back from the GPU (Step 10a)
+
+The quality model is trained away from the phone and returned as one zip. The
+phone is the judge, not the recipient:
+
+1. On a free GPU (Kaggle T4×2 is the primary, Colab T4 the backup) run
+   `tools/train/train_vorv_l.py` on the corpus export. It writes an adapter and
+   `metrics.json`, and refuses to save anything if the tuned loss did not beat the
+   base loss.
+2. Merge the adapter and convert it to `.gguf`, run the app's probes on it, and
+   pack the result with `tools/train/make_bundle.py`. That packer refuses a stub
+   model, a run with no held-out loss, no corpus fingerprint, a different suite
+   version, or probe results missing a kind — a weak bundle fails on the GPU
+   where it is cheap to see.
+3. On the phone: Brain screen → **Bring a GPU generation** → pick the zip.
+
+What the phone does with it, in order: unwraps it, hashes the model as it writes
+it, compares that fingerprint and the byte count with the manifest, refuses a
+model under 1 GiB as a stub, checks the suite version matches this build, checks
+every probe kind is counted, and then asks the promotion gate whether this model
+beats the generation currently serving. Accepted → it becomes the champion.
+Refused → it is still recorded, with the sentence that says why, and nothing
+serves it.
+
+Not yet done: the accepted `.gguf` is stored and recorded but the engine does not
+load it yet (the `geniex-android` loader is the next step), and no bundle has been
+produced from this owner's corpus yet, so nothing here is a release claim about
+the 9B model's quality. The correctness of the checks is tested; the model itself
+is not measured.
+
 ## Not measured yet
 
 - Tokens per second on the actual phone. The Brain screen will show it; until a

@@ -55,7 +55,7 @@ fun VorvApp(
                     "chat" -> ChatScreen(state, vm::send)
                     "tasks" -> TasksScreen(state, vm::toggleTaskDetails, vm::viewFullOutput)
                     "memory" -> MemoryScreen(state, vm::teach, vm::saveTrainingFile)
-                    "brain" -> BrainScreen(state, vm::trainNow, vm::rollbackBrain, vm::refreshBrain)
+                    "brain" -> BrainScreen(state, vm::trainNow, vm::rollbackBrain, vm::refreshBrain, vm::importBrainZip)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
                     "settings" -> SettingsScreen(

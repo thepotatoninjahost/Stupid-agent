@@ -140,7 +140,7 @@ class Trainer(private val brainDir: File) {
 
         val store = GenerationStore(brainDir)
         val previous = store.champion()
-        val previousReport = previous?.let { readEval(brainDir, it.id) }
+        val previousReport = previous?.let { evalRecord(it.id) }
 
         val candidateReport = EvalSuite.evaluate(
             complete = { prompt -> Inference.answer(core, tokenizer, prompt, maxTokens = 32) },
@@ -284,8 +284,9 @@ class Trainer(private val brainDir: File) {
         if (!f.exists()) throw java.io.IOException("eval record for generation $generation was not written")
     }
 
-    private fun readEval(dir: File, generation: Int): PromotionGate.Report? {
-        val file = File(WeightsStore.dirFor(dir, generation), "eval.json")
+    /** The stored evaluation for [generation], or null when there is none this build can read. */
+    fun evalRecord(generation: Int): PromotionGate.Report? {
+        val file = File(WeightsStore.dirFor(brainDir, generation), "eval.json")
         if (!file.isFile) return null
         return try {
             val text = file.readText()

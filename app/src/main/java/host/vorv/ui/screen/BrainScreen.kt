@@ -1,5 +1,8 @@
 package host.vorv.ui.screen
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,8 +34,13 @@ fun BrainScreen(
     onTrainNow: () -> Unit,
     onRollback: () -> Unit,
     onRefresh: () -> Unit,
+    onImportZip: (Uri) -> Unit = {},
 ) {
     val view = state.brain
+    // The quality path trains off-device; the file it returns is picked here.
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) onImportZip(uri)
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -67,6 +75,21 @@ fun BrainScreen(
                 }
                 TextButton(onClick = onRefresh) { Text("Refresh") }
             }
+        }
+        item {
+            OutlinedButton(
+                onClick = { picker.launch(arrayOf("application/zip", "application/octet-stream")) },
+                enabled = !state.brainBusy,
+                shape = RoundedCornerShape(50),
+            ) { Text("Bring a GPU generation") }
+        }
+        item {
+            Text(
+                "The bigger model is trained on a free GPU from the same ledger. " +
+                    "Download the zip it produces, then pick it here: the phone checks the file, " +
+                    "grades it on its own tests, and only serves it if it wins.",
+                color = OnSurfaceVariant, fontSize = 11.sp,
+            )
         }
         item {
             Text(

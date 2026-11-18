@@ -1,3 +1,28 @@
+# The way back from the GPU (v0.9.29)
+
+Plan Step 10a. The quality model is trained off-device; this release is the
+phone's half of the hand-off. A zip comes back, the phone checks it, and only a
+bundle that wins on the phone's own tests becomes a generation.
+
+- **Intake** (`learn/GpuBundleZip.kt`, `learn/GpuImport.kt`, `learn/GpuIntake.kt`):
+  the zip is unwrapped and the model is hashed in the same pass that writes it,
+  so the fingerprint describes exactly the bytes on disk. Refusals are sentences,
+  never a stack trace: not a zip, no manifest, no model, a model smaller than any
+  real 7B model, a size that disagrees with the manifest (a stopped download), a
+  fingerprint that disagrees (a corrupt or changed file), a different evaluation
+  suite, a probe kind missing, or a gate decision that is not a win.
+- **Recorded either way**: an accepted bundle becomes the champion; a refused one
+  is still written to the generation index with its sentence, so the Brain screen
+  can show why it lost. A refused bundle never becomes the champion.
+- **Brain screen**: "Bring a GPU generation" opens the phone's file picker; the
+  note under it says what happened in words.
+- **GPU side** (`tools/train/make_bundle.py`): refuses to pack a stub, a run with
+  no held-out loss, no corpus fingerprint, a suite mismatch, or probe results that
+  skip a kind — so a weak bundle fails where the person can see it, not silently
+  on the phone. `tools/train/train_vorv_l.py --bundle` now writes that zip.
+- 24 new JVM tests for the intake path and 10 Python tests for the packer. The
+  phone's rules are what the tests fix.
+
 # The on-phone brain, and the screen that tells the truth about it (v0.9.28)
 
 Plan Steps 8 and 9. The app now carries a small transformer of its own, trains
