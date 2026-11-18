@@ -59,6 +59,16 @@ class LearningStore(private val dao: LearningDao) {
         return drop.size
     }
 
+    // An unknown stored string is a schema bug, not something to hide: it is
+    // mapped to the least harmful value and the row keeps its text.
+    private fun parseKind(raw: String): LearningLedger.Kind =
+        LearningLedger.Kind.entries.firstOrNull { it.name == raw }
+            ?: LearningLedger.Kind.CHAT_USER
+
+    private fun parseSplit(raw: String): LearningLedger.Split =
+        LearningLedger.Split.entries.firstOrNull { it.name == raw }
+            ?: LearningLedger.Split.TRAIN
+
     private fun LearningLedger.Row.toEntity() = LearningRowEntity(
         id = id,
         ts = ts,
@@ -81,8 +91,7 @@ class LearningStore(private val dao: LearningDao) {
     private fun LearningRowEntity.toRow() = LearningLedger.Row(
         id = id,
         ts = ts,
-        kind = runCatching { LearningLedger.Kind.valueOf(kind) }
-            .getOrDefault(LearningLedger.Kind.CHAT_ASSISTANT),
+        kind = parseKind(kind),
         sessionId = sessionId,
         inputText = inputText,
         outputText = outputText,
@@ -94,8 +103,7 @@ class LearningStore(private val dao: LearningDao) {
         quote = quote,
         weight = weight,
         dedupeKey = dedupeKey,
-        split = runCatching { LearningLedger.Split.valueOf(split) }
-            .getOrDefault(LearningLedger.Split.TRAIN),
+        split = parseSplit(split),
         tokenCount = tokenCount,
     )
 }

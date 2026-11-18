@@ -330,8 +330,10 @@ class AgentViewModel(
             }
             // Step 6: every turn becomes a ledger row in the same minute. A
             // failure here is logged, never swallowed silently.
-            runCatching { recordLearning(msg) }.onFailure {
-                android.util.Log.w("Vorv/Learn", "ledger write failed: ${it.message}")
+            try {
+                recordLearning(msg)
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "ledger write failed: ${t.message}", t)
             }
         }
     }
