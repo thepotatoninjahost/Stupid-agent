@@ -309,6 +309,12 @@ class AgentViewModel(
      * message. Failure to persist NEVER breaks the chat — the message still
      * appears; the honest trade-off is logged, not thrown.
      */
+    /** Last turn of each side, used only to recognise a correction. */
+    @Volatile private var lastUserText: String? = null
+    @Volatile private var lastAssistantText: String? = null
+
+    private val learningStore by lazy { host.vorv.learn.LearningStore(db.learningDao()) }
+
     private fun persistChat(msg: ChatMessage) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
@@ -322,7 +328,46 @@ class AgentViewModel(
             }.onFailure {
                 android.util.Log.w("Vorv/Chat", "chat persist failed: ${it.message}")
             }
+            // Step 6: every turn becomes a ledger row in the same minute. A
+            // failure here is logged, never swallowed silently.
+            runCatching { recordLearning(msg) }.onFailure {
+                android.util.Log.w("Vorv/Learn", "ledger write failed: ${it.message}")
+            }
         }
+    }
+
+    private suspend fun recordLearning(msg: ChatMessage) {
+        val kind: host.vorv.learn.LearningLedger.Kind
+        val input: String
+        val output: String
+        if (msg.role == "user") {
+            val previous = lastAssistantText
+            if (host.vorv.learn.LearningLedger.isCorrection(msg.content, previous)) {
+                kind = host.vorv.learn.LearningLedger.Kind.CORRECTION
+                input = previous.orEmpty()
+                output = msg.content
+            } else {
+                kind = host.vorv.learn.LearningLedger.Kind.CHAT_USER
+                input = msg.content
+                output = ""
+            }
+            lastUserText = msg.content
+        } else {
+            kind = host.vorv.learn.LearningLedger.Kind.CHAT_ASSISTANT
+            input = lastUserText.orEmpty()
+            output = msg.content
+            lastAssistantText = msg.content
+        }
+        learningStore.record(
+            host.vorv.learn.LearningLedger.Row(
+                ts = msg.ts,
+                kind = kind,
+                sessionId = "chat",
+                inputText = input,
+                outputText = output,
+                engineLabel = "",
+            )
+        )
     }
 
     // M3 (code review, 2026-11): the exact bridge lambdas THIS ViewModel

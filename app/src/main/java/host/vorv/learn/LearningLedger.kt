@@ -19,6 +19,9 @@ object LearningLedger {
     const val MAX_WEIGHT = 3.0
     const val VAL_FRACTION = 0.10
 
+    /** Below this many answerable rows, holding out a slice would hold out all of it. */
+    const val MIN_FOR_VAL = 10
+
     const val CORRECTION_WEIGHT = 2.0
     const val RECOVERY_WEIGHT = 1.5
     const val DISTIL_WEIGHT = 1.0
@@ -81,7 +84,11 @@ object LearningLedger {
         if (previousAssistant.isNullOrBlank()) return false
         val t = userText.trim().lowercase()
         if (t.isEmpty()) return false
-        if (negativeOpeners.any { t == it || t.startsWith("$it,") || t.startsWith("$it ") }) return true
+        if (negativeOpeners.any { opener ->
+                val o = opener.trim()
+                t == o || t.startsWith("$o,") || t.startsWith("$o ")
+            }
+        ) return true
         // Same intent, different parameters: share at least 60% of the meaningful words.
         val a = words(t)
         val b = words(previousAssistant.lowercase())
@@ -109,22 +116,25 @@ object LearningLedger {
      */
     fun ingest(existing: List<Row>, row: Row): List<Row> {
         val key = row.dedupeKey.ifBlank { dedupeKey(row.kind, row.inputText, row.outputText) }
-        val match = existing.indexOfFirst { it.dedupeKey == key }
+        val keyed = existing.map {
+            if (it.dedupeKey.isBlank()) it.copy(dedupeKey = dedupeKey(it.kind, it.inputText, it.outputText)) else it
+        }
+        val match = keyed.indexOfFirst { it.dedupeKey == key }
         val updated = when {
-            match >= 0 -> existing.toMutableList().also { list ->
+            match >= 0 -> keyed.toMutableList().also { list ->
                 val prev = list[match]
                 list[match] = prev.copy(
                     weight = (prev.weight + 0.1).coerceAtMost(MAX_WEIGHT),
                     ts = maxOf(prev.ts, row.ts),
                 )
             }
-            existing.size >= MAX_ROWS -> prune(
-                existing + row.copy(
+            keyed.size >= MAX_ROWS -> prune(
+                keyed + row.copy(
                     dedupeKey = key,
                     weight = weightFor(row.kind),
                 )
             )
-            else -> existing + row.copy(
+            else -> keyed + row.copy(
                 dedupeKey = key,
                 weight = weightFor(row.kind),
             )
@@ -136,11 +146,13 @@ object LearningLedger {
     fun prune(rows: List<Row>, keep: Int = MAX_ROWS): List<Row> {
         if (rows.size <= keep) return rows
         val protected = rows.filter { it.kind == Kind.CORRECTION }
-        val droppable = rows.filter { it.kind != Kind.CORRECTION }
-            .sortedWith(compareBy<Row> { it.weight }.thenBy { it.ts })
         val dropCount = (rows.size - keep).coerceAtLeast(0)
-        val dropped = droppable.take(dropCount).map { it.dedupeKey }.toSet()
-        return rows.filterNot { it.dedupeKey in dropped }
+        val dropIndexes = rows.indices
+            .filter { rows[it].kind != Kind.CORRECTION }
+            .sortedWith(compareBy({ rows[it].weight }, { rows[it].ts }))
+            .take(dropCount)
+            .toSet()
+        return rows.filterIndexed { index, _ -> index !in dropIndexes }
     }
 
     /**
@@ -152,7 +164,10 @@ object LearningLedger {
     fun assignSplits(rows: List<Row>): List<Row> {
         val answerable = rows.filter { it.kind.isTrainingTarget }.sortedWith(compareBy({ it.ts }, { it.dedupeKey }))
         if (answerable.isEmpty()) return rows
-        val newestCount = kotlin.math.max(1, kotlin.math.round(answerable.size * VAL_FRACTION).toInt())
+        // Fewer than ten answerable rows means there is no "newest tenth" worth
+        // holding out: everything trains, so the first generation can exist.
+        val newestCount = if (answerable.size < MIN_FOR_VAL) 0 else
+            kotlin.math.max(1, kotlin.math.round(answerable.size * VAL_FRACTION).toInt())
         val valKeys = answerable.takeLast(newestCount).map { it.dedupeKey }.toSet()
         return rows.map { if (it.dedupeKey in valKeys) it.copy(split = Split.VAL) else it.copy(split = Split.TRAIN) }
     }

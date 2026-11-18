@@ -152,3 +152,34 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages")
     suspend fun clearAll()
 }
+
+/**
+ * Step 6: the learning ledger table. One row per distinct fact; a repeat
+ * updates its weight instead of inserting a copy.
+ */
+@Dao
+interface LearningDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(row: host.vorv.data.entity.LearningRowEntity): Long
+
+    @Query("SELECT * FROM learning_rows WHERE dedupeKey = :key LIMIT 1")
+    suspend fun byKey(key: String): host.vorv.data.entity.LearningRowEntity?
+
+    @Query("SELECT * FROM learning_rows ORDER BY ts ASC, id ASC")
+    suspend fun all(): List<host.vorv.data.entity.LearningRowEntity>
+
+    @Query("SELECT COUNT(*) FROM learning_rows")
+    suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM learning_rows WHERE kind IN ('CHAT_ASSISTANT','CORRECTION','TEACHER_DISTIL','PLAN','PATCH')")
+    suspend fun answerableCount(): Int
+
+    @Query("DELETE FROM learning_rows WHERE dedupeKey = :key")
+    suspend fun delete(key: String)
+
+    @Query("DELETE FROM learning_rows WHERE id IN (SELECT id FROM learning_rows ORDER BY weight ASC, ts ASC LIMIT :n)")
+    suspend fun deleteLowestWeight(n: Int)
+
+    @Query("DELETE FROM learning_rows")
+    suspend fun clearAll()
+}
