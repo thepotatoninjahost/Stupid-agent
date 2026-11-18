@@ -159,6 +159,7 @@ class CloudLlm(
     client: OkHttpClient? = null,
     private val maxAttempts: Int = MAX_ATTEMPTS,
     private val backoffMs: Long = 1_500L,
+    private val provider: host.vorv.llm.provider.Provider? = null,
 ) : Llm {
     private val model: String get() = modelName
     override val label = "$model (cloud)"
@@ -225,9 +226,8 @@ class CloudLlm(
             for (attempt in 0 until maxAttempts) {
                 try {
                     val payload = if (includeTools) bodyWithTools else bodyNoTools
-                    val req = Request.Builder()
-                        .url(url)
-                        .addHeader("Authorization", "Bearer $apiKey")
+                    val req = host.vorv.llm.provider.BrainHttp
+                        .applyAuth(Request.Builder().url(url), provider, apiKey)
                         .addHeader("Accept-Language", "en-US,en")
                         .addHeader("Content-Type", "application/json")
                         .post(payload.toRequestBody("application/json".toMediaType()))
@@ -363,7 +363,12 @@ class CloudLlm(
             probeAt(apiKey, "https://api.z.ai/api/paas/v4", model)
 
         /** Same one-call proof, against any address that speaks this format. */
-        suspend fun probeAt(apiKey: String, baseUrl: String, model: String): Result<String> =
+        suspend fun probeAt(
+            apiKey: String,
+            baseUrl: String,
+            model: String,
+            provider: host.vorv.llm.provider.Provider? = null,
+        ): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
                 try {
@@ -378,16 +383,16 @@ class CloudLlm(
                             })
                         })
                     }.toString()
-                    val req = Request.Builder()
-                        .url("${baseUrl.trimEnd('/')}/chat/completions")
-                        .addHeader("Authorization", "Bearer $apiKey")
+                    val url = host.vorv.llm.provider.ProviderRegistry.chatCompletionsUrl(baseUrl)
+                    val req = host.vorv.llm.provider.BrainHttp
+                        .applyAuth(Request.Builder().url(url), provider, apiKey)
                         .addHeader("Content-Type", "application/json")
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(req).execute().use { res ->
                         val text = res.body?.string().orEmpty()
                         val exchange = BrainFacts.Exchange(
-                            url = "${baseUrl.trimEnd('/')}/chat/completions",
+                            url = url,
                             model = model,
                             authorizationSent = true,
                             code = res.code,

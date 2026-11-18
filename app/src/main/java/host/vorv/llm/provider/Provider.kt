@@ -25,8 +25,18 @@ data class Provider(
     /** Suggested strong coder/reasoner ids; only suggestions, never trusted. */
     val suggestions: List<String> = emptyList(),
     val notes: String = "",
+    /** How this provider wants the key presented. Sent only when it is not BEARER. */
+    val authStyle: AuthStyle = AuthStyle.BEARER,
 ) {
     enum class Capability { CODE, REASONING, GENERAL }
+
+    /** A provider that wants a different header is not a special case in code. */
+    enum class AuthStyle(val header: String, val prefix: String) {
+        BEARER("Authorization", "Bearer "),
+        X_API_KEY("x-api-key", ""),
+        API_KEY("api-key", ""),
+        NONE("", ""),
+    }
 
     val keyId: String get() = "key.$id"
 
@@ -132,6 +142,7 @@ object ProviderRegistry {
         ),
         Provider(
             id = "anthropic",
+            authStyle = Provider.AuthStyle.X_API_KEY,
             label = "Anthropic (OpenAI-compatible gateway)",
             baseUrl = "https://api.anthropic.com/v1",
             capability = Provider.Capability.REASONING,
