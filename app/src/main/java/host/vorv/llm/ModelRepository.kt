@@ -55,7 +55,9 @@ class ModelRepository(private val appContext: Context) {
             // 0.9.18 — the chain belongs to Z.ai only. Any other address gets
             // exactly the model chosen for it, never a Z.ai id it does not serve.
             val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
-            host.vorv.llm.provider.BrainTarget.refusal(baseUrl, customModel)?.let { require(it) }
+            host.vorv.llm.provider.BrainTarget.refusal(baseUrl, customModel)?.let {
+                throw IllegalStateException(it)
+            }
             val cloud: Llm = if (target.useChain) {
                 CloudChainLlm(
                     apiKey,
