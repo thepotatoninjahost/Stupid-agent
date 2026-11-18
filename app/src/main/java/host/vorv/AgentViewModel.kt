@@ -679,7 +679,7 @@ class AgentViewModel(
     /** Re-reads the brain from disk and the run log from the database. */
     fun refreshBrain() {
         viewModelScope.launch(Dispatchers.IO) {
-            val view = runCatching {
+            val view = try {
                 val runs = db.trainingRunDao().recent(30).map {
                     host.vorv.learn.BrainReport.Run(
                         id = it.id, startedAt = it.startedAt, state = it.state,
@@ -689,7 +689,7 @@ class AgentViewModel(
                     )
                 }
                 host.vorv.learn.BrainReport.build(host.vorv.learn.BrainPaths.dir(appContext), runs)
-            }.getOrElse { t ->
+            } catch (t: Throwable) {
                 _state.update { it.copy(brainNote = "Could not read the brain: ${t.javaClass.simpleName}: ${t.message}") }
                 return@launch
             }
@@ -700,7 +700,12 @@ class AgentViewModel(
     /** The owner's own run, allowed on battery; the nightly one waits for the charger. */
     fun trainNow(steps: Int = host.vorv.learn.TrainingWorker.DEFAULT_STEPS) {
         viewModelScope.launch {
-            val rows = runCatching { learningStore.count() }.getOrElse { -1 }
+            val rows = try {
+                learningStore.count()
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "ledger count failed: ${t.message}", t)
+                -1
+            }
             if (rows == 0) {
                 _state.update {
                     it.copy(brainNote = "Nothing to learn from yet: the ledger is empty. Talk to Vorv first.")
@@ -724,18 +729,26 @@ class AgentViewModel(
     /** One tap back to the previous accepted generation. */
     fun rollbackBrain() {
         viewModelScope.launch(Dispatchers.IO) {
-            val root = runCatching { host.vorv.learn.BrainPaths.dir(appContext) }.getOrElse { t ->
+            val root = try {
+                host.vorv.learn.BrainPaths.dir(appContext)
+            } catch (t: Throwable) {
                 _state.update { it.copy(brainNote = "Could not open the brain folder: ${t.message}") }
                 return@launch
             }
             val result = host.vorv.learn.GenerationStore(root).rollback()
-            val note = when (result) {
+            var note = when (result) {
                 is host.vorv.learn.GenerationStore.Result.Ok -> result.message
                 is host.vorv.learn.GenerationStore.Result.Refused -> result.message
             }
             if (result is host.vorv.learn.GenerationStore.Result.Ok) {
                 result.generation?.let { gen ->
-                    runCatching { host.vorv.learn.WeightsStore.setActive(root, gen.id) }
+                    // The generation store already moved its pointer; this
+                    // mirrors it for the weights reader and a failure is shown.
+                    try {
+                        host.vorv.learn.WeightsStore.setActive(root, gen.id)
+                    } catch (t: Throwable) {
+                        note += " The weights pointer could not be updated: ${t.message}"
+                    }
                 }
             }
             _state.update { it.copy(brainNote = note) }

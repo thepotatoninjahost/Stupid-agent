@@ -266,8 +266,11 @@ class VorvApplication : Application() {
         // Step 9: a training run stays queued until the phone is charging and
         // idle. WorkManager owns the wait, so a dead session never leaves a
         // half-written generation behind.
-        runCatching { host.vorv.learn.TrainingWorker.enqueue(this, chargingOnly = true) }
-            .onFailure { android.util.Log.w("Vorv/Learn", "could not queue training: ${it.message}") }
+        try {
+            host.vorv.learn.TrainingWorker.enqueue(this, chargingOnly = true)
+        } catch (t: Throwable) {
+            android.util.Log.w("Vorv/Learn", "could not queue training: ${t.message}", t)
+        }
         BootTracer.step(this, "init_model_repo")
         modelRepository = ModelRepository(this)
 

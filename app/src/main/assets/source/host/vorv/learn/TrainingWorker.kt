@@ -97,13 +97,19 @@ class TrainingWorker(
             return Result.success(data)
         } catch (t: Throwable) {
             val why = "Training failed: ${t.javaClass.simpleName}: ${t.message ?: "no message"}"
-            runCatching {
+            try {
                 runs.finish(runId, "failed", System.currentTimeMillis(), 0, 0, null, null, null, why, "")
+            } catch (inner: Throwable) {
+                android.util.Log.e(TAG, "could not record the failed run: ${inner.message}", inner)
             }
             notify("Training failed", why)
             return Result.failure(Data.Builder().putString(KEY_MESSAGE, why).build())
         } finally {
-            runCatching { db.close() }
+            try {
+                db.close()
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "closing the database failed: ${t.message}")
+            }
         }
     }
 
@@ -112,7 +118,13 @@ class TrainingWorker(
     private suspend fun setForegroundQuietly(text: String) {
         if (foregroundTried) return
         foregroundTried = true
-        runCatching { setForeground(foregroundInfo(text)) }
+        try {
+            setForeground(foregroundInfo(text))
+        } catch (t: Throwable) {
+            // WorkManager refuses foreground without the permission or type;
+            // the run still proceeds and the row still records the outcome.
+            android.util.Log.w(TAG, "training could not go foreground: ${t.message}")
+        }
         // A missing notification permission is not a reason to stop learning;
         // the run row and the final notification-free log still say what happened.
     }
@@ -157,6 +169,7 @@ class TrainingWorker(
             PackageManager.PERMISSION_GRANTED
 
     companion object {
+        private const val TAG = "Vorv/Train"
         const val CHANNEL_ID = "vorv_training"
         private const val NOTIFICATION_ID = 4711
         private const val FOREGROUND_TYPE = 0x40000000 // FOREGROUND_SERVICE_TYPE_SPECIAL_USE

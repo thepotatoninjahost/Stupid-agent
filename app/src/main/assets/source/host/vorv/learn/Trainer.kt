@@ -244,7 +244,7 @@ class Trainer(private val brainDir: File) {
     private fun loadOrTrainTokenizer(corpus: String, target: Int, modelVocab: Int): Tokenizer {
         val file = File(brainDir, "tokenizer.txt")
         val existing = if (file.exists()) {
-            runCatching { Tokenizer.load(file) }.getOrElse { null }
+            host.vorv.tools.Attempt.of("loading the tokenizer at ${file.path}") { Tokenizer.load(file) }
         } else {
             null
         }
@@ -287,22 +287,34 @@ class Trainer(private val brainDir: File) {
     private fun readEval(dir: File, generation: Int): PromotionGate.Report? {
         val file = File(WeightsStore.dirFor(dir, generation), "eval.json")
         if (!file.isFile) return null
-        return runCatching {
+        return try {
             val text = file.readText()
             val suite = Regex("\"suiteVersion\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)?.toInt()
             val loss = Regex("\"valLoss\"\\s*:\\s*([0-9.]+)").find(text)?.groupValues?.get(1)?.toDouble()
             val passed = parseCounts(text, "passed")
             val total = parseCounts(text, "total")
-            if (suite != EvalSuite.VERSION) return null
-            val report = PromotionGate.Report(generation, passed, total, loss)
-            if (total.values.sum() == 0) null else report
-        }.getOrNull()
+            if (suite != EvalSuite.VERSION) {
+                android.util.Log.w("Vorv/Train", "eval record for generation $generation is suite ${suite}, expected ${EvalSuite.VERSION}: ignored")
+                null
+            } else {
+                val report = PromotionGate.Report(generation, passed, total, loss)
+                if (total.values.sum() == 0) null else report
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("Vorv/Train", "eval record for generation $generation could not be read: ${t.message}")
+            null
+        }
     }
 
     private fun parseCounts(text: String, key: String): Map<EvalSuite.Kind, Int> {
         val block = Regex("\"$key\"\\s*:\\s*\\{([^}]*)}").find(text)?.groupValues?.get(1) ?: return emptyMap()
         return Regex("\"([A-Z_]+)\"\\s*:\\s*(\\d+)").findAll(block).mapNotNull { m ->
-            val kind = runCatching { EvalSuite.Kind.valueOf(m.groupValues[1]) }.getOrNull() ?: return@mapNotNull null
+            val kind = try {
+                EvalSuite.Kind.valueOf(m.groupValues[1])
+            } catch (t: IllegalArgumentException) {
+                android.util.Log.w("Vorv/Train", "eval record names an unknown kind '${m.groupValues[1]}'")
+                return@mapNotNull null
+            }
             kind to m.groupValues[2].toInt()
         }.toMap()
     }
