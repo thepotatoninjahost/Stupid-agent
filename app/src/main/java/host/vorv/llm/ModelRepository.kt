@@ -52,15 +52,17 @@ class ModelRepository(private val appContext: Context) {
             require(apiKey.isNotBlank()) {
                 "Cloud mode needs a Z.ai API key — add one in Setup."
             }
-            // 0.9.13 — a named model at a named address wins over the Z.ai
-            // chain: one coder the owner picked, not a catalog he did not.
-            val cloud: Llm = if (customModel.isNotBlank()) {
-                CloudLlm(apiKey, baseUrl.ifBlank { "https://api.z.ai/api/paas/v4" }, customModel)
-            } else {
+            // 0.9.18 — the chain belongs to Z.ai only. Any other address gets
+            // exactly the model chosen for it, never a Z.ai id it does not serve.
+            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
+            host.vorv.llm.provider.BrainTarget.refusal(baseUrl, customModel)?.let { require(it) }
+            val cloud: Llm = if (target.useChain) {
                 CloudChainLlm(
                     apiKey,
                     listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free },
                 )
+            } else {
+                CloudLlm(apiKey, target.baseUrl, target.modelId)
             }
             if (!autoFallback || !ModelManager.isDownloaded(choice)) {
                 return@withLock cloud

@@ -619,7 +619,8 @@ class AgentViewModel(
                 return@launch
             }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val probe = CloudLlm.probe(key, id)
+            val base = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL }
+            val probe = CloudLlm.probeAt(key, base, id)
             val cm = CloudModel.fromId(id)
             _state.update {
                 it.copy(
@@ -681,19 +682,19 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             prefs.setCloudProviderId(id)
             val p = host.vorv.llm.provider.ProviderRegistry.byId(id)
+            // The previous provider's model id does not exist here, so it is
+            // replaced (never kept) — a Z.ai id sent to OpenRouter is a 404.
+            val nextModel = if (p != null && p.baseUrl.isNotBlank()) p.suggestions.firstOrNull().orEmpty() else ""
             if (p != null && p.baseUrl.isNotBlank()) {
                 prefs.setCloudBaseUrl(p.baseUrl)
-                if (prefs.cloudCustomModel.first().isBlank() && p.suggestions.isNotEmpty()) {
-                    prefs.setCloudCustomModel(p.suggestions.first())
-                }
+                prefs.setCloudCustomModel(nextModel)
             }
             _state.update { s ->
                 refresh(
                     s.copy(
                         providerId = id,
-                        cloudBaseUrl = p?.baseUrl ?: s.cloudBaseUrl,
-                        cloudCustomModel = if (s.cloudCustomModel.isBlank())
-                            (p?.suggestions?.firstOrNull() ?: "") else s.cloudCustomModel,
+                        cloudBaseUrl = p?.baseUrl?.ifBlank { s.cloudBaseUrl } ?: s.cloudBaseUrl,
+                        cloudCustomModel = if (p != null && p.baseUrl.isNotBlank()) nextModel else s.cloudCustomModel,
                     ),
                 )
             }
