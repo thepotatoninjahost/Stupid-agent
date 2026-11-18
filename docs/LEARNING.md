@@ -67,11 +67,15 @@ why, and nothing serves it. It could never serve (stub, stopped download, corrup
 file, wrong suite, a kind missing) → the file is deleted and no generation is
 written.
 
-Not yet done: the accepted `.gguf` is stored and recorded but the engine does not
-load it yet (the `geniex-android` loader is the next step), and no bundle has been
-produced from this owner's corpus yet, so nothing here is a release claim about
-the 9B model's quality. The correctness of the checks is tested; the model itself
-is not measured.
+Serving: before the downloaded base model, the engine asks the generation index
+for a champion of GPU origin whose file still verifies, and loads that instead —
+NPU first, CPU second. If it will not start, the reason is logged and shown in the
+header and the base model answers, so a bad generation costs speed, not the app.
+
+Not yet done: no bundle has been produced from this owner's corpus yet, and no
+trained generation has been loaded on the S25, so nothing here is a release claim
+about the 9B model's quality. The checks and the load order are tested on the JVM;
+the 4 GB load itself is not measured on the phone.
 
 ## Not measured yet
 

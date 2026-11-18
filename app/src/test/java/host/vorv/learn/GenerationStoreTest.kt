@@ -20,10 +20,16 @@ class GenerationStoreTest {
 
     private fun store() = GenerationStore(root)
 
-    private fun generation(id: Int, name: String, body: String, accepted: Boolean = true): GenerationStore.Generation {
+    private fun generation(
+        id: Int,
+        name: String,
+        body: String,
+        accepted: Boolean = true,
+        origin: String = "phone",
+    ): GenerationStore.Generation {
         val (path, hash) = artifact(name, body)
         return GenerationStore.Generation(
-            id = id, createdAt = id.toLong(), origin = "phone",
+            id = id, createdAt = id.toLong(), origin = origin,
             artifactPath = path, artifactSha256 = hash, sizeBytes = 0,
             valLoss = 1.0 - id / 10.0, accepted = accepted,
             decision = if (accepted) "won" else "refused: loss up",
@@ -148,5 +154,26 @@ class GenerationStoreTest {
         assertTrue(store().generations().isEmpty())
         // The broken file is left in place for a human to look at.
         assertTrue(File(root, "generations.json").exists())
+    }
+
+    @Test
+    fun `a gpu champion is what the engine loads`() {
+        store().add(generation(1, "g1.gguf", "trained one", origin = GenerationStore.ORIGIN_GPU), accept = true)
+        assertEquals(1, store().servingGpuModel()?.id)
+    }
+
+    @Test
+    fun `a phone champion is not offered to the gpu loader`() {
+        store().add(generation(1, "g1.bin", "phone weights"), accept = true)
+        assertNull(store().servingGpuModel())
+    }
+
+    @Test
+    fun `a gpu champion whose file changed is not served`() {
+        store().add(generation(1, "g1.gguf", "trained one", origin = GenerationStore.ORIGIN_GPU), accept = true)
+        File(root, "g1.gguf").writeText("trained two")
+        assertNull(store().servingGpuModel())
+        // The record still exists, so the owner can see what broke.
+        assertEquals(1, store().champion()?.id)
     }
 }

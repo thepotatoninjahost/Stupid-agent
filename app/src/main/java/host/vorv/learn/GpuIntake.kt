@@ -68,7 +68,7 @@ object GpuIntake {
         val record = GenerationStore.Generation(
             id = nextId,
             createdAt = System.currentTimeMillis(),
-            origin = "gpu",
+            origin = GenerationStore.ORIGIN_GPU,
             artifactPath = model.relativeTo(root).path,
             artifactSha256 = unwrapped.bundle.modelSha256,
             sizeBytes = model.length(),

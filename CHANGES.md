@@ -22,8 +22,14 @@ bundle that wins on the phone's own tests becomes a generation.
   no held-out loss, no corpus fingerprint, a suite mismatch, or probe results that
   skip a kind — so a weak bundle fails where the person can see it, not silently
   on the phone. `tools/train/train_vorv_l.py --bundle` now writes that zip.
-- 24 new JVM tests for the intake path and 10 Python tests for the packer. The
-  phone's rules are what the tests fix.
+- **Serving** (`llm/LocalLlm.kt`, `learn/GenerationStore.kt`): the engine now
+  looks for a champion GPU generation before falling back to the downloaded base
+  model, loads it if its bytes still verify, and says which one is answering —
+  "your trained model, generation N", or "trained generation did not load
+  (reason)" and the base model talks instead. Rollback therefore changes what
+  answers as well as the counter.
+- 27 new JVM tests for the intake and serving paths and 10 Python tests for the
+  packer. The phone's rules are what the tests fix.
 
 # The on-phone brain, and the screen that tells the truth about it (v0.9.28)
 

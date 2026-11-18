@@ -165,7 +165,7 @@ class Trainer(private val brainDir: File) {
             GenerationStore.Generation(
                 id = id,
                 createdAt = meta.created,
-                origin = "phone",
+                origin = GenerationStore.ORIGIN_PHONE,
                 artifactPath = saved.dir.name + "/" + WeightsStore.WEIGHTS,
                 artifactSha256 = saved.sha256,
                 sizeBytes = saved.bytes,

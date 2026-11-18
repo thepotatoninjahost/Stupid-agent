@@ -34,16 +34,36 @@ import com.geniex.sdk.bean.SamplerConfig
  * Surfaced via onTelemetry to the kernel trace UI. Never fabricated.
  */
 class LocalLlm(
-    appContext: Context,
+    private val appContext: Context,
     private val modelChoice: ModelChoice,
     private val displayLabel: String = "Qwen2.5-Coder-7B-Instruct (NPU, offline)",
 ) : Llm {
 
     @Volatile private var cpuFallback = false
 
-    /** Says which silicon is actually answering. Never claims NPU after a fallback. */
+    /** Set when a trained generation was the first choice and would not load. */
+    @Volatile private var championFailure: String? = null
+
+    /** Which of the owner's own generations is answering, if any (0 = none). */
+    @Volatile private var servingGeneration: Int = 0
+
+    /**
+     * Says what is actually answering. Never claims NPU after a fallback, and
+     * never implies the owner's trained model is answering when it is not.
+     */
     override val label: String
-        get() = if (cpuFallback) "$displayLabel (CPU fallback)" else displayLabel
+        get() {
+            val silicon = if (cpuFallback) " (CPU fallback)" else ""
+            val failed = championFailure
+            return when {
+                failed != null -> "$displayLabel$silicon — trained generation did not load ($failed)"
+                servingGeneration > 0 -> "your trained model, generation $servingGeneration$silicon"
+                else -> "$displayLabel$silicon"
+            }
+        }
+
+    /** The trained generation now answering, or 0. Read by the header and the Brain screen. */
+    fun trainedGeneration(): Int = servingGeneration
 
     /**
      * Honest prompt budget (audit M-2): nCtx is 4096 and GenerationConfig
@@ -82,47 +102,83 @@ class LocalLlm(
         val paths = ModelManager.getPaths(modelChoice)
             ?: error("Model ${modelChoice.hfRepo} not pulled yet - call ModelManager.pull() first")
 
-        val llmCreateInput = LlmCreateInput(
-            model_path = paths.model_path,
-            tokenizer_path = paths.tokenizer_path,
-            config = ModelConfig(
-                nCtx = N_CTX,
-                nThreads = 4,
-                nGpuLayers = 0,
-            ),
-            runtime_id = "llama_cpp",
-            compute_unit = ComputeUnitValue.NPU.value,
-        )
-
-        val npu = LlmWrapper.builder().llmCreateInput(llmCreateInput).build()
-        val wrapper = npu.getOrElse { npuError ->
-            // Step 4: the Hexagon path can fail on a firmware or memory
-            // hiccup. Falling back to CPU is correct; falling back SILENTLY is
-            // not, so the label changes and the reason is logged.
+        // A GPU generation that won on this phone's own tests is tried first.
+        // If it cannot load, the failure is said out loud and the base model
+        // answers — a trained model that will not start is never a silent
+        // downgrade and never an app that will not talk.
+        val trained = trainedChampion()
+        if (trained != null) {
+            val built = build(trained.file, trained.tokenizer)
+            if (built.isSuccess) {
+                servingGeneration = trained.generation
+                championFailure = null
+                llmWrapper = built.getOrThrow()
+                Log.i("Vorv/LocalLlm", "serving trained generation ${trained.generation} from ${trained.file}")
+                return built.getOrThrow()
+            }
+            championFailure = built.exceptionOrNull()?.message ?: "unknown reason"
             Log.w(
                 "Vorv/LocalLlm",
-                "NPU build failed (${npuError.message}); retrying on CPU",
-                npuError,
+                "trained generation ${trained.generation} did not load (${championFailure}); using ${modelChoice.hfRepo}",
+                built.exceptionOrNull(),
             )
-            val cpuInput = LlmCreateInput(
-                model_path = paths.model_path,
-                tokenizer_path = paths.tokenizer_path,
-                config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
-                runtime_id = "llama_cpp",
-                compute_unit = ComputeUnitValue.CPU.value,
+            servingGeneration = 0
+        }
+
+        // Step 4: the Hexagon path can fail on a firmware or memory hiccup.
+        // Falling back to CPU is correct; falling back SILENTLY is not, so the
+        // label changes and the reason is logged (inside build()).
+        val wrapper = build(paths.model_path, paths.tokenizer_path).getOrElse { failure ->
+            throw IllegalStateException(
+                "The on-device model could not start (${failure.message}).",
+                failure,
             )
-            val cpu = LlmWrapper.builder().llmCreateInput(cpuInput).build()
-            cpuFallback = true
-            cpu.getOrElse { cpuError ->
-                cpuFallback = false
-                error(
-                    "The on-device model could not start on the NPU (${npuError.message}) " +
-                        "or on the CPU (${cpuError.message}).",
-                )
-            }
         }
         llmWrapper = wrapper
         return wrapper
+    }
+
+    /** The champion GPU generation, if one is recorded and its file still verifies. */
+    private fun trainedChampion(): Trained? {
+        val record = try {
+            val root = host.vorv.learn.BrainPaths.dir(appContext)
+            host.vorv.learn.GenerationStore(root).servingGpuModel()
+                ?.let { it to java.io.File(root, it.artifactPath) }
+        } catch (e: Exception) {
+            Log.w("Vorv/LocalLlm", "could not read the generation index: ${e.message}", e)
+            null
+        } ?: return null
+        if (!record.second.isFile) return null
+        return Trained(record.first.id, record.second.absolutePath, tokenizer = null)
+    }
+
+    private data class Trained(val generation: Int, val file: String, val tokenizer: String?)
+
+    /** One build attempt with an explicit model file, NPU then CPU. */
+    private fun build(modelPath: String, tokenizerPath: String?): Result<LlmWrapper> {
+        fun input(unit: String) = LlmCreateInput(
+            model_path = modelPath,
+            tokenizer_path = tokenizerPath,
+            config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
+            runtime_id = "llama_cpp",
+            compute_unit = unit,
+        )
+        val npu = LlmWrapper.builder().llmCreateInput(input(ComputeUnitValue.NPU.value)).build()
+        if (npu.isSuccess) return npu
+        val npuError = npu.exceptionOrNull()
+        Log.w("Vorv/LocalLlm", "NPU build failed (${npuError?.message}); retrying on CPU", npuError)
+        val cpu = LlmWrapper.builder().llmCreateInput(input(ComputeUnitValue.CPU.value)).build()
+        return if (cpu.isSuccess) {
+            cpuFallback = true
+            cpu
+        } else {
+            cpuFallback = false
+            Result.failure(
+                IllegalStateException(
+                    "NPU: ${npuError?.message}; CPU: ${cpu.exceptionOrNull()?.message}",
+                ),
+            )
+        }
     }
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {

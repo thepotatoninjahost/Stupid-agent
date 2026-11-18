@@ -52,6 +52,18 @@ class GenerationStore(private val root: File) {
     }
 
     /**
+     * The champion, only when it is a GPU generation whose file still verifies.
+     * The engine asks this before loading: a champion whose bytes changed is not
+     * served, it is reported.
+     */
+    fun servingGpuModel(): Generation? {
+        val current = champion() ?: return null
+        if (current.origin != ORIGIN_GPU) return null
+        if (verify(current) != null) return null
+        return current
+    }
+
+    /**
      * Adds a candidate. [accepted] comes from [PromotionGate] — this class does
      * not decide quality, it records the verdict and moves the pointer only
      * when the verdict was a win.
@@ -198,6 +210,9 @@ class GenerationStore(private val root: File) {
         get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
 
     companion object {
+        const val ORIGIN_PHONE = "phone"
+        const val ORIGIN_GPU = "gpu"
+
         fun sha256(file: File): String {
             val digest = MessageDigest.getInstance("SHA-256")
             file.inputStream().use { input ->
