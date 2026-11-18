@@ -628,7 +628,7 @@ class AgentViewModel(
                     keyTestResult = if (probe.isSuccess) {
                         "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — works with your key."
                     } else {
-                        "✗ ${probe.exceptionOrNull()?.message ?: "unknown error"}"
+                        "✗ ${probe.exceptionOrNull()?.let { classify(it) } ?: "unknown error"}"
                     },
                 )
             }
@@ -666,7 +666,7 @@ class AgentViewModel(
                     keyTesting = false,
                     keyTestResult = probe.fold(
                         onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
-                        onFailure = { e -> "✗ $model: ${e.message ?: "unknown error"}" },
+                        onFailure = { e -> "✗ $model: ${classify(e)}" },
                     ),
                 )
             }
@@ -675,12 +675,14 @@ class AgentViewModel(
 
     /**
      * 0.9.18 — pick which provider the cloud brain talks to. A preset fills
-     * its address and (only if the model field is empty) one of its suggested
-     * coder ids. Nothing is overwritten silently.
+     * its address AND its first suggested coder id: the previous provider's
+     * model id does not exist here, so keeping it would only produce a 404.
      */
     fun selectProvider(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
             prefs.setCloudProviderId(id)
+            // A 401 from the last provider says nothing about this one.
+            host.vorv.llm.BrainState.forgetFailures()
             val p = host.vorv.llm.provider.ProviderRegistry.byId(id)
             // The previous provider's model id does not exist here, so it is
             // replaced (never kept) — a Z.ai id sent to OpenRouter is a 404.
@@ -1250,7 +1252,25 @@ class AgentViewModel(
                 // No cloud key but an on-phone coder in storage: the coder answers,
                 // and the header says so. Never a silent engine switch — the label
                 // and the episode log both name the brain that actually ran.
-                val mode = BrainChoice.mode(chosenMode, key.isNotBlank(), ModelManager.isDownloaded(choice))
+                //
+                // 0.9.19 — the gate and the header now read the SAME answer. When
+                // nothing can reply, the task stops with the reason in the chat
+                // instead of spending a minute discovering it.
+                val facts = brainFacts(_state.value).copy(
+                    llmMode = chosenMode,
+                    providerId = providerId,
+                    keyPresent = key.isNotBlank(),
+                    keyReadError = null,
+                    baseUrl = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL },
+                    modelId = prefs.cloudCustomModel.first().ifBlank { prefs.cloudModelId.first() },
+                    localModelId = choice.id,
+                    localDownloaded = ModelManager.isDownloaded(choice),
+                )
+                val resolved = BrainChoice.resolve(facts)
+                if (!resolved.usable) {
+                    throw IllegalStateException(resolved.reason ?: resolved.notice ?: "no brain can answer yet")
+                }
+                val mode = resolved.mode
                 if (mode != chosenMode) {
                     runCatching {
                         db.episodeDao().insert(
