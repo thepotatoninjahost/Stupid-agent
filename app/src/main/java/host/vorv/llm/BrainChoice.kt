@@ -48,11 +48,13 @@ object BrainChoice {
                     ?: "no cloud key — running on the on-phone coder",
             )
         }
+        // Nothing can answer. The notice names the real cause (missing key,
+        // unreadable store, refused key) instead of guessing "no key".
         return Resolved(
             mode = "cloud",
             label = "No brain yet",
-            notice = "nothing can answer: no key for ${f.providerLabel.ifBlank { "the cloud provider" }}, " +
-                "and no on-phone coder downloaded",
+            notice = (cloud.notice ?: cloud.reason ?: "no cloud brain is configured") +
+                "; no on-phone coder is downloaded either",
             usable = false,
             reason = cloud.reason,
         )

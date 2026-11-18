@@ -23,7 +23,8 @@ class ModelCatalogTest {
             ]}
         """.trimIndent()
         val ids = catalog.parse(body).map { it.id }
-        assertEquals(listOf("glm-4.7", "glm-4.7-flash", "glm-4.6"), ids)
+        // Sorted by id: the chips are easier to scan, and order is not the API's.
+        assertEquals(listOf("glm-4.6", "glm-4.7", "glm-4.7-flash"), ids)
     }
 
     @Test

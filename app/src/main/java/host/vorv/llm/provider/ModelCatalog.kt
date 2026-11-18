@@ -88,11 +88,15 @@ class ModelCatalog(
         val needle = typed.lowercase().replace(":", " ").replace("-", " ").replace("_", " ").replace("/", " ")
             .split(" ").filter { it.length > 2 }
         if (needle.isEmpty()) return emptyList()
+        val typedLength = needle.joinToString(" ").length
         return entries.map { e ->
             val hay = e.id.lowercase().replace(":", " ").replace("-", " ").replace("_", " ").replace("/", " ")
-            e.id to needle.count { hay.contains(it) }
+            val score = needle.count { hay.contains(it) }
+            // Equal word hits are common ("glm 4.7" also matches "glm 4.7 flash");
+            // the closer the length, the more likely it is what was meant.
+            Triple(e.id, score, -kotlin.math.abs(hay.length - typedLength))
         }.filter { it.second > 0 }
-            .sortedByDescending { it.second }
+            .sortedWith(compareByDescending<Triple<String, Int, Int>> { it.second }.thenByDescending { it.third })
             .take(limit)
             .map { it.first }
     }

@@ -18,6 +18,12 @@ class ProviderRegistryTest {
         val ids = ProviderRegistry.presets.map { it.id }
         assertEquals("preset ids must be unique", ids.size, ids.toSet().size)
         ProviderRegistry.presets.forEach { p ->
+            // The owner's own entry starts blank on purpose: it is filled in
+            // from Setup, and an invented address would be a lie.
+            if (p.baseUrl.isBlank()) {
+                assertEquals("only the owner's own entry may start empty", "custom", p.id)
+                return@forEach
+            }
             assertTrue("${p.id} must use https", p.baseUrl.startsWith("https://"))
             assertTrue("${p.id} must not end in a slash", !p.baseUrl.endsWith("/"))
         }
@@ -57,7 +63,9 @@ class ProviderRegistryTest {
         val p = ProviderRegistry.byIdOrCustom("mine", "https://llm.example.test/v1")
         assertEquals("https://llm.example.test/v1", p.baseUrl)
         assertEquals("mine", p.label)
-        assertEquals("key.mine", p.keyId)
+        // One custom slot, one key slot: two different pasted addresses must
+        // not quietly share (or each need) a separate key.
+        assertEquals("key.custom", p.keyId)
     }
 
     @Test

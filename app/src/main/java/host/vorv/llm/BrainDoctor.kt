@@ -93,6 +93,14 @@ object BrainDoctor {
         f.lastProbe?.let { p ->
             when {
                 p.answered -> add(Check("last test", State.OK, "$provider answered \"${p.replyText.take(60)}\""))
+                p.code in 200..299 -> add(
+                    Check(
+                        "last test",
+                        State.FAIL,
+                        "HTTP ${p.code} but the reply carried no text — model \"${p.model}\" is probably retired",
+                        "Setup → model → Refresh list and pick one the provider still serves",
+                    ),
+                )
                 p.code == 0 -> add(
                     Check("last test", State.FAIL, "no reply at all (${p.body.take(160)})", retryCard(provider)),
                 )
@@ -141,7 +149,7 @@ object BrainDoctor {
 
     private fun retryCard(provider: String) = "Setup → $provider → Save & Test"
 
-    private fun remedyFor(code: Int, provider: String): String = when (code) {
+        private fun remedyFor(code: Int, provider: String): String = when (code) {
         401, 403 -> "Setup → $provider → Save & Test with a fresh key"
         404 -> "Setup → model → Refresh list; the model id is not served there"
         429 -> "the provider is busy — wait, or add a second provider in Setup"

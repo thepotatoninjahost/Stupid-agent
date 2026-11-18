@@ -60,7 +60,10 @@ class BrainChoiceResolveTest {
     fun `a custom model with no key is labelled and refused with the same reason`() {
         val r = BrainChoice.resolve(facts(key = false, model = "NVIDIA: Nemotron 3 Ultra"))
         assertFalse(r.usable)
-        assertTrue(r.label.contains("no key"))
+        // The header may not claim a brain that is not there; the explanation
+        // underneath must name the exact missing thing.
+        assertTrue(r.label.contains("No brain"))
+        assertTrue(r.notice!!.contains("no key"))
         assertTrue(r.reason!!.contains("no key saved for Z.ai"))
     }
 
@@ -89,7 +92,8 @@ class BrainChoiceResolveTest {
     fun `an unreadable key is never reported as a missing key`() {
         val r = BrainChoice.resolve(facts(key = false, model = "m", keyError = "Keystore error"))
         assertFalse(r.usable)
-        assertTrue(r.label.contains("unreadable"))
+        assertTrue(r.label.contains("No brain"))
+        assertTrue(r.notice!!.contains("unreadable"))
         assertTrue(r.reason!!.contains("could not be read"))
     }
 
