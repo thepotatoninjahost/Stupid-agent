@@ -53,7 +53,7 @@ fun VorvApp(
                 when (state.screen) {
                     "chat" -> ChatScreen(state, vm::send)
                     "tasks" -> TasksScreen(state, vm::toggleTaskDetails, vm::viewFullOutput)
-                    "memory" -> MemoryScreen(state, vm::teach)
+                    "memory" -> MemoryScreen(state, vm::teach, vm::saveTrainingFile)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
                     "settings" -> SettingsScreen(

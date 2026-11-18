@@ -106,6 +106,14 @@ class LearningLedgerTest {
     }
 
     @Test
+    fun `the export carries the validation rows too, so the trainer sees every example`() {
+        val rows = (1..20).map { row(it.toLong(), LearningLedger.Kind.CHAT_ASSISTANT, "q$it", "a$it") }
+        val jsonl = LearningLedger.exportJsonl(rows)
+        assertEquals(20, jsonl.lines().size)
+        assertTrue(jsonl.contains("\"q20\""))
+    }
+
+    @Test
     fun `stats count only answerable rows and report dedupe`() {
         val rows = listOf(
             row(1, LearningLedger.Kind.CHAT_ASSISTANT, "q", "a"),

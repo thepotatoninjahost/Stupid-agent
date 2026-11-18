@@ -197,8 +197,16 @@ object LearningLedger {
         )
     }
 
-    /** The export the GPU pipeline reads; one line per example, no credentials. */
-    fun exportJsonl(rows: List<Row>): String = dataset(rows).joinToString("\n") { e ->
+    /**
+     * The export the GPU pipeline reads; one line per example, no credentials.
+     *
+     * Every answerable row goes in, including the phone's validation tenth,
+     * because the split is made once, by tools/train/prepare_corpus.py, with
+     * the same rule. Exporting only the training side here would leave the
+     * trainer's manifest and the phone's numbers disagreeing about how much
+     * data exists.
+     */
+    fun exportJsonl(rows: List<Row>): String = dataset(rows, includeVal = true).joinToString("\n") { e ->
         """{"kind":"${e.kind}","input":${json(e.input)},"output":${json(e.output)},"weight":${e.weight}}"""
     }
 

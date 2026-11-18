@@ -112,6 +112,12 @@ data class AgentState(
     val messages: List<ChatMessage> = emptyList(),
     val liveTrace: List<TraceStep> = emptyList(),
     val memoryCount: Int = 0,
+    /** Step 7 — what the learning ledger actually holds, read from the table. */
+    val ledgerRows: Int = 0,
+    val ledgerExamples: Int = 0,
+    val ledgerValRows: Int = 0,
+    /** What the last export did, in the owner's words. Never a silent success. */
+    val exportNote: String = "",
     val skillCount: Int = 0,
     /** Number of tools actually registered — the Setup text quotes this, not a
      *  remembered number (F-10: it said 17 while the registry held 24). */
@@ -332,8 +338,57 @@ class AgentViewModel(
             // failure here is logged, never swallowed silently.
             try {
                 recordLearning(msg)
+                refreshLedgerCounts()
             } catch (t: Throwable) {
                 android.util.Log.w("Vorv/Learn", "ledger write failed: ${t.message}", t)
+            }
+        }
+    }
+
+    /** Reads the counts back from the table, so the screen never guesses. */
+    private suspend fun refreshLedgerCounts() {
+        val stats = learningStore.stats()
+        _state.update {
+            it.copy(
+                ledgerRows = stats.rows,
+                ledgerExamples = stats.examples,
+                ledgerValRows = stats.valRows,
+            )
+        }
+    }
+
+    /**
+     * Step 7 — write the corpus to a file the owner can send to the trainer,
+     * then show what happened. An empty ledger produces no file and a sentence
+     * that says why, never a green button over nothing.
+     */
+    fun saveTrainingFile() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val rows = try {
+                learningStore.rows()
+            } catch (t: Throwable) {
+                _state.update { it.copy(exportNote = "Could not read the learning table: ${t.message}") }
+                return@launch
+            }
+            val jsonl = host.vorv.learn.LearningLedger.exportJsonl(rows)
+            if (jsonl.isBlank()) {
+                _state.update {
+                    it.copy(exportNote = "Nothing to export yet: no answerable rows in the ledger. Talk to Vorv first.")
+                }
+                return@launch
+            }
+            val result = host.vorv.learn.CorpusExport.write(appContext, jsonl, rows.size)
+            _state.update { it.copy(exportNote = result.message) }
+            val file = result.file
+            if (result.ok && file != null) {
+                val intent = host.vorv.learn.CorpusExport.shareIntent(appContext, file)
+                if (intent != null) {
+                    try {
+                        appContext.startActivity(intent)
+                    } catch (t: Throwable) {
+                        android.util.Log.w("Vorv/Learn", "share sheet failed: ${t.message}", t)
+                    }
+                }
             }
         }
     }
@@ -383,6 +438,15 @@ class AgentViewModel(
         }
 
     init {
+        // Step 7: the Brain numbers are read from the table at boot, not
+        // carried over from a previous process's opinion.
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                refreshLedgerCounts()
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "ledger read failed at boot: ${t.message}", t)
+            }
+        }
         // v0.6.14: install the runtime-permission bridge BEFORE any tool can
         // run. Tools call PermissionBridge.request() when they hit the
         // RUN_COMMAND wall; the handler shows Android's one-tap dialog and

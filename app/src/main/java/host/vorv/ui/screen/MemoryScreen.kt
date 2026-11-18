@@ -14,7 +14,11 @@ import host.vorv.AgentState
 import host.vorv.ui.theme.*
 
 @Composable
-fun MemoryScreen(state: AgentState, onTeach: (String, String) -> Unit) {
+fun MemoryScreen(
+    state: AgentState,
+    onTeach: (String, String) -> Unit,
+    onSaveTrainingFile: () -> Unit = {},
+) {
     var topic by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -49,6 +53,36 @@ fun MemoryScreen(state: AgentState, onTeach: (String, String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(50),
             ) { Text("Store") }
+        }
+        item { Spacer(Modifier.height(8.dp)) }
+        item { Text("Vorv's brain — what it is learning", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+        item {
+            Surface(shape = RoundedCornerShape(10.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        if (state.ledgerRows == 0) {
+                            "No lessons recorded yet. Every chat turn and every correction is saved here automatically."
+                        } else {
+                            "${state.ledgerExamples} lessons to learn from · " +
+                                "${state.ledgerValRows} kept back to check it actually improved · " +
+                                "${state.ledgerRows} rows in total"
+                        },
+                        color = OnSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onSaveTrainingFile,
+                        enabled = state.ledgerExamples > 0,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(50),
+                    ) { Text("Save training file") }
+                    if (state.exportNote.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(state.exportNote, color = OnSurfaceVariant, fontSize = 10.sp)
+                    }
+                }
+            }
         }
         item { Spacer(Modifier.height(8.dp)) }
         item { Text("Skills", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
