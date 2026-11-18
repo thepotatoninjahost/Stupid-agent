@@ -62,8 +62,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -289,8 +287,8 @@ class AgentViewModel(
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
-    /** Serializes consent dialogs so only one is visible at a time. */
-    private val confirmMutex = Mutex()
+    /** The one consent dialog: asked by a tool, answered by the screen, timed out as "no". */
+    private val consent = host.vorv.agent.ConsentGate(_state)
 
     /**
      * v0.6.16 (field finding #5 — the missing stop button): the running
@@ -914,36 +912,9 @@ class AgentViewModel(
      * Suspends until the user answers the confirmation dialog (or 60s elapses
      * = deny). One dialog at a time; a second request waits for the first.
      */
-    private suspend fun requestConfirmation(message: String): Boolean = confirmMutex.withLock {
-        val deferred = CompletableDeferred<Boolean>()
-        val pending = PendingConfirmation(
-            id = java.util.UUID.randomUUID().toString(),
-            message = message,
-            response = deferred,
-            // v0.6.15: only the shell consent offers the session grant, and
-            // only when no grant is active yet (an active grant means
-            // ShellTool never reaches this dialog). CONSENT_PREFIX is the
-            // single source of truth shared with the tool — pinned by test.
-            offerSessionGrant = !SessionGrants.shellAllCommands &&
-                message.startsWith(ShellTool.CONSENT_PREFIX),
-        )
-        _state.update { it.copy(pendingConfirmation = pending) }
-        val allowed = try {
-            withTimeout(60_000) { deferred.await() }
-        } catch (e: TimeoutCancellationException) {
-            false
-        } finally {
-            _state.update { if (it.pendingConfirmation?.id == pending.id) it.copy(pendingConfirmation = null) else it }
-        }
-        allowed
-    }
+    private suspend fun requestConfirmation(message: String): Boolean = consent.request(message)
 
-    fun respondConfirmation(id: String, allowed: Boolean) {
-        _state.update { s ->
-            s.pendingConfirmation?.let { if (it.id == id) it.response.complete(allowed) }
-            if (s.pendingConfirmation?.id == id) s.copy(pendingConfirmation = null) else s
-        }
-    }
+    fun respondConfirmation(id: String, allowed: Boolean) = consent.respond(id, allowed)
 
     /**
      * v0.6.15: the consent dialog's third answer — "Allow all this session".
