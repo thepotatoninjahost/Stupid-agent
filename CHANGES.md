@@ -11,9 +11,11 @@ bundle that wins on the phone's own tests becomes a generation.
   real 7B model, a size that disagrees with the manifest (a stopped download), a
   fingerprint that disagrees (a corrupt or changed file), a different evaluation
   suite, a probe kind missing, or a gate decision that is not a win.
-- **Recorded either way**: an accepted bundle becomes the champion; a refused one
-  is still written to the generation index with its sentence, so the Brain screen
-  can show why it lost. A refused bundle never becomes the champion.
+- **Kept or deleted, never half-kept**: an accepted bundle becomes the champion; a
+  bundle that lost on the gate is recorded with its sentence, so the Brain screen
+  can show why it lost; a bundle that could never serve (stub, stopped download,
+  corrupt file, wrong suite, missing counts) is deleted and nothing is recorded —
+  no half pieces on disk.
 - **Brain screen**: "Bring a GPU generation" opens the phone's file picker; the
   note under it says what happened in words.
 - **GPU side** (`tools/train/make_bundle.py`): refuses to pack a stub, a run with

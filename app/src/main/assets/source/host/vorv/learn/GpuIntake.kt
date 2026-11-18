@@ -59,6 +59,12 @@ object GpuIntake {
             is GpuImport.Result.Accepted -> PromotionGate.explain(verdict.decision)
             is GpuImport.Result.Refused -> verdict.message
         }
+        if (verdict is GpuImport.Result.Refused && verdict.structural) {
+            // Nothing about this file can ever serve, so it is not kept: the
+            // owner asked for no half pieces, and 4 GB is a fifth of the budget.
+            model.delete()
+            return Result.Failed(decisionText)
+        }
         val record = GenerationStore.Generation(
             id = nextId,
             createdAt = System.currentTimeMillis(),

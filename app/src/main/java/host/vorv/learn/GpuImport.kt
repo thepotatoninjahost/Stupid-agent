@@ -55,7 +55,13 @@ object GpuImport {
             val decision: PromotionGate.Decision,
         ) : Result()
 
-        data class Refused(val message: String) : Result()
+        /**
+         * [structural] means the bundle itself is unusable (no model, a stub, a
+         * stopped download, a corrupt file, the wrong suite, missing counts), so
+         * the file is deleted and nothing is recorded. A gate refusal is not
+         * structural: the file is real, it simply lost.
+         */
+        data class Refused(val message: String, val structural: Boolean = true) : Result()
     }
 
     fun check(
@@ -124,7 +130,10 @@ object GpuImport {
         return if (decision.isPromote) {
             Result.Accepted(manifest, decision)
         } else {
-            Result.Refused("Not promoted. " + PromotionGate.explain(decision))
+            Result.Refused(
+                "Not promoted. " + PromotionGate.explain(decision),
+                structural = false,
+            )
         }
     }
 

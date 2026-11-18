@@ -61,9 +61,11 @@ What the phone does with it, in order: unwraps it, hashes the model as it writes
 it, compares that fingerprint and the byte count with the manifest, refuses a
 model under 1 GiB as a stub, checks the suite version matches this build, checks
 every probe kind is counted, and then asks the promotion gate whether this model
-beats the generation currently serving. Accepted → it becomes the champion.
-Refused → it is still recorded, with the sentence that says why, and nothing
-serves it.
+beats the generation currently serving. Accepted → it becomes the champion. It
+lost on the gate → the file is kept as a generation with the sentence that says
+why, and nothing serves it. It could never serve (stub, stopped download, corrupt
+file, wrong suite, a kind missing) → the file is deleted and no generation is
+written.
 
 Not yet done: the accepted `.gguf` is stored and recorded but the engine does not
 load it yet (the `geniex-android` loader is the next step), and no bundle has been

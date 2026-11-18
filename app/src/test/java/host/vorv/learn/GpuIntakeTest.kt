@@ -103,12 +103,13 @@ class GpuIntakeTest {
     }
 
     @Test
-    fun a_bundle_from_another_suite_is_refused_and_no_model_is_kept_as_serving() {
+    fun a_bundle_from_another_suite_is_refused_and_its_file_is_deleted() {
         val root = tmp.newFolder("brain")
-        val done = GpuIntake.import(bundleZip(0.5, suite = 99), root, champion(1.2), minModelBytes = 1024)
-            as GpuIntake.Result.Done
-        assertFalse(done.outcome.accepted)
-        assertEquals(null, GenerationStore(root).champion())
+        val failed = GpuIntake.import(bundleZip(0.5, suite = 99), root, champion(1.2), minModelBytes = 1024)
+            as GpuIntake.Result.Failed
+        assertTrue(failed.message, failed.message.contains("cannot be compared"))
+        assertTrue(GenerationStore(root).generations().isEmpty())
+        assertFalse(java.io.File(root, "gpu/generation-1/model.gguf").exists())
     }
 
     @Test
@@ -133,11 +134,35 @@ class GpuIntakeTest {
     }
 
     @Test
-    fun a_bundle_whose_file_is_smaller_than_the_floor_is_refused() {
+    fun a_bundle_whose_file_is_smaller_than_the_floor_is_refused_and_not_kept() {
         val root = tmp.newFolder("brain")
-        val done = GpuIntake.import(bundleZip(0.5), root, null, minModelBytes = 10L * 1024 * 1024)
-            as GpuIntake.Result.Done
-        assertFalse(done.outcome.accepted)
-        assertEquals(null, GenerationStore(root).champion())
+        val failed = GpuIntake.import(bundleZip(0.5), root, null, minModelBytes = 10L * 1024 * 1024)
+            as GpuIntake.Result.Failed
+        assertTrue(failed.message, failed.message.contains("stub"))
+        assertTrue(GenerationStore(root).generations().isEmpty())
+    }
+
+    @Test
+    fun a_corrupt_model_is_refused_and_its_file_is_deleted() {
+        val root = tmp.newFolder("brain")
+        val zip = bundleZip(0.5)
+        // Rewrite the model bytes so the manifest's fingerprint no longer holds.
+        val tampered = tmp.newFile("tampered.zip")
+        java.util.zip.ZipInputStream(zip.inputStream()).use { input ->
+            java.util.zip.ZipOutputStream(tampered.outputStream()).use { out ->
+                while (true) {
+                    val entry = input.nextEntry ?: break
+                    out.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                    val body = input.readBytes()
+                    out.write(if (entry.name.endsWith(".gguf")) body.reversedArray() else body)
+                    out.closeEntry()
+                }
+            }
+        }
+        val failed = GpuIntake.import(tampered, root, null, minModelBytes = 1024)
+            as GpuIntake.Result.Failed
+        assertTrue(failed.message, failed.message.contains("fingerprint does not match"))
+        assertTrue(GenerationStore(root).generations().isEmpty())
+        assertFalse(java.io.File(root, "gpu/generation-1/model.gguf").exists())
     }
 }
