@@ -88,21 +88,87 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
 
     private val _zaiApiKey = kotlinx.coroutines.flow.MutableStateFlow("")
 
+    /** 0.9.18 — one key per provider id, all in the same encrypted file. */
+    private val _keys = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Why the key store could not be opened (Keystore reset, corrupted file).
+     * Null means "read fine". This exists because "no key" and "key unreadable"
+     * were the same sentence on screen, and they need different fixes.
+     */
+    private val _readError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
     init {
         if (overridePrefs != null) {
             // Test path — synchronous, no Keystore, B-1 contract visible at
             // construction.
             _zaiApiKey.value = overridePrefs.getString(KEY_ZAI, "") ?: ""
+            _keys.value = readAllKeys(overridePrefs)
         } else {
             // M5: production — read the encrypted file OFF the main thread.
             // First access builds EncryptedSharedPreferences here too.
             seedScope.launch {
-                val stored = runCatching { prefs.getString(KEY_ZAI, "") ?: "" }.getOrDefault("")
+                val stored = runCatching { prefs.getString(KEY_ZAI, "") ?: "" }
+                    .onFailure { e ->
+                        _readError.value = "the encrypted key store could not be opened: " +
+                            (e.message ?: e.javaClass.simpleName)
+                    }
+                    .getOrDefault("")
                 if (!savedDuringSeed) _zaiApiKey.value = stored
+                if (!savedDuringSeed) _keys.value = runCatching { readAllKeys(prefs) }.getOrDefault(emptyMap())
                 seedScope.cancel()
             }
         }
     }
+
+    /** Every saved provider key. Never logged, never shown. */
+    val keys: StateFlow<Map<String, String>> = _keys.asStateFlow()
+
+    /** Non-null when the encrypted store itself failed — Setup shows this. */
+    val readError: StateFlow<String?> = _readError.asStateFlow()
+
+    /**
+     * The key for one provider, from memory (seeded from the encrypted file).
+     * "" means this provider has no key — not that the store failed; check
+     * [readError] for that distinction.
+     */
+    fun keyFor(providerId: String): String =
+        _keys.value[providerId] ?: if (providerId == "z.ai") _zaiApiKey.value else ""
+
+    suspend fun setProviderKey(providerId: String, key: String) {
+        val trimmed = key.trim()
+        savedDuringSeed = true
+        withContext(Dispatchers.IO) {
+            prefs.edit().putString(prefName(providerId), trimmed).apply()
+        }
+        _keys.value = _keys.value + (providerId to trimmed)
+        if (providerId == "z.ai") _zaiApiKey.value = trimmed
+        _readError.value = null
+    }
+
+    suspend fun removeProviderKey(providerId: String) {
+        savedDuringSeed = true
+        withContext(Dispatchers.IO) {
+            prefs.edit().remove(prefName(providerId)).apply()
+        }
+        _keys.value = _keys.value - providerId
+        if (providerId == "z.ai") {
+            _zaiApiKey.value = ""
+            withContext(Dispatchers.IO) { prefs.edit().remove(KEY_ZAI).apply() }
+        }
+    }
+
+    private fun readAllKeys(p: SharedPreferences): Map<String, String> =
+        p.all.mapNotNull { (k, v) ->
+            when {
+                k.startsWith(PREFIX) -> k.removePrefix(PREFIX) to (v as? String ?: "")
+                k == KEY_ZAI -> "z.ai" to (v as? String ?: "")
+                else -> null
+            }
+        }.filter { it.second.isNotBlank() }.toMap()
+
+    /** z.ai keeps its 0.6.0 slot so existing installs need no migration. */
+    internal fun prefName(providerId: String) = prefNameFor(providerId)
 
     /**
      * The stored API key ("" when none). Hot state: the CURRENT value is
@@ -114,17 +180,7 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
      */
     val zaiApiKey: StateFlow<String> = _zaiApiKey.asStateFlow()
 
-    suspend fun setZaiApiKey(key: String) {
-        val trimmed = key.trim()
-        // M5: a seed read still in flight must not overwrite this save.
-        savedDuringSeed = true
-        withContext(Dispatchers.IO) {
-            prefs.edit().putString(KEY_ZAI, trimmed).apply()
-        }
-        // Publish AFTER the disk write succeeded — the flow never claims a
-        // value the encrypted file does not hold.
-        _zaiApiKey.value = trimmed
-    }
+    suspend fun setZaiApiKey(key: String) = setProviderKey("z.ai", key)
 
     /**
      * One-shot migration from the pre-0.6.0 plaintext DataStore key.
@@ -144,6 +200,7 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
             // B-1: a migrated key must reach collectors too, not only the
             // next process launch.
             _zaiApiKey.value = legacyKey
+            _keys.value = _keys.value + ("z.ai" to legacyKey)
         }
         // Either way the plaintext copy must go.
         legacy.eraseLegacyApiKey()
@@ -152,5 +209,10 @@ class SecretsStore(context: Context, prefsOverride: SharedPreferences? = null) {
     companion object {
         private const val FILE_NAME = "vorv_secrets"
         private const val KEY_ZAI = "zai_api_key"
+        private const val PREFIX = "key."
+
+        /** The one place a provider id becomes a preference name. */
+        internal fun prefNameFor(providerId: String) =
+            if (providerId == "z.ai") KEY_ZAI else PREFIX + providerId
     }
 }
