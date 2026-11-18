@@ -25,8 +25,9 @@
       Backup posture (audit M-7): conversation/tool-call data NEVER leaves the
       device. vorv.db (prompts, tool inputs/outputs, memory) is EXCLUDED from
       cloud backup AND device transfer — see res/xml/backup_rules.xml and
-      res/xml/data_extraction_rules.xml. Only non-secret settings (DataStore)
-      participate. SECURITY.md states this explicitly.
+      res/xml/data_extraction_rules.xml. Only non-secret settings (the plain
+      shared-preferences file; the encrypted secrets file is excluded) take
+      part in backup. SECURITY.md states this explicitly.
     -->
     <application
         android:name=".VorvApplication"

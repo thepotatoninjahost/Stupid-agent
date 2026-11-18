@@ -101,16 +101,39 @@ class JsExecTool : Tool {
         private val stdout: StringBuilder,
         private val stderr: StringBuilder,
     ) {
-        fun log(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-        fun info(vararg args: Any?) { stdout.appendLine(args.joinToString(" ") { fmt(it) }) }
-        fun warn(vararg args: Any?) { stderr.appendLine("WARN: " + args.joinToString(" ") { fmt(it) }) }
-        fun error(vararg args: Any?) { stderr.appendLine("ERR: " + args.joinToString(" ") { fmt(it) }) }
+        fun log(vararg args: Any?) = emit(stdout, args = args)
+        fun info(vararg args: Any?) = emit(stdout, args = args)
+
+        fun warn(vararg args: Any?) = emit(stderr, "WARN: ", args)
+
+        fun error(vararg args: Any?) = emit(stderr, "ERR: ", args)
+
+        /**
+         * A script that logs inside a loop can produce gigabytes before the
+         * watchdog fires; the timeout alone does not bound memory. Each stream
+         * stops at [MAX_STREAM_CHARS] and says so.
+         */
+        private fun emit(target: StringBuilder, prefix: String = "", args: Array<out Any?>) {
+            if (target.length >= MAX_STREAM_CHARS) return
+            val line = prefix + args.joinToString(" ") { fmt(it) }
+            val room = MAX_STREAM_CHARS - target.length
+            if (line.length <= room) {
+                target.appendLine(line)
+            } else {
+                target.appendLine(line.take(room))
+                target.appendLine("… output truncated at ${MAX_STREAM_CHARS / 1024} KB")
+            }
+        }
 
         private fun fmt(v: Any?): String = when (v) {
             null -> "null"
             is String -> v
             is Number, is Boolean -> v.toString()
             else -> v.toString()
+        }
+
+        private companion object {
+            const val MAX_STREAM_CHARS = 64 * 1024
         }
     }
 
