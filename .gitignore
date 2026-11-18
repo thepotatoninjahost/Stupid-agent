@@ -42,3 +42,7 @@ stay ignored forever.
 *.mp4
 *.mov
 *.webm
+
+# python
+__pycache__/
+*.pyc
