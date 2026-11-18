@@ -86,6 +86,14 @@ row is measured against the last row of the same architecture, a drop of up to 2
 is allowed and named, and a drop above 20% is printed as `REFUSED: …` instead of
 being accepted quietly (`learn/SpeedRecord.kt`, nine JVM tests).
 
+The same rule runs in CI on `docs/BENCHMARKS.tsv`, through the same
+`SpeedRecord.verdict` code the phone uses (`SpeedRecordFileTest`), and as a
+standalone tool with its own 11 tests (`tools/bench/check_speed.py`): every
+recorded build is compared with the build before it of the same architecture, and
+a drop above 20% fails the build. That file holds only
+the rows measured on a phone; with no rows it prints "no speed has been measured
+on a phone" and claims nothing.
+
 The rule is implemented and tested on the JVM; the real numbers on the S25 arrive
 with the first run on the phone. Until then the record is empty, and an empty
 record is shown as "first record", never as "no regression".

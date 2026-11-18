@@ -9,6 +9,11 @@
   pointer moved, and the run's message on the Brain screen ends with the sentence.
   A measurement that cannot be taken returns no row and the run says so by ending
   without a speed sentence, rather than printing zero.
+- **CI half**: `SpeedRecordFileTest` applies the same `SpeedRecord.verdict` to
+  `docs/BENCHMARKS.tsv` inside `./gradlew test`, so a recorded drop above 20%
+  fails the build. `tools/bench/check_speed.py` (11 own tests) does the same from
+  a terminal; an empty record file says nothing has been measured on a phone and
+  passes.
 - **Tests**: `SpeedRecordTest`, nine cases — first record, faster, small drop,
   exactly 20%, above 20% refused, per-architecture comparison, a malformed line
   skipped, a missing file, and the header written on a fresh file.
