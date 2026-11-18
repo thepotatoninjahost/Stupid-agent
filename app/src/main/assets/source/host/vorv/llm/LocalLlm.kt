@@ -108,7 +108,7 @@ class LocalLlm(
         // downgrade and never an app that will not talk.
         val trained = trainedChampion()
         if (trained != null) {
-            val built = build(trained.file, trained.tokenizer)
+            val built = buildEngine(trained.file, trained.tokenizer)
             if (built.isSuccess) {
                 servingGeneration = trained.generation
                 championFailure = null
@@ -128,7 +128,7 @@ class LocalLlm(
         // Step 4: the Hexagon path can fail on a firmware or memory hiccup.
         // Falling back to CPU is correct; falling back SILENTLY is not, so the
         // label changes and the reason is logged (inside build()).
-        val wrapper = build(paths.model_path, paths.tokenizer_path).getOrElse { failure ->
+        val wrapper = buildEngine(paths.model_path, paths.tokenizer_path).getOrElse { failure ->
             throw IllegalStateException(
                 "The on-device model could not start (${failure.message}).",
                 failure,
@@ -155,10 +155,10 @@ class LocalLlm(
     private data class Trained(val generation: Int, val file: String, val tokenizer: String?)
 
     /** One build attempt with an explicit model file, NPU then CPU. */
-    private fun build(modelPath: String, tokenizerPath: String?): Result<LlmWrapper> {
+    private suspend fun buildEngine(modelPath: String, tokenizerPath: String?): Result<LlmWrapper> {
         fun input(unit: String) = LlmCreateInput(
             model_path = modelPath,
-            tokenizer_path = tokenizerPath,
+            tokenizer_path = tokenizerPath ?: "",
             config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
             runtime_id = "llama_cpp",
             compute_unit = unit,
