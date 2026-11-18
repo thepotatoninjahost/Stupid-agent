@@ -5,9 +5,9 @@
   "packages": [
     {
       "name": "openjdk-17",
-      "url": "https://packages.termux.dev/apt/termux-main/pool/main/o/openjdk-17/openjdk-17_17.0.21-2_aarch64.deb",
-      "sha256": "48a5eddbe94e354282132578da17c1394caa04d83a4592074c1793b436ff9c15",
-      "bytes": 96253172,
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/o/openjdk-17/openjdk-17_17.0.21.1_aarch64.deb",
+      "sha256": "2a5d2dd9da2bca153877b664a100495262562c4a7bb6c850b00c1d6412b4c6b8",
+      "bytes": 96280964,
       "license": "GPL-2.0 WITH Classpath-exception-2.0",
       "prefix": "data/data/com.termux/files/usr/lib/jvm/java-17-openjdk",
       "take": [

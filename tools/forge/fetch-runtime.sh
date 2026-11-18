@@ -31,7 +31,17 @@ while IFS=$'\t' read -r name url sha prefix take; do
   deb="$cache/$name.deb"
   if [ ! -f "$deb" ] || [ "$(sha256sum "$deb" | cut -d' ' -f1)" != "$sha" ]; then
     echo "fetching $name"
-    curl -fsSL --retry 3 -o "$deb.part" "$url"
+    # A pinned URL on a third-party mirror can be rotated at any time (Termux
+    # replaced openjdk-17 17.0.21-2 with 17.0.21.1 and every build 404ed). The
+    # hash, not the host, is the authority: try the canonical mirror, then the
+    # Cloudflare mirror, and fail loudly naming the package.
+    if ! curl -fsSL --retry 3 -o "$deb.part" "$url"; then
+      alt="${url/packages.termux.dev/packages-cf.termux.dev}"
+      if [ "$alt" != "$url" ]; then
+        echo "  $url did not answer; trying $alt" >&2
+        curl -fsSL --retry 3 -o "$deb.part" "$alt"
+      fi
+    fi
     got="$(sha256sum "$deb.part" | cut -d' ' -f1)"
     if [ "$got" != "$sha" ]; then
       echo "REFUSED: $name has sha256 $got, manifest says $sha" >&2

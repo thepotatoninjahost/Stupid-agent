@@ -29,7 +29,15 @@ verify() { # file expected
 fetch() { # url dest sha
   local url="$1" dest="$2" sha="$3"
   if [ ! -f "$dest" ] || [ "$(sha256sum "$dest" | cut -d' ' -f1)" != "$sha" ]; then
-    curl -fsSL --retry 3 -o "$dest.part" "$url"
+    if ! curl -fsSL --retry 3 -o "$dest.part" "$url"; then
+      # The pinned hash, not the host, is the authority; a rotated mirror file
+      # is retried once on the alternate mirror before the build stops.
+      alt="${url/packages.termux.dev/packages-cf.termux.dev}"
+      if [ "$alt" != "$url" ]; then
+        echo "  $url did not answer; trying $alt" >&2
+        curl -fsSL --retry 3 -o "$dest.part" "$alt"
+      fi
+    fi
     verify "$dest.part" "$sha"
     mv "$dest.part" "$dest"
   fi
