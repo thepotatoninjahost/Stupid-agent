@@ -209,9 +209,23 @@ val provisionPayload = tasks.register<Exec>("provisionPayload") {
     workingDir = rootDir
     environment("ANDROID_HOME", payloadSdkDir)
     environment("ANDROID_SDK_ROOT", payloadSdkDir)
+    // The SDK repo and the Termux mirrors answer 429 under load (a CodeQL run
+    // failed on exactly that). Each attempt is cheap and idempotent because the
+    // scripts re-verify hashes, so retry the whole chain before failing.
     commandLine(
         "bash", "-c",
-        "./tools/forge/ensure-sdk.sh && ./tools/forge/fetch-runtime.sh && ./tools/forge/fetch-linux.sh"
+        """
+        set -u
+        for attempt in 1 2 3 4; do
+          if ./tools/forge/ensure-sdk.sh && ./tools/forge/fetch-runtime.sh && ./tools/forge/fetch-linux.sh; then
+            exit 0
+          fi
+          echo "payload fetch attempt ${'$'}attempt failed"
+          sleep ${'$'}((attempt * 15))
+        done
+        echo "REFUSED: the payload could not be fetched after 4 attempts; see the errors above." >&2
+        exit 1
+        """.trimIndent()
     )
     onlyIf { payloadProblems().isNotEmpty() && !project.hasProperty("skipPayloadFetch") }
 }
