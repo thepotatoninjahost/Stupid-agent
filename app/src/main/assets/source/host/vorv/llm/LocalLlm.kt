@@ -39,7 +39,11 @@ class LocalLlm(
     private val displayLabel: String = "Qwen2.5-Coder-7B-Instruct (NPU, offline)",
 ) : Llm {
 
-    override val label = displayLabel
+    @Volatile private var cpuFallback = false
+
+    /** Says which silicon is actually answering. Never claims NPU after a fallback. */
+    override val label: String
+        get() = if (cpuFallback) "$displayLabel (CPU fallback)" else displayLabel
 
     /**
      * Honest prompt budget (audit M-2): nCtx is 4096 and GenerationConfig
@@ -47,10 +51,21 @@ class LocalLlm(
      * kernel must keep the PROMPT (messages) under ~1800 tokens or the
      * engine truncates/fails opaquely. The kernel compacts history to fit.
      */
-    override val contextTokenBudget: Int get() = 1_800
+    override val contextTokenBudget: Int get() = CONTEXT_BUDGET
 
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
+
+    companion object {
+        /** Context the engine allocates. */
+        const val N_CTX = 4096
+        /** Output reserve: file_write payloads need 2048 (audit M-1). */
+        const val MAX_OUTPUT_TOKENS = 2048
+        /** Chat template + BOS/EOS overhead measured on a 2-message prompt. */
+        const val TEMPLATE_MARGIN = 248
+        /** Prompt tokens the kernel may use: the rest of the window. */
+        const val CONTEXT_BUDGET = N_CTX - MAX_OUTPUT_TOKENS - TEMPLATE_MARGIN
+    }
 
     @Volatile private var llmWrapper: LlmWrapper? = null
 
@@ -62,6 +77,7 @@ class LocalLlm(
      */
     private suspend fun ensureLoaded(): LlmWrapper {
         llmWrapper?.let { return it }
+        ModelManager.ensureInit()
 
         val paths = ModelManager.getPaths(modelChoice)
             ?: error("Model ${modelChoice.hfRepo} not pulled yet - call ModelManager.pull() first")
@@ -70,7 +86,7 @@ class LocalLlm(
             model_path = paths.model_path,
             tokenizer_path = paths.tokenizer_path,
             config = ModelConfig(
-                nCtx = 4096,
+                nCtx = N_CTX,
                 nThreads = 4,
                 nGpuLayers = 0,
             ),
@@ -78,12 +94,33 @@ class LocalLlm(
             compute_unit = ComputeUnitValue.NPU.value,
         )
 
-        val built = LlmWrapper
-            .builder()
-            .llmCreateInput(llmCreateInput)
-            .build()
-
-        val wrapper = built.getOrElse { error("GenieX LlmWrapper build failed: ${it.message}") }
+        val npu = LlmWrapper.builder().llmCreateInput(llmCreateInput).build()
+        val wrapper = npu.getOrElse { npuError ->
+            // Step 4: the Hexagon path can fail on a firmware or memory
+            // hiccup. Falling back to CPU is correct; falling back SILENTLY is
+            // not, so the label changes and the reason is logged.
+            Log.w(
+                "Vorv/LocalLlm",
+                "NPU build failed (${npuError.message}); retrying on CPU",
+                npuError,
+            )
+            val cpuInput = LlmCreateInput(
+                model_path = paths.model_path,
+                tokenizer_path = paths.tokenizer_path,
+                config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
+                runtime_id = "llama_cpp",
+                compute_unit = ComputeUnitValue.CPU.value,
+            )
+            val cpu = LlmWrapper.builder().llmCreateInput(cpuInput).build()
+            cpuFallback = true
+            cpu.getOrElse { cpuError ->
+                cpuFallback = false
+                error(
+                    "The on-device model could not start on the NPU (${npuError.message}) " +
+                        "or on the CPU (${cpuError.message}).",
+                )
+            }
+        }
         llmWrapper = wrapper
         return wrapper
     }

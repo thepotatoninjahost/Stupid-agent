@@ -53,7 +53,7 @@ fun VorvApp(
                 when (state.screen) {
                     "chat" -> ChatScreen(state, vm::send)
                     "tasks" -> TasksScreen(state, vm::toggleTaskDetails, vm::viewFullOutput)
-                    "memory" -> MemoryScreen(state, vm::teach)
+                    "memory" -> MemoryScreen(state, vm::teach, vm::saveTrainingFile)
                     "tools" -> ToolsScreen(state)
                     "files" -> FilesScreen(state, vm::setWorkspaceUri)
                     "settings" -> SettingsScreen(
@@ -75,6 +75,10 @@ fun VorvApp(
                         // v0.6.17: gate 1 of the Setup checklist (workspace
                         // folder) is fixed in the Files tab — one tap away.
                         onOpenFilesTab = { vm.setScreen("files") },
+                        onSelectProvider = vm::selectProvider,
+                        onSaveProviderKey = vm::saveProviderKey,
+                        onRefreshModels = vm::refreshProviderModels,
+                        onTestProvider = vm::testProvider,
                     )
                 }
             }

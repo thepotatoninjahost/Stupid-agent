@@ -5,8 +5,13 @@ import com.geniex.sdk.ModelManagerWrapper
 import com.geniex.sdk.bean.HubSource
 import com.geniex.sdk.bean.ModelPullInput
 import com.geniex.sdk.bean.ModelType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Selectable on-device models.
@@ -99,12 +104,43 @@ enum class ModelChoice(
  */
 object ModelManager {
 
+    private val initMutex = Mutex()
+    @Volatile private var initialised = false
+    @Volatile private var lastInitError: String? = null
+
+    /** Non-null when the last [ensureInit] failed, in words the owner can read. */
+    val initError: String? get() = lastInitError
+    val isReady: Boolean get() = initialised
+
     /**
      * Initialize GenieX's model manager. Must be called once at app start,
      * BEFORE any pull/build call. Idempotent.
      */
     suspend fun init() {
         ModelManagerWrapper.init("")
+    }
+
+    /**
+     * Step 4: the one gate every model path goes through. It runs the SDK once,
+     * is safe to call from several coroutines, and — because a phone can be
+     * short of memory for a moment — a failure is recorded and retried by the
+     * next caller instead of bricking the session. Failure is thrown with a
+     * sentence; it never returns quietly.
+     */
+    suspend fun ensureInit() {
+        if (initialised) return
+        initMutex.withLock {
+            if (initialised) return
+            try {
+                ModelManagerWrapper.init("")
+                initialised = true
+                lastInitError = null
+            } catch (t: Throwable) {
+                lastInitError = "The on-device engine did not start: " +
+                    (t.message ?: t.javaClass.simpleName)
+                throw IllegalStateException(lastInitError!!, t)
+            }
+        }
     }
 
     /**
@@ -179,6 +215,26 @@ object ModelManager {
             model_type = ModelType.LLM,
         )
         return ModelManagerWrapper.pullFlow(input).mapNotNull { pullEventPercent(it) }
+            .onCompletion { cause ->
+                if (cause == null) verifyOrThrow(choice)
+            }
+            .flowOn(Dispatchers.IO)
+    }
+
+    /**
+     * Step 4: "completed" is a claim by the downloader, so it is checked on
+     * disk. A pull that says 100% but left no model, or a file far smaller
+     * than the published size, must fail loudly — a half model on disk is the
+     * classic silent success.
+     */
+    private suspend fun verifyOrThrow(choice: ModelChoice) {
+        val paths = ModelManagerWrapper.getPaths(choice.hfRepo)
+        val problem = verifyDownloaded(
+            modelPath = paths?.model_path,
+            actualBytes = paths?.model_path?.let { java.io.File(it).length() } ?: 0L,
+            expectedBytes = choice.approxBytes,
+        )
+        if (problem != null) throw IllegalStateException(problem)
     }
 
     /**
@@ -227,4 +283,24 @@ internal fun pullEventPercent(event: ModelManagerWrapper.PullEvent): Int? = when
     is ModelManagerWrapper.PullEvent.Error ->
         throw RuntimeException("Model pull failed (code=${event.code}): ${event.message}")
     else -> null
+}
+
+/**
+ * Step 4: is what the downloader claims actually on disk?
+ *
+ * Pure, so the rule is tested without a phone. Returns null when the model is
+ * whole, or one sentence naming what is wrong. A tolerance is applied because
+ * the published size is rounded; anything under 98% is treated as truncated.
+ */
+internal fun verifyDownloaded(modelPath: String?, actualBytes: Long, expectedBytes: Long): String? {
+    if (modelPath.isNullOrBlank() || actualBytes <= 0L) {
+        return "The download said it finished, but no model file is on disk. Tap Download again."
+    }
+    if (expectedBytes > 0L && actualBytes < (expectedBytes * 98) / 100) {
+        val have = actualBytes / 1_048_576
+        val want = expectedBytes / 1_048_576
+        return "The model file is incomplete: $have MB of about $want MB. Tap Download again — " +
+            "the phone will resume rather than start over."
+    }
+    return null
 }

@@ -34,13 +34,19 @@ object CorpusExport {
         File(context.filesDir, FOLDER).apply { if (!exists() && !mkdirs()) { /* reported by the caller */ } }
 
     fun write(context: Context, jsonl: String, rows: Int, now: Long = System.currentTimeMillis()): Result {
+        if (jsonl.isBlank() || rows <= 0) {
+            // nothing to teach: refuse before touching the folder, so no
+            // zero-byte file can be mistaken for a real export later
+            return Result(false, null, rows, "The ledger is empty, so there is nothing to export.")
+        }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(now))
         val target = File(folder(context), "ledger-$stamp.jsonl")
         return try {
             target.writeText(jsonl, Charsets.UTF_8)
             val written = target.length()
             if (written <= 0L) {
-                Result(false, target, rows, "The training file came out empty, so it was not kept.")
+                target.delete()
+                Result(false, null, rows, "The training file came out empty, so it was not kept.")
             } else {
                 Result(
                     true,

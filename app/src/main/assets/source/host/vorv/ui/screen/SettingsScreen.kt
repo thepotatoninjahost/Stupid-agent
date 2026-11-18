@@ -1,6 +1,7 @@
 package host.vorv.ui.screen
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +15,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
+import host.vorv.llm.BrainDoctor
 import host.vorv.llm.CloudModel
 import host.vorv.llm.ModelChoice
 import host.vorv.ui.theme.*
@@ -36,6 +38,10 @@ fun SettingsScreen(
     onRefreshLinuxStatus: () -> Unit = {},
     onRevokeShellSessionGrant: () -> Unit = {},
     onOpenFilesTab: () -> Unit = {},
+    onSelectProvider: (String) -> Unit = {},
+    onSaveProviderKey: (String) -> Unit = {},
+    onRefreshModels: () -> Unit = {},
+    onTestProvider: () -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -307,18 +313,40 @@ fun SettingsScreen(
             }
         }
 
-        // ------------------------------------------------ api key
-        Text("Z.ai API Key (cloud only)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        // ------------------------------------------------ provider + key
+        Text("Cloud coder", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Create a free key at z.ai → API Keys. Stored encrypted at rest (Android Keystore-backed). " +
-                "Never uploaded, never committed to git, never logged. Not needed in local mode. " +
-                "Saving runs one real test call against the selected model.",
-            color = OnSurfaceVariant, fontSize = 11.sp
+            "Pick who runs the cloud brain. GLM on Z.ai is one option, not the only one. " +
+                "Each provider keeps its own key, encrypted at rest (Android Keystore). " +
+                "Nothing is ever uploaded, committed, or logged — and saving always runs one real call.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            host.vorv.llm.provider.ProviderRegistry.presets.forEach { p ->
+                FilterChip(
+                    selected = state.providerId == p.id,
+                    onClick = { onSelectProvider(p.id) },
+                    label = { Text(p.label, fontSize = 11.sp) },
+                )
+            }
+        }
+        Text(
+            if (state.keyReadError != null) {
+                "⚠ ${state.keyReadError}"
+            } else {
+                "Stored key for ${host.vorv.llm.provider.ProviderRegistry.byId(state.providerId)?.label ?: "this provider"}: " +
+                    if (state.hasApiKey) "present" else "none yet"
+            },
+            color = if (state.keyReadError != null) Error else OnSurfaceVariant,
+            fontSize = 11.sp,
         )
         OutlinedTextField(
             value = key,
             onValueChange = { key = it; saved = false },
-            placeholder = { Text("Paste Z.ai API key…") },
+            placeholder = { Text("Paste this provider's API key…") },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             singleLine = true,
@@ -329,7 +357,7 @@ fun SettingsScreen(
             ),
         )
         Button(
-            onClick = { if (key.isNotBlank()) { onSaveKey(key); saved = true } },
+            onClick = { if (key.isNotBlank()) { onSaveProviderKey(key); saved = true } },
             enabled = key.isNotBlank() && !state.keyTesting,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(50),
@@ -357,6 +385,44 @@ fun SettingsScreen(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(10.dp),
                 )
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onRefreshModels,
+                enabled = !state.catalogLoading,
+                shape = RoundedCornerShape(50),
+            ) {
+                Text(if (state.catalogLoading) "Asking the provider…" else "Refresh model list", fontSize = 11.sp)
+            }
+            OutlinedButton(
+                onClick = onTestProvider,
+                enabled = !state.keyTesting,
+                shape = RoundedCornerShape(50),
+            ) {
+                Text("Test this coder", fontSize = 11.sp)
+            }
+        }
+        state.catalogError?.let { msg ->
+            Text("✗ $msg", color = Error, fontSize = 11.sp)
+        }
+        if (state.catalogIds.isNotEmpty()) {
+            Text(
+                "${state.catalogIds.size} models this key can use — tap one:",
+                color = OnSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                state.catalogIds.take(40).forEach { id ->
+                    AssistChip(
+                        onClick = { onSetCloudProvider(state.cloudBaseUrl, id) },
+                        label = { Text(id, fontSize = 10.sp) },
+                    )
+                }
             }
         }
 
@@ -415,6 +481,51 @@ fun SettingsScreen(
                     else -> "Save coder & Test"
                 }
             )
+        }
+
+        // ------------------------------------------- brain health
+        // 0.9.18 — one honest surface. Every row states a fact the app can
+        // see (key present, last reply, what is on disk) and what to tap if
+        // it is wrong. "No brain" without a cause is gone.
+        Text("Brain health", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "What actually works right now. This is the same answer the chat gate uses — " +
+                "the header and these rows cannot disagree.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Surface,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    state.currentLlmLabel,
+                    color = OnBackground,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (state.brainChecks.isEmpty()) {
+                    Text("Measuring…", color = OnSurfaceVariant, fontSize = 11.sp)
+                }
+                state.brainChecks.forEach { c ->
+                    Text(
+                        c.line(),
+                        color = when (c.state) {
+                            host.vorv.llm.BrainDoctor.State.OK -> Success
+                            host.vorv.llm.BrainDoctor.State.WARN -> Warning
+                            host.vorv.llm.BrainDoctor.State.FAIL -> Error
+                        },
+                        fontSize = 11.sp,
+                    )
+                }
+                if (state.brainReport.isNotBlank()) {
+                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(state.brainReport)) }) {
+                        Text("Copy brain health", fontSize = 11.sp)
+                    }
+                }
+            }
         }
 
         // --------------------------------- Linux system (Vorv's own computer)

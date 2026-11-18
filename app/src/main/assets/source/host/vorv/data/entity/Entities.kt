@@ -137,3 +137,34 @@ data class ChatMessageEntity(
     val content: String,
     val citationsJson: String = "[]",
 )
+
+/**
+ * Step 6: one interaction, as a row of the learning ledger.
+ *
+ * The rules live in [host.vorv.learn.LearningLedger] and stay pure; this table
+ * only stores what they decide. [dedupeKey] is UNIQUE, so the same fact
+ * repeated a hundred times is one row whose weight grew — not a hundred rows
+ * that teach the model the same sentence until it forgets everything else.
+ */
+@Entity(
+    tableName = "learning_rows",
+    indices = [Index(value = ["dedupeKey"], unique = true), Index("ts"), Index("kind")],
+)
+data class LearningRowEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val ts: Long,
+    val kind: String,
+    val sessionId: String = "",
+    val inputText: String = "",
+    val outputText: String = "",
+    val toolCsv: String = "",
+    val ok: Boolean? = null,
+    val errorClass: String? = null,
+    val engineLabel: String = "",
+    val sourceUrl: String? = null,
+    val quote: String? = null,
+    val weight: Double = 1.0,
+    val dedupeKey: String = "",
+    val split: String = "TRAIN",
+    val tokenCount: Int = 0,
+)

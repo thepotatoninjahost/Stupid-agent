@@ -186,7 +186,9 @@ class MainActivity : ComponentActivity() {
                     BootTracer.step(this@MainActivity, "geniex_init_success")
                     Log.i(TAG, "GenieX SDK initialized")
                     lifecycleScope.launch(Dispatchers.IO) {
-                        runCatching { ModelManager.init() }
+                        // Step 4: one gate, and a failure that is neither thrown
+                        // away nor retried silently forever.
+                        runCatching { ModelManager.ensureInit() }
                             .onFailure {
                                 BootTracer.step(this@MainActivity, "geniex_modelmgr_init_failed", it.message)
                                 Log.e(TAG, "GenieX ModelManager init failed: ${it.message}", it)

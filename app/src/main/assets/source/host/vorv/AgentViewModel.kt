@@ -15,6 +15,10 @@ import host.vorv.kernel.CognitiveKernel
 import host.vorv.kernel.RoomKernelEventSink
 import host.vorv.kernel.TraceStep
 import host.vorv.llm.BrainChoice
+import host.vorv.llm.BrainDoctor
+import host.vorv.llm.BrainFacts
+import host.vorv.llm.LlmHttpException
+import host.vorv.llm.explainLlmFailure
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.CloudModel
 import host.vorv.llm.FallbackLlm
@@ -58,8 +62,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -110,6 +112,12 @@ data class AgentState(
     val messages: List<ChatMessage> = emptyList(),
     val liveTrace: List<TraceStep> = emptyList(),
     val memoryCount: Int = 0,
+    /** Step 7 — what the learning ledger actually holds, read from the table. */
+    val ledgerRows: Int = 0,
+    val ledgerExamples: Int = 0,
+    val ledgerValRows: Int = 0,
+    /** What the last export did, in the owner's words. Never a silent success. */
+    val exportNote: String = "",
     val skillCount: Int = 0,
     /** Number of tools actually registered — the Setup text quotes this, not a
      *  remembered number (F-10: it said 17 while the registry held 24). */
@@ -137,6 +145,19 @@ data class AgentState(
     val selectedModelId: String = "qwen7b",
     val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
+    /** 0.9.18 — which provider the cloud brain uses ("" = the Z.ai preset). */
+    val providerId: String = "z.ai",
+    /** 0.9.18 — model ids the provider itself listed; empty until refreshed. */
+    val catalogIds: List<String> = emptyList(),
+    val catalogLoading: Boolean = false,
+    /** 0.9.18 — why the model list could not be read. Shown, never swallowed. */
+    val catalogError: String? = null,
+    /** 0.9.18 — the encrypted key store itself failed; distinct from "no key". */
+    val keyReadError: String? = null,
+    /** 0.9.18 — the same facts the send gate uses, shown in Setup → Brain health. */
+    val brainChecks: List<BrainDoctor.Check> = emptyList(),
+    /** 0.9.18 — the Copy-button text for Brain health. */
+    val brainReport: String = "",
     val currentLlmLabel: String = "GLM-4.7-Flash (cloud, free)",
     /**
      * Setup-screen error message — when a download or model operation fails,
@@ -194,6 +215,20 @@ class AgentViewModel(
 ) : ViewModel() {
 
     private val reminderRegistry = ReminderRegistry(prefs)
+
+    /**
+     * 0.9.18 — provider health and the list of models a provider actually
+     * serves. Both are off-device-testable classes; the ViewModel only wires
+     * them to Setup.
+     */
+    private val router = host.vorv.llm.provider.ProviderRouter()
+    private val catalog = host.vorv.llm.provider.ModelCatalog(
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .dns(host.vorv.tools.NetworkGuard.PublicDns)
+            .build(),
+    )
 
     /** Vorv's own computer: one instance, shared by the shell and linux_run. */
     private val linuxSystem = host.vorv.linux.LinuxSystem(appContext)
@@ -258,8 +293,8 @@ class AgentViewModel(
     private val _state = MutableStateFlow(AgentState())
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
-    /** Serializes consent dialogs so only one is visible at a time. */
-    private val confirmMutex = Mutex()
+    /** The one consent dialog: asked by a tool, answered by the screen, timed out as "no". */
+    private val consent = host.vorv.agent.ConsentGate(_state)
 
     /**
      * v0.6.16 (field finding #5 — the missing stop button): the running
@@ -280,6 +315,12 @@ class AgentViewModel(
      * message. Failure to persist NEVER breaks the chat — the message still
      * appears; the honest trade-off is logged, not thrown.
      */
+    /** Last turn of each side, used only to recognise a correction. */
+    @Volatile private var lastUserText: String? = null
+    @Volatile private var lastAssistantText: String? = null
+
+    private val learningStore by lazy { host.vorv.learn.LearningStore(db.learningDao()) }
+
     private fun persistChat(msg: ChatMessage) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
@@ -293,7 +334,97 @@ class AgentViewModel(
             }.onFailure {
                 android.util.Log.w("Vorv/Chat", "chat persist failed: ${it.message}")
             }
+            // Step 6: every turn becomes a ledger row in the same minute. A
+            // failure here is logged, never swallowed silently.
+            try {
+                recordLearning(msg)
+                refreshLedgerCounts()
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "ledger write failed: ${t.message}", t)
+            }
         }
+    }
+
+    /** Reads the counts back from the table, so the screen never guesses. */
+    private suspend fun refreshLedgerCounts() {
+        val stats = learningStore.stats()
+        _state.update {
+            it.copy(
+                ledgerRows = stats.rows,
+                ledgerExamples = stats.examples,
+                ledgerValRows = stats.valRows,
+            )
+        }
+    }
+
+    /**
+     * Step 7 — write the corpus to a file the owner can send to the trainer,
+     * then show what happened. An empty ledger produces no file and a sentence
+     * that says why, never a green button over nothing.
+     */
+    fun saveTrainingFile() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val rows = try {
+                learningStore.rows()
+            } catch (t: Throwable) {
+                _state.update { it.copy(exportNote = "Could not read the learning table: ${t.message}") }
+                return@launch
+            }
+            val jsonl = host.vorv.learn.LearningLedger.exportJsonl(rows)
+            if (jsonl.isBlank()) {
+                _state.update {
+                    it.copy(exportNote = "Nothing to export yet: no answerable rows in the ledger. Talk to Vorv first.")
+                }
+                return@launch
+            }
+            val result = host.vorv.learn.CorpusExport.write(appContext, jsonl, rows.size)
+            _state.update { it.copy(exportNote = result.message) }
+            val file = result.file
+            if (result.ok && file != null) {
+                val intent = host.vorv.learn.CorpusExport.shareIntent(appContext, file)
+                if (intent != null) {
+                    try {
+                        appContext.startActivity(intent)
+                    } catch (t: Throwable) {
+                        android.util.Log.w("Vorv/Learn", "share sheet failed: ${t.message}", t)
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun recordLearning(msg: ChatMessage) {
+        val kind: host.vorv.learn.LearningLedger.Kind
+        val input: String
+        val output: String
+        if (msg.role == "user") {
+            val previous = lastAssistantText
+            if (host.vorv.learn.LearningLedger.isCorrection(msg.content, previous)) {
+                kind = host.vorv.learn.LearningLedger.Kind.CORRECTION
+                input = previous.orEmpty()
+                output = msg.content
+            } else {
+                kind = host.vorv.learn.LearningLedger.Kind.CHAT_USER
+                input = msg.content
+                output = ""
+            }
+            lastUserText = msg.content
+        } else {
+            kind = host.vorv.learn.LearningLedger.Kind.CHAT_ASSISTANT
+            input = lastUserText.orEmpty()
+            output = msg.content
+            lastAssistantText = msg.content
+        }
+        learningStore.record(
+            host.vorv.learn.LearningLedger.Row(
+                ts = msg.ts,
+                kind = kind,
+                sessionId = "chat",
+                inputText = input,
+                outputText = output,
+                engineLabel = "",
+            )
+        )
     }
 
     // M3 (code review, 2026-11): the exact bridge lambdas THIS ViewModel
@@ -307,6 +438,15 @@ class AgentViewModel(
         }
 
     init {
+        // Step 7: the Brain numbers are read from the table at boot, not
+        // carried over from a previous process's opinion.
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                refreshLedgerCounts()
+            } catch (t: Throwable) {
+                android.util.Log.w("Vorv/Learn", "ledger read failed at boot: ${t.message}", t)
+            }
+        }
         // v0.6.14: install the runtime-permission bridge BEFORE any tool can
         // run. Tools call PermissionBridge.request() when they hit the
         // RUN_COMMAND wall; the handler shows Android's one-tap dialog and
@@ -316,6 +456,28 @@ class AgentViewModel(
         @Suppress("LeakingThis")
         PermissionBridge.handler = installedPermissionHandler
         refreshLinuxStatus()
+
+        // 0.9.18 — Brain health survives a restart, and every fact a brain
+        // publishes re-renders the header through the ONE resolution.
+        viewModelScope.launch(Dispatchers.IO) {
+            val saved = runCatching { prefs.readBrainFactsJson() }.getOrDefault("")
+            if (saved.isNotBlank()) {
+                host.vorv.llm.BrainState.attachStore(
+                    save = { json -> viewModelScope.launch(Dispatchers.IO) { prefs.setBrainFactsJson(json) } },
+                    load = { saved },
+                )
+            } else {
+                host.vorv.llm.BrainState.attachStore(
+                    save = { json -> viewModelScope.launch(Dispatchers.IO) { prefs.setBrainFactsJson(json) } },
+                    load = { null },
+                )
+            }
+        }
+        viewModelScope.launch {
+            host.vorv.llm.BrainState.facts.collect {
+                _state.update { s -> refresh(s) }
+            }
+        }
 
         // v0.6.15: the session-grant audit channel — every command executed
         // under "Allow all shell commands this session" lands in the episode
@@ -352,8 +514,27 @@ class AgentViewModel(
             }
         }
         viewModelScope.launch {
-            secrets.zaiApiKey.collect { key ->
-                _state.update { it.copy(hasApiKey = key.isNotBlank()) }
+            // 0.9.18 — "has a key" means the SELECTED provider has one. The
+            // old collector watched the single Z.ai slot, so choosing another
+            // provider reported "no key" while its key sat in the same file.
+            secrets.keys.collect {
+                val id = _state.value.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                _state.update { st ->
+                    refresh(st.copy(hasApiKey = secrets.keyFor(id).isNotBlank()))
+                }
+            }
+        }
+        viewModelScope.launch {
+            secrets.readError.collect { err ->
+                _state.update { st -> refresh(st.copy(keyReadError = err)) }
+            }
+        }
+        viewModelScope.launch {
+            prefs.cloudProviderId.collect { id ->
+                val real = id.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                _state.update { st ->
+                    refresh(st.copy(providerId = real, hasApiKey = secrets.keyFor(real).isNotBlank()))
+                }
             }
         }
         viewModelScope.launch {
@@ -368,7 +549,7 @@ class AgentViewModel(
                 val ready = ModelManager.isDownloaded(choice)
                 _state.update { prev ->
                     val next = prev.copy(llmMode = mode, localModelReady = ready)
-                    next.copy(currentLlmLabel = engineLabel(next, choice))
+                    refresh(next, choice)
                 }
             }
         }
@@ -377,7 +558,7 @@ class AgentViewModel(
             prefs.cloudModelId.collect { id ->
                 _state.update { prev ->
                     val next = prev.copy(cloudModelId = id)
-                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                    refresh(next)
                 }
             }
         }
@@ -385,7 +566,7 @@ class AgentViewModel(
             prefs.cloudBaseUrl.collect { url ->
                 _state.update { prev ->
                     val next = prev.copy(cloudBaseUrl = url)
-                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                    refresh(next)
                 }
             }
         }
@@ -393,7 +574,7 @@ class AgentViewModel(
             prefs.cloudCustomModel.collect { name ->
                 _state.update { prev ->
                     val next = prev.copy(cloudCustomModel = name)
-                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                    refresh(next)
                 }
             }
         }
@@ -401,7 +582,7 @@ class AgentViewModel(
             prefs.autoFallback.collect { enabled ->
                 _state.update { prev ->
                     val next = prev.copy(autoFallback = enabled)
-                    next.copy(currentLlmLabel = engineLabel(next, ModelChoice.fromId(next.selectedModelId)))
+                    refresh(next)
                 }
             }
         }
@@ -448,7 +629,7 @@ class AgentViewModel(
                 val ready = ModelManager.isDownloaded(choice)
                 _state.update { prev ->
                     val next = prev.copy(selectedModelId = id, localModelReady = ready)
-                    next.copy(currentLlmLabel = engineLabel(next, choice))
+                    refresh(next, choice)
                 }
             }
         }
@@ -537,10 +718,19 @@ class AgentViewModel(
     fun setCloudModel(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
             prefs.setCloudModelId(id)
-            val key = secrets.zaiApiKey.first()
-            if (key.isBlank()) return@launch
+            val pid = prefs.cloudProviderId.first()
+                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val key = secrets.keyFor(pid)
+            if (key.isBlank()) {
+                // Saved, but nothing was proven — say exactly that.
+                _state.update {
+                    it.copy(keyTestResult = "✓ Model saved. No key for ${providerLabel(pid)}, so nothing was tested.")
+                }
+                return@launch
+            }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val probe = CloudLlm.probe(key, id)
+            val base = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL }
+            val probe = CloudLlm.probeAt(key, base, id)
             val cm = CloudModel.fromId(id)
             _state.update {
                 it.copy(
@@ -548,7 +738,7 @@ class AgentViewModel(
                     keyTestResult = if (probe.isSuccess) {
                         "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — works with your key."
                     } else {
-                        "✗ ${probe.exceptionOrNull()?.message ?: "unknown error"}"
+                        "✗ ${probe.exceptionOrNull()?.let { explainLlmFailure(it) } ?: "unknown error"}"
                     },
                 )
             }
@@ -564,8 +754,21 @@ class AgentViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             prefs.setCloudBaseUrl(baseUrl)
             prefs.setCloudCustomModel(model)
-            val key = secrets.zaiApiKey.first()
-            if (key.isBlank() || model.isBlank()) return@launch
+            val pid = prefs.cloudProviderId.first()
+                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val key = secrets.keyFor(pid)
+            if (model.isBlank()) {
+                _state.update {
+                    it.copy(keyTestResult = "✓ Address saved. No model name yet — type one or tap Refresh list.")
+                }
+                return@launch
+            }
+            if (key.isBlank()) {
+                _state.update {
+                    it.copy(keyTestResult = "✓ Address and model saved. No key for ${providerLabel(pid)}, so nothing was tested.")
+                }
+                return@launch
+            }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
             val probe = CloudLlm.probeAt(key, baseUrl.ifBlank { "https://api.z.ai/api/paas/v4" }, model)
             _state.update {
@@ -573,12 +776,140 @@ class AgentViewModel(
                     keyTesting = false,
                     keyTestResult = probe.fold(
                         onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
-                        onFailure = { e -> "✗ $model: ${e.message ?: "unknown error"}" },
+                        onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
         }
     }
+
+    /**
+     * 0.9.18 — pick which provider the cloud brain talks to. A preset fills
+     * its address AND its first suggested coder id: the previous provider's
+     * model id does not exist here, so keeping it would only produce a 404.
+     */
+    fun selectProvider(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.setCloudProviderId(id)
+            // A 401 from the last provider says nothing about this one.
+            host.vorv.llm.BrainState.forgetFailures()
+            val p = host.vorv.llm.provider.ProviderRegistry.byId(id)
+            // The previous provider's model id does not exist here, so it is
+            // replaced (never kept) — a Z.ai id sent to OpenRouter is a 404.
+            val nextModel = if (p != null && p.baseUrl.isNotBlank()) p.suggestions.firstOrNull().orEmpty() else ""
+            if (p != null && p.baseUrl.isNotBlank()) {
+                prefs.setCloudBaseUrl(p.baseUrl)
+                prefs.setCloudCustomModel(nextModel)
+            }
+            _state.update { s ->
+                refresh(
+                    s.copy(
+                        providerId = id,
+                        cloudBaseUrl = p?.baseUrl?.ifBlank { s.cloudBaseUrl } ?: s.cloudBaseUrl,
+                        cloudCustomModel = if (p != null && p.baseUrl.isNotBlank()) nextModel else s.cloudCustomModel,
+                    ),
+                )
+            }
+            // A provider with a saved key gets a real test — the header never
+            // claims a coder works because a name is on file.
+            if (secrets.keyFor(id).isNotBlank()) testProvider()
+        }
+    }
+
+    /** Saves (encrypted) the key FOR THE SELECTED PROVIDER, then proves it. */
+    fun saveProviderKey(key: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val id = _state.value.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            secrets.setProviderKey(id, key)
+            _state.update { s ->
+                refresh(s.copy(hasApiKey = key.isNotBlank(), keyTestResult = null))
+            }
+            _state.update { it.copy(keyTesting = true) }
+            val base = _state.value.cloudBaseUrl.ifBlank { ZAI_BASE_URL }
+            val model = _state.value.cloudCustomModel.ifBlank { CloudModel.fromId(_state.value.cloudModelId).id }
+            val probe = CloudLlm.probeAt(key, base, model)
+            val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
+                ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, base)
+            router.record(
+                id,
+                code = probe.exceptionOrNull()?.let { (it as? LlmHttpException)?.code },
+                errorText = probe.exceptionOrNull()?.message ?: "",
+            )
+            _state.update {
+                it.copy(
+                    keyTesting = false,
+                    keyTestResult = probe.fold(
+                        onSuccess = { text ->
+                            "✓ ${provider.label} answered “${text.take(40)}” with $model — this coder works."
+                        },
+                        onFailure = { e -> "✗ ${provider.label} · $model: ${explainLlmFailure(e)}" },
+                    ),
+                )
+            }
+            _state.update { s -> refresh(s) }
+        }
+    }
+
+    /** Asks the provider what it serves and shows it; a failure is shown, not swallowed. */
+    fun refreshProviderModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val s = _state.value
+            val id = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
+                ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, s.cloudBaseUrl)
+            _state.update { it.copy(catalogLoading = true, catalogError = null) }
+            val listing = catalog.fetch(provider, secrets.keyFor(id))
+            _state.update {
+                it.copy(
+                    catalogLoading = false,
+                    catalogIds = listing.entries.map { e -> e.id },
+                    catalogError = listing.error?.let { err ->
+                        "Could not read the model list: $err. You can still type a model name."
+                    },
+                )
+            }
+        }
+    }
+
+    /** Runs the probe for whatever is selected now (Setup → Test this coder). */
+    fun testProvider() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val s = _state.value
+            val id = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val key = secrets.keyFor(id)
+            if (key.isBlank()) {
+                _state.update {
+                    it.copy(keyTestResult = "✗ No key saved for ${providerLabel(id)} — paste one and tap Save & Test.")
+                }
+                return@launch
+            }
+            _state.update { it.copy(keyTesting = true, keyTestResult = null) }
+            val base = s.cloudBaseUrl.ifBlank { ZAI_BASE_URL }
+            val model = s.cloudCustomModel.ifBlank { CloudModel.fromId(s.cloudModelId).id }
+            val probe = CloudLlm.probeAt(key, base, model)
+            router.record(id, (probe.exceptionOrNull() as? LlmHttpException)?.code)
+            _state.update {
+                it.copy(
+                    keyTesting = false,
+                    keyTestResult = probe.fold(
+                        onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
+                        onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
+                    ),
+                )
+            }
+            _state.update { st -> refresh(st) }
+        }
+    }
+
+    private fun providerLabel(id: String): String =
+        host.vorv.llm.provider.ProviderRegistry.byId(id)?.label ?: id
+
+    /**
+     * Turns an exception into the sentence an owner can act on. The old UI
+     * printed the exception text, so "HTTP 401" and "retired model" looked
+     * alike.
+     */
+
 
     /** v0.7.0 — arm/disarm the cloud→offline fallback (cloud mode only). */
     fun setAutoFallback(enabled: Boolean) {
@@ -606,7 +937,7 @@ class AgentViewModel(
             val ready = ModelManager.isDownloaded(choice)
             _state.update { prev ->
                 val next = prev.copy(selectedModelId = id, localModelReady = ready)
-                next.copy(currentLlmLabel = engineLabel(next, choice))
+                refresh(next, choice)
             }
         }
     }
@@ -639,7 +970,7 @@ class AgentViewModel(
                         downloadedModelIds = newDownloaded,
                         setupError = null,
                     )
-                    next.copy(currentLlmLabel = engineLabel(next, choice))
+                    refresh(next, choice)
                 }
                 db.episodeDao().insert(Episode(kind = "lesson", summary = "Local model downloaded: ${choice.id} — NPU offline mode available"))
             } catch (e: Exception) {
@@ -677,7 +1008,7 @@ class AgentViewModel(
                         llmMode = "cloud",
                         downloadedModelIds = newDownloaded,
                     )
-                    next.copy(currentLlmLabel = engineLabel(next, choice))
+                    refresh(next, choice)
                 }
                 prefs.setLlmMode("cloud")
             } else {
@@ -692,36 +1023,9 @@ class AgentViewModel(
      * Suspends until the user answers the confirmation dialog (or 60s elapses
      * = deny). One dialog at a time; a second request waits for the first.
      */
-    private suspend fun requestConfirmation(message: String): Boolean = confirmMutex.withLock {
-        val deferred = CompletableDeferred<Boolean>()
-        val pending = PendingConfirmation(
-            id = java.util.UUID.randomUUID().toString(),
-            message = message,
-            response = deferred,
-            // v0.6.15: only the shell consent offers the session grant, and
-            // only when no grant is active yet (an active grant means
-            // ShellTool never reaches this dialog). CONSENT_PREFIX is the
-            // single source of truth shared with the tool — pinned by test.
-            offerSessionGrant = !SessionGrants.shellAllCommands &&
-                message.startsWith(ShellTool.CONSENT_PREFIX),
-        )
-        _state.update { it.copy(pendingConfirmation = pending) }
-        val allowed = try {
-            withTimeout(60_000) { deferred.await() }
-        } catch (e: TimeoutCancellationException) {
-            false
-        } finally {
-            _state.update { if (it.pendingConfirmation?.id == pending.id) it.copy(pendingConfirmation = null) else it }
-        }
-        allowed
-    }
+    private suspend fun requestConfirmation(message: String): Boolean = consent.request(message)
 
-    fun respondConfirmation(id: String, allowed: Boolean) {
-        _state.update { s ->
-            s.pendingConfirmation?.let { if (it.id == id) it.response.complete(allowed) }
-            if (s.pendingConfirmation?.id == id) s.copy(pendingConfirmation = null) else s
-        }
-    }
+    fun respondConfirmation(id: String, allowed: Boolean) = consent.respond(id, allowed)
 
     /**
      * v0.6.15: the consent dialog's third answer — "Allow all this session".
@@ -952,12 +1256,21 @@ class AgentViewModel(
         }
 
         val s = _state.value
-        val engineAvailable = BrainChoice.usable(s.llmMode, s.hasApiKey, s.localModelReady)
+        // 0.9.18 — the gate reads the SAME resolution as the header, so the two
+        // can no longer disagree (screenshot 3: header named a custom model,
+        // every message answered "I have no brain to think with yet").
+        val resolved = BrainChoice.resolve(brainFacts(s))
+        val engineAvailable = resolved.usable
         if (!engineAvailable) {
+            val why = resolved.reason ?: "no brain is configured yet"
             val hint = if (s.llmMode == "local") {
-                "The on-phone coder is not downloaded yet, so I cannot answer.\n\nOpen Setup → Download model (~1.8 GB for the small coder, 4.4 GB for the big one, one time). Then I work with no internet and no key."
+                "I cannot answer: $why\n\nOpen Setup → download the on-phone coder " +
+                    "(4.4 GB for the 7B, one time), or add a cloud key there. Then I work."
             } else {
-                "I have no brain to think with yet. Two ways to give me one:\n\n1. On the phone: Setup → Download model (~1.8 GB, one time). Works offline, no key, no account.\n2. In the cloud: Setup → paste a Z.ai API key → Save."
+                "I cannot answer: $why\n\nTwo ways to give me a brain:\n\n" +
+                    "1. Setup → your provider key → Save & Test (a real reply is required before it counts).\n" +
+                    "2. Setup → download the on-phone coder (~4.4 GB, one time) — offline, no key.\n\n" +
+                    "Setup → Brain health lists every piece and what is wrong with it."
             }
             val echo = ChatMessage(role = "user", content = trimmed)
             val hintMsg = ChatMessage(role = "assistant", content = hint)
@@ -999,12 +1312,33 @@ class AgentViewModel(
 
             try {
                 val chosenMode = prefs.llmMode.first()
-                val key = secrets.zaiApiKey.first()
+                // 0.9.18 — the key belongs to the SELECTED provider.
+                val providerId = prefs.cloudProviderId.first()
+                    .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                val key = secrets.keyFor(providerId)
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
                 // No cloud key but an on-phone coder in storage: the coder answers,
                 // and the header says so. Never a silent engine switch — the label
                 // and the episode log both name the brain that actually ran.
-                val mode = BrainChoice.mode(chosenMode, key.isNotBlank(), ModelManager.isDownloaded(choice))
+                //
+                // 0.9.19 — the gate and the header now read the SAME answer. When
+                // nothing can reply, the task stops with the reason in the chat
+                // instead of spending a minute discovering it.
+                val facts = brainFacts(_state.value).copy(
+                    llmMode = chosenMode,
+                    providerId = providerId,
+                    keyPresent = key.isNotBlank(),
+                    keyReadError = null,
+                    baseUrl = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL },
+                    modelId = prefs.cloudCustomModel.first().ifBlank { prefs.cloudModelId.first() },
+                    localModelId = choice.id,
+                    localDownloaded = ModelManager.isDownloaded(choice),
+                )
+                val resolved = BrainChoice.resolve(facts)
+                if (!resolved.usable) {
+                    throw IllegalStateException(resolved.reason ?: resolved.notice ?: "no brain can answer yet")
+                }
+                val mode = resolved.mode
                 if (mode != chosenMode) {
                     runCatching {
                         db.episodeDao().insert(
@@ -1326,7 +1660,9 @@ class AgentViewModel(
             host.vorv.service.AgentService.start(appContext, "Working: boot self-diagnosis")
             try {
                 val chosenMode = prefs.llmMode.first()
-                val key = secrets.zaiApiKey.first()
+                val bootPid = prefs.cloudProviderId.first()
+                    .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                val key = secrets.keyFor(bootPid)
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
                 // No cloud key but an on-phone coder in storage: the coder answers,
                 // and the header says so. Never a silent engine switch — the label
@@ -1573,35 +1909,41 @@ class AgentViewModel(
         super.onCleared()
     }
 
-    private fun engineLabel(s: AgentState, choice: ModelChoice): String {
-        val name = choice.displayName.substringBefore("(").trim()
-        val actual = BrainChoice.mode(s.llmMode, s.hasApiKey, s.localModelReady)
-        if (actual == "local") {
-            return if (s.localModelReady) {
-                val notice = BrainChoice.notice(s.llmMode, s.hasApiKey, s.localModelReady)
-                if (notice == null) "$name (NPU, offline)" else "$name (NPU, offline — $notice)"
-            } else {
-                "On-phone coder not downloaded — Setup → $name"
-            }
-        }
-        return when (s.llmMode) {
-            "local" -> if (s.localModelReady) {
-                "$name (NPU, offline)"
-            } else {
-                "Local — $name not pulled"
-            }
-            else -> {
-                if (!s.hasApiKey) return "No brain yet — download the on-phone coder in Setup"
-                val cm = CloudModel.fromId(s.cloudModelId)
-                val fb = if (s.autoFallback && s.localModelReady) " · offline fallback armed" else ""
-                if (s.cloudCustomModel.isNotBlank()) {
-                    val host = runCatching { java.net.URI(s.cloudBaseUrl).host }.getOrNull()
-                    "${s.cloudCustomModel} (cloud${if (host != null) " — $host" else ""})$fb"
-                } else {
-                    "${cm.displayName} (cloud${if (cm.free) ", free" else ""})$fb"
-                }
-            }
-        }
+    /**
+     * 0.9.18 — the ONLY place "which brain" is decided. The header chip, the
+     * send gate and Setup → Brain health all read this one answer, so a model
+     * in prefs can never be labelled while the gate refuses it (screenshot 3).
+     */
+    private fun brainFacts(s: AgentState): BrainFacts {
+        val choice = ModelChoice.fromId(s.selectedModelId)
+        val base = host.vorv.llm.BrainState.facts.value
+        val providerId = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+        val provider = host.vorv.llm.provider.ProviderRegistry.byId(providerId)
+        return base.copy(
+            llmMode = s.llmMode,
+            providerId = providerId,
+            providerLabel = provider?.label ?: "your provider",
+            keyReadError = s.keyReadError,
+            baseUrl = s.cloudBaseUrl.ifBlank { ZAI_BASE_URL },
+            modelId = s.cloudCustomModel.ifBlank { CloudModel.fromId(s.cloudModelId).id },
+            keyPresent = s.hasApiKey,
+            localModelId = choice.id,
+            localModelName = choice.displayName.substringBefore("(").trim(),
+            localDownloaded = s.localModelReady,
+            localExpectedBytes = choice.approxBytes,
+            localBytes = if (s.localModelReady) choice.approxBytes else 0L,
+        )
+    }
+
+    /** Applies the one resolution to the state: label, sentence, health rows. */
+    private fun refresh(s: AgentState, choice: ModelChoice = ModelChoice.fromId(s.selectedModelId)): AgentState {
+        val facts = brainFacts(s.copy(selectedModelId = choice.id))
+        val r = BrainChoice.resolve(facts)
+        return s.copy(
+            currentLlmLabel = r.label,
+            brainChecks = BrainDoctor.diagnose(facts),
+            brainReport = BrainDoctor.report(facts),
+        )
     }
 
     /**
@@ -1678,6 +2020,8 @@ class AgentViewModel(
         private const val CLOUD_TASK_TIMEOUT_MS = 5 * 60_000L
         private const val LOCAL_TASK_TIMEOUT_MS = 15 * 60_000L
         private const val RETENTION_DAYS = 30
+        /** The Z.ai preset's address — one default among the providers, not "the" cloud. */
+        private const val ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
 
         /**
          * Setup → TEST runs exactly this inside the guest: it answers whether

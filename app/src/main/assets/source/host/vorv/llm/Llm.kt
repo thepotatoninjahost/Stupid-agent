@@ -2,6 +2,7 @@ package host.vorv.llm
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import host.vorv.llm.provider.ProviderRegistry
 import host.vorv.tools.NetworkGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -158,6 +159,7 @@ class CloudLlm(
     client: OkHttpClient? = null,
     private val maxAttempts: Int = MAX_ATTEMPTS,
     private val backoffMs: Long = 1_500L,
+    private val provider: host.vorv.llm.provider.Provider? = null,
 ) : Llm {
     private val model: String get() = modelName
     override val label = "$model (cloud)"
@@ -168,7 +170,7 @@ class CloudLlm(
         withContext(Dispatchers.IO) {
             require(apiKey.isNotBlank()) { "$model requires an API key — add one in Setup tab." }
 
-            val body = JsonObject().apply {
+            fun buildBody(withTools: Boolean): String = JsonObject().apply {
                 addProperty("model", model)
                 addProperty("temperature", 0.4)
                 addProperty("max_tokens", 2048)
@@ -195,7 +197,7 @@ class CloudLlm(
                         })
                     }
                 })
-                if (tools.isNotEmpty()) {
+                if (withTools && tools.isNotEmpty()) {
                     add("tools", com.google.gson.JsonArray().apply {
                         tools.forEach { spec ->
                             add(JsonObject().apply {
@@ -211,20 +213,42 @@ class CloudLlm(
                 }
             }.toString()
 
+            val bodyWithTools = buildBody(true)
+            val bodyNoTools = buildBody(false)
+            // 0.9.18 — a provider (or a gateway in front of one) that rejects
+            // tool schemas with 400 must still be usable: retry once as a plain
+            // chat, and remember it for the rest of the task.
+            var includeTools = tools.isNotEmpty()
+
             var lastErr: String? = null
             var lastCode = 0
+            val url = ProviderRegistry.chatCompletionsUrl(baseUrl)
             for (attempt in 0 until maxAttempts) {
                 try {
-                    val req = Request.Builder()
-                        .url("$baseUrl/chat/completions")
-                        .addHeader("Authorization", "Bearer $apiKey")
+                    val payload = if (includeTools) bodyWithTools else bodyNoTools
+                    val req = host.vorv.llm.provider.BrainHttp
+                        .applyAuth(Request.Builder().url(url), provider, apiKey)
                         .addHeader("Accept-Language", "en-US,en")
                         .addHeader("Content-Type", "application/json")
-                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .post(payload.toRequestBody("application/json".toMediaType()))
                         .build()
 
                     client.newCall(req).execute().use { res ->
                         val responseBody = res.body?.string().orEmpty()
+                        // Redacted truth for Brain health: the address, the
+                        // model, THAT a key was sent (never which), the code
+                        // and the body head. A 401 then names its own cause
+                        // instead of being guessed at in a screenshot.
+                        BrainState.recordExchange(
+                            BrainFacts.Exchange(
+                                url = url,
+                                model = model,
+                                authorizationSent = apiKey.isNotBlank(),
+                                code = res.code,
+                                body = responseBody.take(600),
+                                toolsSent = includeTools,
+                            ),
+                        )
                         if (res.code == 429 || res.code >= 500) {
                             lastCode = res.code
                             lastErr = "HTTP ${res.code}: ${responseBody.take(200)}"
@@ -235,6 +259,18 @@ class CloudLlm(
                             return@use
                         }
                         if (!res.isSuccessful) {
+                            val b = responseBody.lowercase()
+                            if (res.code == 400 && includeTools &&
+                                (b.contains("tool") || b.contains("function"))
+                            ) {
+                                // The tools schema itself was refused. That is not
+                                // a broken key and not a busy provider — it is an
+                                // incompatibility one retry can settle.
+                                includeTools = false
+                                lastCode = res.code
+                                lastErr = "provider refused tool calling (HTTP 400); asking without tools"
+                                return@use
+                            }
                             // L-5 (code review, 2026-11): every other 4xx
                             // (400 bad request, 401/403 bad key, 404 wrong
                             // model, …) is DETERMINISTIC — the same request
@@ -327,7 +363,12 @@ class CloudLlm(
             probeAt(apiKey, "https://api.z.ai/api/paas/v4", model)
 
         /** Same one-call proof, against any address that speaks this format. */
-        suspend fun probeAt(apiKey: String, baseUrl: String, model: String): Result<String> =
+        suspend fun probeAt(
+            apiKey: String,
+            baseUrl: String,
+            model: String,
+            provider: host.vorv.llm.provider.Provider? = null,
+        ): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
                 try {
@@ -342,30 +383,53 @@ class CloudLlm(
                             })
                         })
                     }.toString()
-                    val req = Request.Builder()
-                        .url("${baseUrl.trimEnd('/')}/chat/completions")
-                        .addHeader("Authorization", "Bearer $apiKey")
+                    val url = host.vorv.llm.provider.ProviderRegistry.chatCompletionsUrl(baseUrl)
+                    val req = host.vorv.llm.provider.BrainHttp
+                        .applyAuth(Request.Builder().url(url), provider, apiKey)
                         .addHeader("Content-Type", "application/json")
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(req).execute().use { res ->
                         val text = res.body?.string().orEmpty()
+                        val exchange = BrainFacts.Exchange(
+                            url = url,
+                            model = model,
+                            authorizationSent = true,
+                            code = res.code,
+                            body = text.take(600),
+                        )
+                        BrainState.recordProbe(exchange)
                         if (!res.isSuccessful) {
                             return@withContext Result.failure(
-                                RuntimeException("HTTP ${res.code}: ${text.take(200)}")
+                                RuntimeException("HTTP ${res.code}: ${text.take(200)}"),
                             )
                         }
                         val json = JsonParser.parseString(text).asJsonObject
                         val choices = json.getAsJsonArray("choices")
                         if (choices == null || choices.size() == 0) {
                             return@withContext Result.failure(
-                                RuntimeException("No choices in response: ${text.take(200)}")
+                                RuntimeException("No choices in response: ${text.take(200)}"),
                             )
                         }
-                        val content = choices[0].asJsonObject
-                            .getAsJsonObject("message").get("content")
-                            ?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        Result.success(content.ifBlank { "(empty reply, HTTP 200)" })
+                        val message = choices[0].asJsonObject.getAsJsonObject("message")
+                        val content = message.get("content")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                            .ifBlank {
+                                message.get("reasoning_content")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                            }
+                        if (content.isBlank()) {
+                            // 0.9.18: an HTTP 200 with an empty answer is NOT
+                            // proof the key works — it is the signature of a
+                            // retired or renamed model id (screenshot 2: the
+                            // probe said "key works" for exactly this reply).
+                            return@withContext Result.failure(
+                                RuntimeException(
+                                    "HTTP 200, but model \"$model\" returned no text. " +
+                                        "The key is not the problem — the model id is probably retired. " +
+                                        "Pick one the provider still lists.",
+                                ),
+                            )
+                        }
+                        Result.success(content)
                     }
                 } catch (e: Exception) {
                     Result.failure(e)

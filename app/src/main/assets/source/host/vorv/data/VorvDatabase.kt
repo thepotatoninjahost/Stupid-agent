@@ -20,8 +20,9 @@ import host.vorv.data.entity.*
         KnowledgeNodeEntity::class,
         KnowledgeEdgeEntity::class,
         OperatorProfileEntity::class,
+        LearningRowEntity::class,
     ],
-    version = 4,
+    version = 5,
     // Schema JSON export is deliberately OFF: it's tooling sugar, and the
     // KSP arg-based export path is flaky across variants in clean CI
     // environments (Room 2.6.1 "Empty schema file" in kspReleaseKotlin).
@@ -39,6 +40,7 @@ abstract class VorvDatabase : RoomDatabase() {
     abstract fun artifactDao(): ArtifactDao
     abstract fun chatMessageDao(): ChatMessageDao
     abstract fun knowledgeGraphDao(): KnowledgeGraphDao
+    abstract fun learningDao(): LearningDao
 
     companion object {
         /**
@@ -141,6 +143,39 @@ abstract class VorvDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        /**
+         * v4 → v5 (plan Step 6): the learning ledger. A fresh table; nothing
+         * existing moves. dedupeKey is UNIQUE for the same reason chat ids are:
+         * a repeat must strengthen a fact, never duplicate it.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `learning_rows` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `ts` INTEGER NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `inputText` TEXT NOT NULL,
+                        `outputText` TEXT NOT NULL,
+                        `toolCsv` TEXT NOT NULL,
+                        `ok` INTEGER,
+                        `errorClass` TEXT,
+                        `engineLabel` TEXT NOT NULL,
+                        `sourceUrl` TEXT,
+                        `quote` TEXT,
+                        `weight` REAL NOT NULL,
+                        `dedupeKey` TEXT NOT NULL,
+                        `split` TEXT NOT NULL,
+                        `tokenCount` INTEGER NOT NULL
+                    )""".trimIndent()
+                )
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_learning_rows_dedupeKey` ON `learning_rows` (`dedupeKey`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_learning_rows_ts` ON `learning_rows` (`ts`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_learning_rows_kind` ON `learning_rows` (`kind`)")
+            }
+        }
+
+        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
     }
 }

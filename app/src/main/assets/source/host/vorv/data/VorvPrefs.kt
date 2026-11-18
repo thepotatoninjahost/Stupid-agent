@@ -58,6 +58,8 @@ class VorvPrefs(private val context: Context) {
     /** "qwen7b" | "qwen3b" — which local model to use when llmMode = "local". */
     val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "qwen7b" }
 
+    /** 0.9.18 — which cloud provider is selected ("" = the Z.ai preset). */
+    val cloudProviderId: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_PROVIDER_ID] ?: "" }
     /** Whether the POST_NOTIFICATIONS runtime prompt has been shown (Android 13+). */
     val notifPermissionAsked: Flow<Boolean> = context.vorvPrefs.data.map { it[NOTIF_ASKED] ?: false }
     /** JSON array of pending scheduled reminders: [{"name":..,"title":..,"etaMs":..}] */
@@ -112,7 +114,25 @@ class VorvPrefs(private val context: Context) {
         context.vorvPrefs.edit { it.remove(LEGACY_ZAI_KEY) }
     }
 
+    /** Last observed brain facts, so Setup → Brain health survives a restart. */
+    suspend fun readBrainFactsJson(): String =
+        context.vorvPrefs.data.first()[BRAIN_FACTS] ?: ""
+
+    suspend fun setBrainFactsJson(json: String) {
+        context.vorvPrefs.edit { it[BRAIN_FACTS] = json }
+    }
+
+    /** Specific cloud provider chosen in Setup ("" = the built-in Z.ai preset). */
+    suspend fun readCloudProviderId(): String =
+        context.vorvPrefs.data.first()[CLOUD_PROVIDER_ID] ?: ""
+
+    suspend fun setCloudProviderId(id: String) {
+        context.vorvPrefs.edit { it[CLOUD_PROVIDER_ID] = id }
+    }
+
     companion object {
+        private val BRAIN_FACTS = stringPreferencesKey("brain_facts_json")
+        private val CLOUD_PROVIDER_ID = stringPreferencesKey("cloud_provider_id")
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
         private val CLOUD_MODEL_ID = stringPreferencesKey("cloud_model_id")
