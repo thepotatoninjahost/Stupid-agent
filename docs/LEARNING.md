@@ -77,10 +77,23 @@ trained generation has been loaded on the S25, so nothing here is a release clai
 about the 9B model's quality. The checks and the load order are tested on the JVM;
 the 4 GB load itself is not measured on the phone.
 
+## The speed record (plan items 28-29)
+
+Every completed training run writes one row to `speed.tsv` in the brain folder —
+generation, architecture, tokens per second, timestamp — and prints the number in
+that run's message on the Brain screen. The comparison is the plan's rule: the new
+row is measured against the last row of the same architecture, a drop of up to 20%
+is allowed and named, and a drop above 20% is printed as `REFUSED: …` instead of
+being accepted quietly (`learn/SpeedRecord.kt`, nine JVM tests).
+
+The rule is implemented and tested on the JVM; the real numbers on the S25 arrive
+with the first run on the phone. Until then the record is empty, and an empty
+record is shown as "first record", never as "no regression".
+
 ## Not measured yet
 
-- Tokens per second on the actual phone. The Brain screen will show it; until a
-  run happens on the S25 the number in the docs is a JVM number, not the phone's.
+- Tokens per second on the actual phone. The first training run on the S25 writes
+  that row; until then the record is empty and no speed claim is made.
 - NEON and fast softmax: **not adopted, measured nothing yet.** The rule stands —
   each is adopted only at ≥ 1.5× measured speed-up on the device, otherwise this
   line is updated with the measurement and the step still counts as passed.

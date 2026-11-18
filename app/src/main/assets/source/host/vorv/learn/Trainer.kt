@@ -49,6 +49,7 @@ class Trainer(private val brainDir: File) {
         val config: VorvCore.CoreConfig?,
         val decision: PromotionGate.Decision?,
         val eval: EvalSuite.Vector?,
+        val speed: SpeedRecord.Verdict? = null,
     )
 
     private fun sha256(bytes: ByteArray): String =
@@ -182,16 +183,54 @@ class Trainer(private val brainDir: File) {
         }
         if (decision.isPromote) WeightsStore.setActive(brainDir, id)
 
+        val speed = measureAndRecordSpeed(brainDir, core, examples, config, id)
+
         val message = buildString {
             append("Generation $id trained on ${rows.size} ledger rows for $steps steps in ${"%.1f".format(seconds)} s. ")
             append("Validation loss ${"%.4f".format(bestVal)} (best at step $bestStep). ")
             append(describe(decision))
+            if (speed != null) append(' ').append(speed.sentence)
         }
         return Outcome(
             ran = true, message = message, generation = id, promoted = decision.isPromote,
             trainLoss = lastTrain, valLoss = bestVal, steps = steps, tokens = tokens, seconds = seconds,
-            rung = rung, config = config, decision = decision, eval = candidateReport,
+            rung = rung, config = config, decision = decision, eval = candidateReport, speed = speed,
         )
+    }
+
+    /**
+     * Step 28/29: one row per trained build, compared with the last build of the
+     * same architecture. Never silent: a failed measurement is reported as a
+     * missing row with its reason, not as a speed of zero.
+     */
+    private fun measureAndRecordSpeed(
+        brainDir: File,
+        core: VorvCore,
+        examples: Examples,
+        config: VorvCore.CoreConfig,
+        generation: Int,
+    ): SpeedRecord.Verdict? {
+        val prompt = examples.heldOut.firstOrNull() ?: examples.train.firstOrNull()
+        if (prompt == null || prompt.size < 2) return null
+        val measured = host.vorv.tools.Attempt.of("measure how fast this generation answers") {
+            val warm = Inference.measureSpeed(core, prompt.copyOfRange(0, minOf(8, prompt.size)), tokens = 2)
+            if (!warm.tokensPerSecond.isFinite()) null
+            else Inference.measureSpeed(core, prompt, tokens = 16)
+        }
+        if (measured == null || !measured.tokensPerSecond.isFinite() || measured.tokensPerSecond <= 0.0) {
+            return null
+        }
+        val file = File(brainDir, SpeedRecord.FILE)
+        val previous = SpeedRecord.previousFor(SpeedRecord.read(file), config.name, generation)
+        val row = SpeedRecord.Row(
+            generation = generation,
+            config = config.name,
+            tokensPerSecond = measured.tokensPerSecond,
+            at = System.currentTimeMillis(),
+        )
+        val verdict = SpeedRecord.verdict(previous, row)
+        host.vorv.tools.Attempt.of("write this build's speed record") { SpeedRecord.append(file, row) }
+        return verdict
     }
 
     private fun sumLoss(core: VorvCore, batch: List<IntArray>): Tensor {

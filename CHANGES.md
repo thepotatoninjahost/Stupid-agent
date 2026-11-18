@@ -1,3 +1,18 @@
+# The speed of every build is a number (plan items 28-29)
+
+- **`learn/SpeedRecord.kt`**: one row per completed training run — generation,
+  architecture, tokens per second, timestamp — in `speed.tsv` beside the
+  generations. The new row is compared with the last row of the same
+  architecture: up is named, a drop inside 20% is named, and a drop above 20%
+  prints `REFUSED: … below the last record`, never "fine".
+- **`learn/Trainer.kt`**: measures after the candidate is saved and the champion
+  pointer moved, and the run's message on the Brain screen ends with the sentence.
+  A measurement that cannot be taken returns no row and the run says so by ending
+  without a speed sentence, rather than printing zero.
+- **Tests**: `SpeedRecordTest`, nine cases — first record, faster, small drop,
+  exactly 20%, above 20% refused, per-architecture comparison, a malformed line
+  skipped, a missing file, and the header written on a fresh file.
+
 # One provider breaking is a detour (gate 0)
 
 Plan gate 0: two independent providers, one of them broken, chat still answers
