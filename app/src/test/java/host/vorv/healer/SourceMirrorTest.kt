@@ -33,10 +33,12 @@ class SourceMirrorTest {
     @Test
     fun `every mirror is byte-identical to its source`() {
         val drifted = sources.walkTopDown()
-            .filter { it.isFile && it.extension == "kt" }
-            .map { it.relativeTo(sources) }
-            .filter { rel -> File(mirror, rel.path).isFile && File(mirror, rel.path).readText() != it.readText() }
-            .map { it.path }
+            .filter { file -> file.isFile && file.extension == "kt" }
+            .filter { file ->
+                val copy = File(mirror, file.relativeTo(sources).path)
+                copy.isFile && copy.readText() != file.readText()
+            }
+            .map { it.relativeTo(sources).path }
             .toList()
         assertEquals("mirror differs from source (copy the file into assets/source): $drifted", emptyList<String>(), drifted)
     }
