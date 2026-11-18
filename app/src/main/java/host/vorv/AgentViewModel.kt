@@ -18,6 +18,7 @@ import host.vorv.llm.BrainChoice
 import host.vorv.llm.BrainDoctor
 import host.vorv.llm.BrainFacts
 import host.vorv.llm.LlmHttpException
+import host.vorv.llm.explainLlmFailure
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.CloudModel
 import host.vorv.llm.FallbackLlm
@@ -628,7 +629,7 @@ class AgentViewModel(
                     keyTestResult = if (probe.isSuccess) {
                         "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — works with your key."
                     } else {
-                        "✗ ${probe.exceptionOrNull()?.let { classify(it) } ?: "unknown error"}"
+                        "✗ ${probe.exceptionOrNull()?.let { explainLlmFailure(it) } ?: "unknown error"}"
                     },
                 )
             }
@@ -666,7 +667,7 @@ class AgentViewModel(
                     keyTesting = false,
                     keyTestResult = probe.fold(
                         onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
-                        onFailure = { e -> "✗ $model: ${classify(e)}" },
+                        onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
@@ -732,7 +733,7 @@ class AgentViewModel(
                         onSuccess = { text ->
                             "✓ ${provider.label} answered “${text.take(40)}” with $model — this coder works."
                         },
-                        onFailure = { e -> "✗ ${provider.label} · $model: ${classify(e)}" },
+                        onFailure = { e -> "✗ ${provider.label} · $model: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
@@ -783,7 +784,7 @@ class AgentViewModel(
                     keyTesting = false,
                     keyTestResult = probe.fold(
                         onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
-                        onFailure = { e -> "✗ $model: ${classify(e)}" },
+                        onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
@@ -799,21 +800,6 @@ class AgentViewModel(
      * printed the exception text, so "HTTP 401" and "retired model" looked
      * alike.
      */
-    private fun classify(e: Throwable): String {
-        val http = e as? LlmHttpException
-        val body = e.message ?: ""
-        return when {
-            http == null -> body.ifBlank { e.javaClass.simpleName }
-            http.code == 401 || http.code == 403 ->
-                "the provider refused the key (HTTP ${http.code}). Re-copy it from the provider's dashboard."
-            http.code == 404 || (http.code == 400 && body.lowercase().contains("model")) ->
-                "that model name does not exist at this provider (HTTP ${http.code}). Tap Refresh list and pick one it serves."
-            http.code == 402 -> "this account has no credit for that model (HTTP 402). Pick a free one."
-            http.code == 429 -> "the provider is rate-limiting right now (HTTP 429). It is not your key — try again shortly."
-            http.code >= 500 -> "the provider is having an outage (HTTP ${http.code}). Not your configuration."
-            else -> "HTTP ${http.code}: ${body.take(160)}"
-        }
-    }
 
 
     /** v0.7.0 — arm/disarm the cloud→offline fallback (cloud mode only). */
