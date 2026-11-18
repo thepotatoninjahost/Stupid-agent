@@ -50,6 +50,8 @@ class LearningStore(private val dao: LearningDao) {
     /** The corpus the trainer and the GPU job read. */
     suspend fun exportJsonl(): String = LearningLedger.exportJsonl(rows())
 
+    suspend fun stats(): LearningLedger.DatasetStats = LearningLedger.stats(rows())
+
     /** Forget one topic, everywhere. */
     suspend fun forget(topic: String): Int {
         val all = rows()

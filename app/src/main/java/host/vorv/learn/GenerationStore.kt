@@ -1,7 +1,8 @@
 package host.vorv.learn
 
-import com.google.gson.Gson
-import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import java.io.File
 import java.security.MessageDigest
 
@@ -20,7 +21,6 @@ import java.security.MessageDigest
  */
 class GenerationStore(private val root: File) {
 
-    private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
     private val indexFile = File(root, "generations.json")
 
     data class Generation(
@@ -125,7 +125,29 @@ class GenerationStore(private val root: File) {
     private fun read(): Index {
         if (!indexFile.isFile) return Index(emptyList(), null)
         return try {
-            gson.fromJson(indexFile.readText(), Index::class.java) ?: Index(emptyList(), null)
+            val parsed = JsonParser.parseString(indexFile.readText())
+            if (!parsed.isJsonObject) return Index(emptyList(), null)
+            val obj = parsed.asJsonObject
+            val list = obj.getAsJsonArray("generations") ?: JsonArray()
+            val generations = list.mapNotNull { element ->
+                if (!element.isJsonObject) return@mapNotNull null
+                val o = element.asJsonObject
+                Generation(
+                    id = o.int("id") ?: return@mapNotNull null,
+                    createdAt = o.long("createdAt") ?: 0L,
+                    origin = o.string("origin") ?: "unknown",
+                    artifactPath = o.string("artifactPath") ?: return@mapNotNull null,
+                    artifactSha256 = o.string("artifactSha256") ?: "",
+                    sizeBytes = o.long("sizeBytes") ?: 0L,
+                    valLoss = o.double("valLoss"),
+                    accepted = o.get("accepted")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false,
+                    decision = o.string("decision") ?: "",
+                    corpusSha256 = o.string("corpusSha256") ?: "",
+                    config = o.string("config") ?: "",
+                )
+            }
+            val champion = obj.int("championId")
+            Index(generations, champion)
         } catch (t: Throwable) {
             // A broken index must not be silently replaced with an empty one:
             // the caller sees no champion, and the file stays on disk for repair.
@@ -137,11 +159,43 @@ class GenerationStore(private val root: File) {
         if (!root.isDirectory && !root.mkdirs()) {
             throw IllegalStateException("cannot create ${root.path}")
         }
-        val text = gson.toJson(index)
+        val list = JsonArray()
+        for (g in index.generations) {
+            list.add(JsonObject().apply {
+                addProperty("id", g.id)
+                addProperty("createdAt", g.createdAt)
+                addProperty("origin", g.origin)
+                addProperty("artifactPath", g.artifactPath)
+                addProperty("artifactSha256", g.artifactSha256)
+                addProperty("sizeBytes", g.sizeBytes)
+                if (g.valLoss == null) add("valLoss", null) else addProperty("valLoss", g.valLoss)
+                addProperty("accepted", g.accepted)
+                addProperty("decision", g.decision)
+                addProperty("corpusSha256", g.corpusSha256)
+                addProperty("config", g.config)
+            })
+        }
+        val obj = JsonObject().apply {
+            add("generations", list)
+            if (index.championId == null) add("championId", null) else addProperty("championId", index.championId)
+        }
+        val text = obj.toString()
         indexFile.writeText(text)
         val back = indexFile.readText()
         if (back != text) throw IllegalStateException("the generation index did not survive being written")
     }
+
+    private fun JsonObject.string(key: String): String? =
+        get(key)?.takeIf { it.isJsonPrimitive }?.asString
+
+    private fun JsonObject.int(key: String): Int? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
+
+    private fun JsonObject.long(key: String): Long? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+
+    private fun JsonObject.double(key: String): Double? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
 
     companion object {
         fun sha256(file: File): String {

@@ -132,6 +132,15 @@ class GenerationStoreTest {
     }
 
     @Test
+    fun `the index is hand-written json, so shrinking the app cannot rename its keys`() {
+        store().add(generation(1, "g1.bin", "one"), accept = true)
+        val text = File(root, "generations.json").readText()
+        for (key in listOf("generations", "championId", "artifactPath", "artifactSha256", "valLoss", "config")) {
+            assertTrue("index lost key $key", text.contains("\"$key\""))
+        }
+    }
+
+    @Test
     fun `a corrupt index reports no champion rather than inventing one`() {
         store().add(generation(1, "g1.bin", "one"), accept = true)
         File(root, "generations.json").writeText("{not json")
