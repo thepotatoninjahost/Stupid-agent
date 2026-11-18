@@ -1055,6 +1055,52 @@ class AgentViewModel(
         host.vorv.llm.provider.ProviderRegistry.byId(id)?.label ?: id
 
     /**
+     * Gate 0 — the chosen provider first, then every other provider this owner
+     * holds a key for. One refused key or one outage is then a detour, not a
+     * dead end, and nothing is invented: a provider with no stored key is left
+     * out of the chain.
+     */
+    private suspend fun providerFallbacks(
+        baseUrl: String,
+        customModel: String,
+        cloudModel: CloudModel,
+    ): List<host.vorv.llm.provider.ProviderChainLlm.Route> = runCatching {
+        val pid = prefs.cloudProviderId.first()
+            .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+        val chosen = host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(pid, baseUrl)
+        val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
+        host.vorv.llm.provider.ProviderChainLlm.routes(
+            chosen = chosen,
+            chosenBaseUrl = target.baseUrl,
+            chosenModelId = target.modelId,
+            chosenUsesModelChain = target.useChain,
+            keyFor = { p -> secrets.keyFor(p.id) },
+        )
+    }.getOrElse { emptyList() }
+
+    /**
+     * A provider swap is never silent: the episode log keeps the reason, and
+     * the header stops claiming the chosen provider answered.
+     */
+    private fun recordProviderFailover(answeredBy: String, reason: String) {
+        _state.update {
+            it.copy(currentLlmLabel = "$answeredBy (cloud) — your chosen provider did not answer")
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                db.episodeDao().insert(
+                    Episode(
+                        kind = "fallback",
+                        summary = "Your provider did not answer — $answeredBy answered instead",
+                        detailsJson = "{\"answered_by\":\"${answeredBy.replace("\"", "'")}\"," +
+                            "\"reason\":\"${reason.replace("\"", "'").take(300)}\"}",
+                    )
+                )
+            }
+        }
+    }
+
+    /**
      * Turns an exception into the sentence an owner can act on. The old UI
      * printed the exception text, so "HTTP 401" and "retired model" looked
      * alike.
@@ -1508,6 +1554,8 @@ class AgentViewModel(
                 modelRepository.markBusy(true)
                 val llm: Llm = modelRepository.activeEngine(
                     mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
+                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel, cloudModel),
+                    onFailover = ::recordProviderFailover,
                 )
 
                 // v0.7.0: every cloud→offline takeover is recorded with its
@@ -1837,6 +1885,8 @@ class AgentViewModel(
                 modelRepository.markBusy(true)
                 val llm: Llm = modelRepository.activeEngine(
                     mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
+                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel, cloudModel),
+                    onFailover = ::recordProviderFailover,
                 )
 
                 val timeoutMs = if (mode == "local") LOCAL_TASK_TIMEOUT_MS else CLOUD_TASK_TIMEOUT_MS

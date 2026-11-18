@@ -47,6 +47,8 @@ class ModelRepository(private val appContext: Context) {
         autoFallback: Boolean = true,
         baseUrl: String = "",
         customModel: String = "",
+        providerFallbacks: List<host.vorv.llm.provider.ProviderChainLlm.Route> = emptyList(),
+        onFailover: ((answeredBy: String, reason: String) -> Unit)? = null,
     ): Llm = mutex.withLock {
         if (mode != "local") {
             require(apiKey.isNotBlank()) {
@@ -66,8 +68,26 @@ class ModelRepository(private val appContext: Context) {
             } else {
                 CloudLlm(apiKey, target.baseUrl, target.modelId)
             }
+            // Gate 0: the chosen provider first, then every other provider the
+            // owner holds a key for. One broken provider is a detour.
+            val reachable: Llm = if (providerFallbacks.size > 1) {
+                host.vorv.llm.provider.ProviderChainLlm(providerFallbacks) { route ->
+                    if (route.useModelChain) {
+                        CloudChainLlm(
+                            route.apiKey,
+                            listOf(cloudModel) + CloudModel.entries
+                                .filter { it != cloudModel }
+                                .sortedByDescending { it.free },
+                        )
+                    } else {
+                        CloudLlm(route.apiKey, route.baseUrl, route.modelId)
+                    }
+                }.also { it.onFailover = onFailover }
+            } else {
+                cloud
+            }
             if (!autoFallback || !ModelManager.isDownloaded(choice)) {
-                return@withLock cloud
+                return@withLock reachable
             }
             val local = localLlm?.takeIf { it.modelId == choice.id }
                 ?: run {
@@ -76,7 +96,7 @@ class ModelRepository(private val appContext: Context) {
                     localLlm?.release()
                     buildEngine(choice).also { localLlm = it }
                 }
-            FallbackLlm(cloud, local)
+            FallbackLlm(reachable, local)
         } else {
             val ready = ModelManager.isDownloaded(choice)
             require(ready) {
