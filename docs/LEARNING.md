@@ -3,6 +3,14 @@
 This file is the record the plan asks for: every claim here is a measurement made
 by this repository's own tests or on the phone, or it is marked **not measured**.
 
+## What the agent knows about the project it is editing
+
+Step 7's rule: the model is told what is actually there, never a confident blank.
+`project/ProjectContext` is pure, so its wording and its budget are pinned by
+`ProjectContextTest`; the outline comes from `ProjectIndex` and is cut at a token
+budget that says it was cut. What is **not measured** yet: this has never run
+against a real 10,000-file folder on the phone — the tests use synthetic trees.
+
 ## Where the pieces live
 
 | Piece | File | What it does |

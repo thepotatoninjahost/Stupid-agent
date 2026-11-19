@@ -1719,7 +1719,26 @@ class AgentViewModel(
             localEngine = localEngine,
         )
         val web = runCatching { knowledgeSection(newMessage, localEngine) }.getOrDefault("")
-        return if (web.isBlank()) base else "$base\n\n$web"
+        val withWeb = if (web.isBlank()) base else "$base\n\n$web"
+        return "$withWeb\n\n${projectSection(newMessage)}"
+    }
+
+    /**
+     * Plan Step 7: the agent is shown the project it has open — outline, the code
+     * nearest this request, and whatever could not be indexed. Before this, the
+     * whole `host.vorv.project` package was never called from the app, so the
+     * agent answered about code it had never seen.
+     */
+    private suspend fun projectSection(message: String): String {
+        val uri = _state.value.workspaceUri
+        if (uri.isBlank()) {
+            return host.vorv.project.ProjectContext.build(null, message)
+        }
+        val section = host.vorv.tools.Attempt.of("index the open project for this prompt") {
+            host.vorv.project.ProjectIndexCache.section(appContext, uri, message)
+        }
+        return section ?: ("## Project\nThe project folder could not be indexed, and the reason " +
+            "was written to the log. Do not guess what is in it; say the index failed.")
     }
 
     /**

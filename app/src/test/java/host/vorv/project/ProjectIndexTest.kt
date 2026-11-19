@@ -240,7 +240,7 @@ class ProjectIndexTest {
         val npm = ProjectRecord.discover("/w", listOf("package.json"))
         assertEquals("npm test", npm.testCommand)
         val py = ProjectRecord.discover("/w", listOf("pyproject.toml"))
-        assertEquals("python -m pytest", py.testCommand)
+        assertEquals("python3 -m pytest", py.testCommand)
         val none = ProjectRecord.discover("/w", listOf("notes.txt"))
         assertNotNull(none)
         assertEquals(null, none.testCommand)

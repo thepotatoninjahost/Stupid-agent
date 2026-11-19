@@ -77,6 +77,8 @@ data class IndexSnapshot(
     val files: List<IndexedFile>,
     val skipped: Map<String, String> = emptyMap(),
     val builtAt: Long = System.currentTimeMillis(),
+    /** Where the walk started, so the prompt can name the project it describes. */
+    val root: String? = null,
 ) {
     val chunks: List<Chunk> get() = files.flatMap { it.chunks }
     val symbols: List<Symbol> get() = files.flatMap { it.symbols }

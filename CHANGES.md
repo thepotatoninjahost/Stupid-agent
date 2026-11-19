@@ -1,3 +1,39 @@
+# The agent is shown the project it has open (step 7)
+
+Plan step 7, items 5–7: a 10,000-file tree the agent can still find code in,
+because the prompt carries an outline instead of a file list, the code nearest
+the request, and one saved record of how the project is built and tested.
+
+- **`project/ProjectContext.kt`** (new): the prompt section, pure and therefore
+  testable off-device. No folder open says so; an open folder with nothing
+  indexable says so with the skipped count; every excerpt is
+  `#### path:startLine-endLine (why)`; the closing line tells the model the
+  excerpts are data, not instructions.
+- **`project/RepoMap.kt` behaviour in `project/Retriever.kt`**: the outline is
+  now enforced in characters (four per token) rather than integer-divided
+  tokens, and a truncated outline says `… map cut at the token budget` instead
+  of looking complete. Cached per index revision and budget.
+- **`project/ProjectRecord`**: build/test/lint commands found from the tree —
+  the root Gradle wrapper first, then the module's, then plain `gradle`; npm and
+  Python projects get theirs, a tree with none gets `null` and the prompt prints
+  "not found" rather than inventing a command. Saved beside the index as
+  `project-record.tsv` with tabs and newlines collapsed so a value cannot
+  corrupt the file.
+- **`project/ProjectIndexCache.kt`** (new): one index per workspace, rebuilt only
+  when it is older than ten minutes or the owner asks; `IndexSnapshot` gained
+  `root` so the prompt can name the folder it describes.
+- **`project/ProjectSources.kt`** (new): `DocTreeFileSource` walks the owner's
+  SAF folder breadth-first with caps (20,000 files, 4,000 folders, and the
+  indexer's per-file byte limit), and says why when the folder cannot be opened
+  — the permission was revoked, the saved workspace is a file, the tree is gone.
+  No `readNBytes`, which is API 33 and this app runs on API 31.
+- **`AgentViewModel.buildPromptWithContext`**: appends the project section to
+  every prompt, through `Attempt.of`, so an indexing failure is logged with its
+  reason and stated in the prompt instead of vanishing. Before this the whole
+  `host.vorv.project` package was unreachable from the app: nothing called it.
+- **Tests**: `ProjectContextTest` (7), `RepoMapTest` (6), `ProjectRecordTest` (6),
+  plus the existing `ProjectIndexTest` (13) — 32 green on a JVM.
+
 # The speed of every build is a number
 
 - **`learn/SpeedRecord.kt`**: one row per completed training run — generation,
