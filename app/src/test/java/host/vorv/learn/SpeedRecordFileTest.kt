@@ -6,7 +6,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Plan items 28-29, the CI half: the speeds measured on the owner's phone are
+ * The CI half of the speed rule: the speeds measured on the owner's phone are
  * kept in `docs/BENCHMARKS.tsv`, and a build more than 20% slower than the one
  * before it must fail this build rather than be written down as fine.
  *

@@ -1,4 +1,4 @@
-# The speed of every build is a number (plan items 28-29)
+# The speed of every build is a number
 
 - **`learn/SpeedRecord.kt`**: one row per completed training run — generation,
   architecture, tokens per second, timestamp — in `speed.tsv` beside the

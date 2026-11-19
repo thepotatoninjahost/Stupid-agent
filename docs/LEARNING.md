@@ -77,7 +77,7 @@ trained generation has been loaded on the S25, so nothing here is a release clai
 about the 9B model's quality. The checks and the load order are tested on the JVM;
 the 4 GB load itself is not measured on the phone.
 
-## The speed record (plan items 28-29)
+## The speed record: no build may be more than 20% slower
 
 Every completed training run writes one row to `speed.tsv` in the brain folder —
 generation, architecture, tokens per second, timestamp — and prints the number in
