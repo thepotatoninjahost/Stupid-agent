@@ -97,6 +97,42 @@ class ToolCallParserTest {
         assertTrue(parseArgs(r)!!.contains("error"))
     }
 
+    // ------------------------------- review 2026-11-20: truncation flag
+    // A repaired call is reported as truncated, because its arguments are
+    // incomplete — the kernel refuses to execute it (a half-written
+    // file_write used to land on disk and report ok = true).
+
+    @Test fun `repaired tool call is flagged truncated`() {
+        val r = parse("""<tool>{"name":"file_write","arguments":{"path":"out.txt","content":"hello""")
+        assertTrue("a brace-balanced call must be marked truncated", (r as Llm.LlmResponse.ToolUse).truncated)
+    }
+
+    @Test fun `well-formed tool call is not flagged truncated`() {
+        val r = parse("""<tool>{"name":"file_write","arguments":{"path":"a.txt","content":"ok"}}</tool>""")
+        assertEquals(false, (r as Llm.LlmResponse.ToolUse).truncated)
+    }
+
+    @Test fun `complete JSON without a closing tag is not flagged truncated`() {
+        // Omitting </tool> is a formatting slip, not truncation: the arguments
+        // are whole, so the call must run instead of costing a retry.
+        val r = parse("""<tool>{"name":"file_write","arguments":{"path":"a.txt","content":"ok"}}""")
+        val tu = r as Llm.LlmResponse.ToolUse
+        assertEquals("file_write", tu.toolCalls.first().name)
+        assertEquals(false, tu.truncated)
+    }
+
+    @Test fun `truncated fenced json is flagged truncated`() {
+        val r = parse("```json\n{\"name\":\"file_write\",\"arguments\":{\"path\":\"a.txt\",\"content\":\"cut")
+        val tu = r as Llm.LlmResponse.ToolUse
+        assertEquals("file_write", tu.toolCalls.first().name)
+        assertTrue(tu.truncated)
+    }
+
+    @Test fun `truncated plain ARGS is flagged truncated`() {
+        val r = parse("TOOL_CALL: file_write ARGS: {\"path\":\"out.txt\",\"content\":\"hel")
+        assertTrue((r as Llm.LlmResponse.ToolUse).truncated)
+    }
+
     // ---------------------------------------------------- answers
 
     @Test fun `parses ANSWER prefix`() {

@@ -17,9 +17,19 @@ import com.google.gson.JsonParser
  * Because the local model runs with a finite maxTokens budget, a tool call
  * can be TRUNCATED mid-JSON. [repairJson] balances braces/brackets/quotes so
  * a truncated call is still recoverable instead of being mis-read as a raw
- * text answer (audit finding M-1).
+ * text answer (audit finding M-1) — and every call recovered that way comes
+ * back with [Llm.LlmResponse.ToolUse.truncated] set, because its arguments are
+ * incomplete: executing it (a half-written file_write) is exactly the silent
+ * data loss that flag exists to stop.
  */
 object ToolCallParser {
+
+    /** A parsed reply plus whether its JSON had to be repaired (i.e. it was
+     *  cut off by the output-token ceiling and its arguments are incomplete). */
+    private class Parsed(val response: Llm.LlmResponse, val repaired: Boolean)
+
+    private fun Llm.LlmResponse.mark(repaired: Boolean): Llm.LlmResponse =
+        if (repaired && this is Llm.LlmResponse.ToolUse) copy(truncated = true) else this
 
     private val openAiToolCallRegex = Regex(
         pattern = "<tool>\\s*(\\{.*?\\})\\s*</tool>",
@@ -44,13 +54,18 @@ object ToolCallParser {
             parseOpenAiArgs(mr.groupValues[1])?.let { return it }
         }
 
-        // 2. Truncated OpenAI-style call: "<tool>{..." without a closing tag.
-        //    Attempt brace-balancing repair before giving up.
+        // 2. OpenAI-style call without a closing tag: "<tool>{...". Attempt
+        //    brace-balancing repair. It counts as TRUNCATED only when the JSON
+        //    actually needed repair — a model that merely omits </tool> after
+        //    complete arguments must still be executed, or every such call
+        //    would cost a wasted retry.
         if (!trimmed.contains("</tool>")) {
             val start = trimmed.indexOf("<tool>")
             if (start >= 0) {
                 val raw = trimmed.substring(start + "<tool>".length).trim()
-                repairJson(raw)?.let { parseOpenAiArgs(it) }?.let { return it }
+                repairJson(raw)?.let { balanced ->
+                    parseOpenAiArgs(balanced)?.let { return it.mark(repaired = balanced != raw) }
+                }
             }
         }
 
@@ -66,7 +81,7 @@ object ToolCallParser {
         //      paths, on the name being a KNOWN tool (H1b): JSON data that
         //      merely carries a "name" key (package.json, API payloads) is
         //      an ANSWER, not a tool call.
-        parseMarkdownOrBareJson(trimmed, knownTools)?.let { return it }
+        parseMarkdownOrBareJson(trimmed, knownTools)?.let { return it.response.mark(it.repaired) }
 
         // 3. Plain-text protocol.
         plainToolCallRegex.find(trimmed)?.let { mr ->
@@ -90,8 +105,9 @@ object ToolCallParser {
         }
 
         // 3b. Plain-text protocol with TRUNCATED arguments (no closing brace):
-        //     "TOOL_CALL: name ARGS: {"not closed" — still a tool call; the
-        //     kernel will report the invalid-JSON args honestly to the model.
+        //     "TOOL_CALL: name ARGS: {"not closed" — still a tool call, flagged
+        //     truncated so the kernel refuses to execute it and asks for a
+        //     shorter retry instead of running half a file write.
         if (trimmed.contains("TOOL_CALL:")) {
             plainLenientRegex.find(trimmed)?.let { mr ->
                 val name = mr.groupValues[1]
@@ -110,7 +126,7 @@ object ToolCallParser {
                         arguments = args,
                     )),
                     reasoning = null,
-                )
+                ).mark(repaired = true)
             }
         }
 
@@ -203,7 +219,7 @@ object ToolCallParser {
      * Gated on the presence of a "name" key so ordinary prose or JSON data
      * is never misparsed as a tool call.
      */
-    private fun parseMarkdownOrBareJson(text: String, knownTools: Set<String>): Llm.LlmResponse? {
+    private fun parseMarkdownOrBareJson(text: String, knownTools: Set<String>): Parsed? {
         val trimmedText = text.trimStart()
         // Cheap guard: skip if there's no JSON-shaped content at all. The
         // real gate is the "name" key check in parseToolCallJson — that's
@@ -236,7 +252,8 @@ object ToolCallParser {
         //    JSON data carrying a "name" key is data, not a call.
         if (trimmedText.startsWith("{") || trimmedText.startsWith("[")) {
             parseToolCallJson(trimmedText)
-                ?.takeIf { tc -> tc is Llm.LlmResponse.ToolUse && tc.toolCalls.all { it.name in knownTools } }
+                ?.takeIf { p -> p.response is Llm.LlmResponse.ToolUse &&
+                    p.response.toolCalls.all { it.name in knownTools } }
                 ?.let { return it }
         }
 
@@ -245,7 +262,8 @@ object ToolCallParser {
         val jsonStart = trimmedText.indexOfAny(charArrayOf('{', '['))
         if (jsonStart > 0) {
             parseToolCallJson(trimmedText.substring(jsonStart).trim())
-                ?.takeIf { tc -> tc is Llm.LlmResponse.ToolUse && tc.toolCalls.all { it.name in knownTools } }
+                ?.takeIf { p -> p.response is Llm.LlmResponse.ToolUse &&
+                    p.response.toolCalls.all { it.name in knownTools } }
                 ?.let { return it }
         }
 
@@ -255,19 +273,22 @@ object ToolCallParser {
     /**
      * Parses a JSON string (object or array) into a ToolUse response.
      * Returns null if the JSON doesn't have the tool-call shape
-     * (i.e. no "name" key on any element).
+     * (i.e. no "name" key on any element). [Parsed.repaired] is true when the
+     * text had to be brace-balanced, i.e. it was cut off mid-JSON.
      */
-    private fun parseToolCallJson(jsonStr: String): Llm.LlmResponse? {
+    private fun parseToolCallJson(jsonStr: String): Parsed? {
+        var repaired = false
         val parsed = try {
             JsonParser.parseString(jsonStr)
         } catch (e: Exception) {
             // Truncated JSON — try brace-balancing repair.
+            repaired = true
             repairJson(jsonStr)?.let {
                 runCatching { JsonParser.parseString(it) }.getOrNull()
             } ?: return null
         } ?: return null
 
-        return when {
+        val response = when {
             parsed.isJsonObject -> {
                 parseToolCallObject(parsed.asJsonObject)?.let { tc ->
                     Llm.LlmResponse.ToolUse(toolCalls = listOf(tc), reasoning = null)
@@ -281,7 +302,8 @@ object ToolCallParser {
                 else Llm.LlmResponse.ToolUse(toolCalls = calls, reasoning = null)
             }
             else -> null
-        }
+        } ?: return null
+        return Parsed(response, repaired)
     }
 
     private fun parseToolCallObject(obj: JsonObject): Llm.ToolCall? {

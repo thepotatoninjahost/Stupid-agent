@@ -81,6 +81,15 @@ interface Llm {
      */
     val contextTokenBudget: Int get() = 100_000
 
+    /**
+     * Tokens this engine can emit in ONE reply (output ceiling). Anything that
+     * asks the model to reproduce a whole file must stay under this or the
+     * reply is cut mid-JSON — the healer uses it to refuse up front instead of
+     * discovering the truncation through three compile failures. Cloud engines
+     * are generous; the on-device engine reserves 2048.
+     */
+    val maxOutputTokens: Int get() = 8192
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,
@@ -99,7 +108,18 @@ interface Llm {
     /** Either finish with text, or request a tool call. */
     sealed class LlmResponse {
         data class Text(val content: String, val done: Boolean) : LlmResponse()
-        data class ToolUse(val toolCalls: List<ToolCall>, val reasoning: String?) : LlmResponse()
+        /**
+         * [truncated] is set when this call was recovered from output that was
+         * cut mid-JSON (the engine ran out of output tokens). The arguments are
+         * then INCOMPLETE by construction — the kernel refuses to dispatch such
+         * a call and tells the model to redo it in pieces, instead of letting a
+         * half-written `file_write` report success over a partial file.
+         */
+        data class ToolUse(
+            val toolCalls: List<ToolCall>,
+            val reasoning: String?,
+            val truncated: Boolean = false,
+        ) : LlmResponse()
     }
 }
 

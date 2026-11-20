@@ -988,4 +988,53 @@ class CognitiveKernelTest {
         assertTrue(systemPrompt.contains("crash_logs"))
         assertTrue(systemPrompt.contains("never ask the user to paste something a tool should provide"))
     }
+
+    // ------------- review 2026-11-20: truncation is refused, not executed
+    // The engine stops at its output ceiling; ToolCallParser recovers the
+    // call from incomplete JSON and flags it. Executing it wrote half a file
+    // and reported ok = true, so the kernel refuses and asks for pieces.
+
+    private fun truncatedToolUse(name: String, argsJson: String): Llm.LlmResponse.ToolUse =
+        Llm.LlmResponse.ToolUse(
+            toolCalls = listOf(Llm.ToolCall(id = "call-1", name = name, arguments = argsJson)),
+            reasoning = "need $name",
+            truncated = true,
+        )
+
+    @Test
+    fun `truncated tool call is refused and never reaches the tool`() = runTest {
+        val sink = FakeSink()
+        var ran = false
+        val tool = FakeTool("file_write", onRun = { ran = true })
+        val llm = FakeLlm(listOf(
+            truncatedToolUse("file_write", """{"x":"half a file"}"""),
+            Llm.LlmResponse.Text("Wrote it in pieces.", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertFalse("a truncated call must not overwrite a file", ran)
+        assertEquals(0, result.toolCalls)
+        val toolReply = llm.steps.last().last { it.role == "tool" }
+        assertTrue(toolReply.content.contains("output ceiling"))
+        assertTrue("the model is told how to split the work", toolReply.content.contains("append=true"))
+        assertTrue("the refusal is traced", sink.episodes.isNotEmpty())
+    }
+
+    @Test
+    fun `repeated truncation ends the task honestly as output_truncated`() = runTest {
+        val sink = FakeSink()
+        var ran = false
+        val tool = FakeTool("file_write", onRun = { ran = true })
+        val llm = FakeLlm(listOf(
+            truncatedToolUse("file_write", """{"x":"one"}"""),
+            truncatedToolUse("file_write", """{"x":"two"}"""),
+            truncatedToolUse("file_write", """{"x":"three"}"""),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertFalse(ran)
+        assertFalse(result.ok)
+        assertEquals("output_truncated", result.error)
+        assertTrue(result.answer.contains("output ceiling"))
+    }
 }

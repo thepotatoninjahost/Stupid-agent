@@ -151,11 +151,26 @@ class FileReadTool(private val appContext: Context) : Tool {
 }
 
 /**
+ * Content chars one on-device reply can carry with room to spare: 2048 output
+ * tokens at a conservative ~4 chars/token, minus the call's JSON envelope,
+ * escaping (every newline becomes \n) and template overhead. Larger content
+ * must be written in append=true pieces.
+ */
+internal const val RECOMMENDED_WRITE_CHUNK_CHARS = 4_000
+
+/** ContentResolver stream mode: append past the end ("wa") or truncate ("wt"). */
+internal fun fileWriteStreamMode(append: Boolean): String = if (append) "wa" else "wt"
+
+/**
  * file_write — write/create/overwrite a file in the workspace.
  */
 class FileWriteTool(private val appContext: Context) : Tool {
     override val name = "file_write"
-    override val description = "Write text content to a file in the workspace. Overwrites if exists, creates if not. Use for saving artifacts, reports, generated code."
+    override val description = "Write text content to a file in the workspace. " +
+        "Overwrites if exists, creates if not. Use for saving artifacts, reports, generated code. " +
+        "Long content: this engine can only emit about $RECOMMENDED_WRITE_CHUNK_CHARS chars per " +
+        "reply, so write bigger files in pieces — first call with append=false, then keep " +
+        "calling with append=true; each call appends to the end of the same file."
 
     override fun schema() = JsonObject().apply {
         addProperty("type", "object")
@@ -166,7 +181,13 @@ class FileWriteTool(private val appContext: Context) : Tool {
             })
             add("content", JsonObject().apply {
                 addProperty("type", "string")
-                addProperty("description", "Text content to write.")
+                addProperty("description", "Text content to write (this chunk only, when appending).")
+            })
+            add("append", JsonObject().apply {
+                addProperty("type", "boolean")
+                addProperty("description", "Append to the end of an existing file instead of " +
+                    "overwriting it. Default false. Use for content too long for one reply: " +
+                    "first call append=false, then append=true until the file is complete.")
             })
         })
         add("required", com.google.gson.JsonArray().apply { add("path"); add("content") })
@@ -179,10 +200,20 @@ class FileWriteTool(private val appContext: Context) : Tool {
         }
         val path = input.get("path")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing path", durationMs = System.currentTimeMillis() - t0)
         val content = input.get("content")?.asString ?: return@withContext ToolResult(ok = false, output = "", error = "missing content", durationMs = System.currentTimeMillis() - t0)
+        // Models occasionally send booleans as strings ("true"); schema
+        // validation upstream enforces the type, so this is a safe fallback.
+        val append = input.get("append")?.takeIf { it.isJsonPrimitive }?.let { p ->
+            val prim = p.asJsonPrimitive
+            when {
+                prim.isBoolean -> prim.asBoolean
+                prim.isString -> prim.asString.equals("true", ignoreCase = true)
+                else -> false
+            }
+        } ?: false
         if (content.length > MAX_WRITE_CHARS) {
             return@withContext ToolResult(ok = false, output = "",
                 error = "Content too large (${content.length} chars, cap $MAX_WRITE_CHARS). " +
-                    "Write in smaller chunks or use shell/python with the workspace.",
+                    "Write it in pieces with append=true, or use shell/python with the workspace.",
                 durationMs = System.currentTimeMillis() - t0)
         }
         val root = DocumentFile.fromTreeUri(appContext, Uri.parse(ctx.workspaceUri))
@@ -205,8 +236,12 @@ class FileWriteTool(private val appContext: Context) : Tool {
                 val target = existing?.takeIf { it.isFile }
                     ?: current.createFile("text/plain", segment)
                     ?: return@withContext ToolResult(ok = false, output = "", error = "Could not create file: $segment", durationMs = System.currentTimeMillis() - t0)
+                // "wa" appends (a new file created just above starts empty),
+                // "wt" truncates. Appending is how a payload bigger than the
+                // engine's output ceiling is written without truncation.
+                val mode = fileWriteStreamMode(append)
                 try {
-                    appContext.contentResolver.openOutputStream(target.uri, "wt")?.use { os ->
+                    appContext.contentResolver.openOutputStream(target.uri, mode)?.use { os ->
                         os.write(content.toByteArray())
                     } ?: return@withContext ToolResult(ok = false, output = "", error = "Could not open output stream", durationMs = System.currentTimeMillis() - t0)
                 } catch (e: Exception) {
@@ -218,9 +253,12 @@ class FileWriteTool(private val appContext: Context) : Tool {
                 // that does not exist is a lie the model trips over on the
                 // next file_read.
                 val (actualPath, renameNote) = resolveWrittenPath(path, target.name ?: segment)
+                val verb = if (append) "Appended" else "Wrote"
+                val total = target.length()
                 return@withContext ToolResult(
                     ok = true,
-                    output = "Wrote ${content.length} chars to $actualPath$renameNote",
+                    output = "$verb ${content.length} chars to $actualPath" +
+                        (if (append) " (file is now $total bytes)" else "") + renameNote,
                     durationMs = System.currentTimeMillis() - t0,
                     citation = Citation("file", target.uri.toString(), "file: $actualPath"),
                 )
