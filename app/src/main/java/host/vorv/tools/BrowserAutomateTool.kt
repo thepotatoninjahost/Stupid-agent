@@ -149,11 +149,49 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
                     .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
                 val headers = mutableMapOf<String, String>()
                 for ((k, v) in resp.headers) headers[k] = v
-                val body = resp.body?.byteStream()
-                    ?: java.io.ByteArrayInputStream(ByteArray(0))
-                WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
+                WebResourceResponse(mime, charset, resp.code, resp.message, headers, closingStreamOf(resp))
             } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
+                // M-5 (code review, 2026-11-20): returning null here told the
+                // WebView "I did not handle it", so the WebView loaded the
+                // URL ITSELF — with its own resolver and socket, none of
+                // NetworkGuard's checks, and a redirect the pinned client had
+                // just refused could complete on the second try. A proxy
+                // failure must FAIL CLOSED: answer with the error.
+                WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    502,
+                    "Upstream fetch failed",
+                    emptyMap(),
+                    java.io.ByteArrayInputStream(
+                        (
+                            "vorv: the sub-resource could not be fetched through the network guard " +
+                                "(${e.javaClass.simpleName}). It was not loaded a second way.\n"
+                            ).toByteArray(),
+                    ),
+                )
+            }
+        }
+
+        /**
+         * The response body, closed together with its [okhttp3.Response]: the
+         * WebView closes the stream it is given, and before this the response
+         * (and its connection) was never closed at all.
+         */
+        private fun closingStreamOf(resp: okhttp3.Response): java.io.InputStream {
+            val raw = resp.body?.byteStream()
+            if (raw == null) {
+                resp.close()
+                return java.io.ByteArrayInputStream(ByteArray(0))
+            }
+            return object : java.io.FilterInputStream(raw) {
+                override fun close() {
+                    try {
+                        super.close()
+                    } finally {
+                        resp.close()
+                    }
+                }
             }
         }
 

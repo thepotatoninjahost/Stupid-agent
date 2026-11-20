@@ -110,7 +110,16 @@ class ShellTool(
         val shell = try {
             guest.run(command, timeoutMs.toLong(), binds, workDir)
         } catch (e: Exception) {
-            return@withContext fail("shell could not start inside the Linux system: ${e.message}")
+            // #6 (code review, 2026-11-20): this is "the dispatch never came
+            // back" — the one case the dead-shell wall exists for. Until now
+            // nothing in production ever armed it, so the fail-fast guard in
+            // this file, the Setup card and the BLOCKED prompt line all
+            // described a state the app could not reach.
+            SessionGrants.blockShell("the shell dispatch failed: ${e.message ?: e.javaClass.simpleName}")
+            return@withContext fail(
+                "shell could not start inside the Linux system: ${e.message}. Nothing ran. " +
+                    blockedShellMessage(SessionGrants.shellBlockedReason ?: "the dispatch failed"),
+            )
         }
 
         if (shell.timedOut) {

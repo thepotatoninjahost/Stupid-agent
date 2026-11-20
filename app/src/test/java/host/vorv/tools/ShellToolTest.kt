@@ -29,6 +29,7 @@ class ShellToolTest {
     private class FakeGuest(
         private val available: Boolean = true,
         private val result: LinuxSystem.Shell = LinuxSystem.Shell(0, "ok\n", null, false),
+        private val explode: Exception? = null,
     ) : GuestShell {
         val calls = mutableListOf<Triple<String, List<Pair<String, String>>, String>>()
         override fun isAvailable() = available
@@ -39,6 +40,7 @@ class ShellToolTest {
             workDir: String,
         ): LinuxSystem.Shell {
             calls += Triple(command, binds, workDir)
+            explode?.let { throw it }
             return result
         }
     }
@@ -54,6 +56,25 @@ class ShellToolTest {
 
     private fun ctx(confirm: (suspend (String) -> Boolean)? = null, workspaceUri: String? = null) =
         ToolContext(taskId = "t1", iteration = 1, workspaceUri = workspaceUri, confirm = confirm)
+
+    /**
+     * #6 (code review, 2026-11-20): nothing in production ever armed the
+     * dead-shell wall, so the fail-fast guard, the Setup card and the BLOCKED
+     * prompt line all described a state the app could not reach.
+     */
+    @Test
+    fun `a dispatch that throws arms the dead-shell wall`() = runBlocking {
+        val guest = FakeGuest(explode = IllegalStateException("proot died"))
+        val r = ShellTool(guest, context).run(input(), ctx(confirm = { true }))
+        assertFalse(r.ok)
+        assertTrue(r.error!!.contains("Nothing ran"))
+        assertTrue(SessionGrants.shellBlocked)
+        assertEquals("the failure must be the wall's reason", true, SessionGrants.shellBlockedReason!!.contains("proot died"))
+        // And the NEXT call fails fast without touching the guest again.
+        val again = ShellTool(guest, context).run(input(), ctx(confirm = { true }))
+        assertFalse(again.ok)
+        assertEquals(1, guest.calls.size)
+    }
 
     @Test
     fun `missing command fails before anything else`() = runBlocking {
