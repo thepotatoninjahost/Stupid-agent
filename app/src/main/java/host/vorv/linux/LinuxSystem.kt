@@ -1,8 +1,13 @@
 package host.vorv.linux
 
 import android.content.Context
+import host.vorv.tools.Attempt
 import host.vorv.tools.GuestShell
+import host.vorv.tools.SessionGrants
+import host.vorv.util.CappedOutput
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
@@ -228,39 +233,88 @@ class LinuxSystem(private val context: Context) : GuestShell {
         )
     }
 
-    /** One proot run: start it, drain its output, enforce the timeout. */
-    private fun launch(argv: List<String>, env: Map<String, String>, home: File, timeoutMs: Long): Shell {
-        val builder = ProcessBuilder(argv)
-        builder.environment().putAll(env)
-        builder.directory(home)
-        val process = runCatching { builder.redirectErrorStream(true).start() }.getOrElse {
-            return Shell(-1, "", "proot could not be started: ${it.message ?: it.javaClass.simpleName}", false)
-        }
-        // Nothing is ever written to proot's stdin, and every pipe this leaves
-        // open costs the app two file descriptors for the life of the process.
-        runCatching { process.outputStream.close() }
-        // Reading on this thread would block *before* the timeout is checked: a
-        // command that never exits and never prints would never time out. The
-        // drain runs on its own thread so waitFor() is the thing that decides.
-        val out = StringBuilder()
-        val drain = Thread {
-            runCatching {
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    synchronized(out) { if (out.length < MAX_OUTPUT) out.appendLine(line) }
-                }
+    /**
+     * One proot run: start it, drain its output, enforce the timeout.
+     *
+     * #9 (code review, 2026-11-20): the wait runs under [runInterruptible], so
+     * cancelling the coroutine — STOP, or the kernel's per-tool timeout —
+     * interrupts this thread and the guest process is killed. Before this, a
+     * cancelled call left proot and everything it had started running: a
+     * compile kept writing into the phone for a task that no longer existed,
+     * and the next call raced it for the same files.
+     */
+    private suspend fun launch(argv: List<String>, env: Map<String, String>, home: File, timeoutMs: Long): Shell =
+        runInterruptible(Dispatchers.IO) {
+            val builder = ProcessBuilder(argv)
+            builder.environment().putAll(env)
+            builder.directory(home)
+            val process = runCatching { builder.redirectErrorStream(true).start() }.getOrElse {
+                return@runInterruptible Shell(
+                    -1, "", "proot could not be started: ${it.message ?: it.javaClass.simpleName}", false,
+                )
             }
-        }.apply { isDaemon = true; name = "vorv-guest-drain"; start() }
-        val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-        if (!finished) {
-            process.destroyForcibly()
-            process.waitFor(2, TimeUnit.SECONDS)
-            drain.join(500)
-            runCatching { process.inputStream.close() }
-            return Shell(-1, synchronized(out) { out.toString() }, "timed out after ${timeoutMs}ms", true)
+            // Nothing is ever written to proot's stdin, and every pipe this leaves
+            // open costs the app two file descriptors for the life of the process.
+            runCatching { process.outputStream.close() }
+            // Reading on this thread would block *before* the timeout is checked: a
+            // command that never exits and never prints would never time out. The
+            // drain runs on its own thread so waitFor() is the thing that decides.
+            val out = CappedOutput(MAX_OUTPUT)
+            val drain = Thread {
+                runCatching {
+                    process.inputStream.bufferedReader().forEachLine { line -> out.appendLine(line) }
+                }
+            }.apply { isDaemon = true; name = "vorv-guest-drain"; start() }
+            val finished = try {
+                process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (e: InterruptedException) {
+                // The coroutine was cancelled: the caller is gone, so nothing
+                // will ever read this output. Kill the guest and let
+                // runInterruptible surface the cancellation.
+                endGuest(process)
+                drain.join(500)
+                Attempt.of("close the guest output pipe after a cancelled call") { process.inputStream.close() }
+                throw CancellationException("the guest command was cancelled")
+            }
+            if (!finished) {
+                val died = endGuest(process)
+                drain.join(500)
+                Attempt.of("close the guest output pipe after a timeout") { process.inputStream.close() }
+                // #6: a kill that does not take is the wedge the dead-shell wall
+                // exists for — arm it, so the next call fails fast instead of
+                // queueing behind a process that is still there.
+                if (!died) {
+                    SessionGrants.blockShell(
+                        "proot ignored a kill after ${timeoutMs}ms; the Linux system is wedged in this session",
+                    )
+                }
+                return@runInterruptible Shell(-1, out.text(), "timed out after ${timeoutMs}ms", true)
+            }
+            drain.join(2_000)
+            Attempt.of("close the guest output pipe") { process.inputStream.close() }
+            Shell(process.exitValue(), out.text(), null, false)
         }
-        drain.join(2_000)
-        runCatching { process.inputStream.close() }
-        return Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
+
+    /**
+     * #9 (code review, 2026-11-20): stop proot and, with it, the guest.
+     *
+     * SIGTERM first, so proot can run its own `--kill-on-exit` teardown and
+     * take the whole process tree down; SIGKILL only if it ignores that. The
+     * old code went straight to `destroyForcibly`, which kills proot alone and
+     * leaves the guest running. Returns true when the process is really gone.
+     */
+    private fun endGuest(process: Process): Boolean {
+        Attempt.of("SIGTERM the guest") { process.destroy() }
+        if (Attempt.orDefault("wait for the guest to leave", false) {
+                process.waitFor(2, TimeUnit.SECONDS)
+            }
+        ) {
+            return true
+        }
+        Attempt.of("SIGKILL the guest") { process.destroyForcibly() }
+        return Attempt.orDefault("wait for the killed guest to leave", false) {
+            process.waitFor(3, TimeUnit.SECONDS)
+        }
     }
 
     companion object {
@@ -287,6 +341,13 @@ class LinuxSystem(private val context: Context) : GuestShell {
             // them. This proot build has the Termux fix: a link request becomes a
             // symlink instead of failing.
             add("--link2symlink")
+            // #9 (code review, 2026-11-20): proot is the parent of everything a
+            // command starts. Asked to leave, it takes its tracees with it —
+            // without this flag `apt-get install` kept writing into the rootfs
+            // after the tool call that started it was gone. Note it cannot help
+            // once proot itself is SIGKILLed, which is why the kill path below
+            // tries a plain terminate first.
+            add("--kill-on-exit")
             add("-r"); add(rootfs.absolutePath)
             add("-b"); add("/dev")
             add("-b"); add("/proc")

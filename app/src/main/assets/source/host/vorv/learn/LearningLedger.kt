@@ -159,16 +159,25 @@ object LearningLedger {
      * Validation is the newest tenth of the answerable rows, so a validation
      * score always tests the future. The boundary is recomputed when the corpus
      * is built (never per insert) so the instrument stays stable while rows
-     * arrive; a row that was used for validation is never also trained on.
+     * arrive.
+     *
+     * C-3 (code review, 2026-11-20): the hold-out set only ever GROWS. Rows
+     * already marked [Split.VAL] stay validation for good — the old code
+     * recomputed the newest tenth by position and relabelled last
+     * generation's validation rows TRAIN as soon as newer rows arrived, so
+     * every later validation loss was partly measured on data the model had
+     * fitted. A row that was used for validation is never also trained on.
      */
     fun assignSplits(rows: List<Row>): List<Row> {
         val answerable = rows.filter { it.kind.isTrainingTarget }.sortedWith(compareBy({ it.ts }, { it.dedupeKey }))
-        if (answerable.isEmpty()) return rows
+        if (answerable.isEmpty()) return rows.map { if (it.split == Split.VAL) it else it.copy(split = Split.TRAIN) }
         // Fewer than ten answerable rows means there is no "newest tenth" worth
         // holding out: everything trains, so the first generation can exist.
         val newestCount = if (answerable.size < MIN_FOR_VAL) 0 else
             kotlin.math.max(1, kotlin.math.round(answerable.size * VAL_FRACTION).toInt())
-        val valKeys = answerable.takeLast(newestCount).map { it.dedupeKey }.toSet()
+        // Sticky: what was already held out plus the current newest slice.
+        val valKeys = rows.filter { it.split == Split.VAL }.map { it.dedupeKey }.toMutableSet()
+        valKeys += answerable.takeLast(newestCount).map { it.dedupeKey }
         return rows.map { if (it.dedupeKey in valKeys) it.copy(split = Split.VAL) else it.copy(split = Split.TRAIN) }
     }
 

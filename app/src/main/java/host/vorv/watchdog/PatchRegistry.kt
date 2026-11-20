@@ -91,12 +91,22 @@ object PatchRegistry {
     fun <T : Any> create(iface: Class<T>, fqcn: String, vararg args: Any?): T? {
         if (!isPatchableClass(fqcn)) return null
         for (loader in patchLoaders) {
+            // M-7 (code review, 2026-11-20): a dex compiled against another
+            // app version fails to LINK, not with ClassNotFoundException —
+            // NoClassDefFoundError, LinkageError, IncompatibleClassChangeError,
+            // ExceptionInInitializerError are all Errors, which `catch
+            // (Exception)` does not see. One such patch therefore crashed the
+            // caller (the kernel, a tool, the healer) on EVERY dispatch, and
+            // the watchdog read that as the app being broken. Now the failure
+            // is logged, the loader is dropped so it is not retried, and the
+            // unpatched original runs.
             val patched: Class<*> = try {
                 loader.loadClass(fqcn)
             } catch (e: ClassNotFoundException) {
                 continue
-            } catch (e: Exception) {
-                Log.w(TAG, "Patch load failed for $fqcn: ${e.message}")
+            } catch (e: Throwable) {
+                Log.e(TAG, "Patch load failed for $fqcn (${e.javaClass.simpleName}): ${e.message}", e)
+                dropLoader(loader, e)
                 continue
             }
             if (!iface.isAssignableFrom(patched)) {
@@ -105,7 +115,7 @@ object PatchRegistry {
             }
             return try {
                 construct(patched, args)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Patch construction failed for $fqcn: ${e.message}", e)
                 null
             }
@@ -129,11 +139,27 @@ object PatchRegistry {
             val expanded: Array<Any?> = arrayOfNulls(candidate.parameterCount)
             System.arraycopy(args, 0, expanded, 0, minOf(args.size, candidate.parameterCount))
             candidate.newInstance(*expanded) as? T
-        } catch (e: Exception) {
-            Log.e(TAG, "Patch newInstance failed: ${e.message}", e)
+        } catch (e: Throwable) {
+            // Same reason as create(): a wrong-shaped or unlinkable patch
+            // throws an Error from the constructor, and it must not escape.
+            Log.e(TAG, "Patch newInstance failed (${e.javaClass.simpleName}): ${e.message}", e)
             null
         }
     }
+
+    /**
+     * Removes a loader whose patch cannot link on this build. It will never
+     * link later in the same process, and retrying it on every dispatch only
+     * repeats the same failure.
+     */
+    private fun dropLoader(loader: ClassLoader, cause: Throwable) {
+        if (patchLoaders.remove(loader)) {
+            Log.w(TAG, "Patch loader dropped after ${cause.javaClass.simpleName}; ${patchLoaders.size} left")
+        }
+    }
+
+    /** Test hook: how many patch loaders are live. */
+    internal fun activeLoadersForTest(): Int = patchLoaders.size
 
     /** Test hook: clear registered loaders. */
     fun resetForTest() {

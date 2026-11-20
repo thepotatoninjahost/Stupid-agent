@@ -1,6 +1,7 @@
 package host.vorv.forge
 
 import android.content.Context
+import host.vorv.util.CappedOutput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -108,12 +109,11 @@ class ForgeRuntime(private val context: Context) {
     fun exec(argv: List<String>, timeoutMs: Long = 300_000): Exec {
         val started = System.currentTimeMillis()
         val process = ProcessBuilder(argv).redirectErrorStream(true).start()
-        val output = StringBuilder()
+        // L-12: the cap holds per CHARACTER, not per line — see CappedOutput.
+        val output = CappedOutput(MAX_OUTPUT)
         val drain = Thread {
             try {
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    synchronized(output) { if (output.length < MAX_OUTPUT) output.appendLine(line) }
-                }
+                process.inputStream.bufferedReader().forEachLine { line -> output.appendLine(line) }
             } catch (_: java.io.IOException) {
                 // Process died mid-read; the exit code carries the verdict.
             }
@@ -123,13 +123,11 @@ class ForgeRuntime(private val context: Context) {
             process.destroyForcibly()
             process.waitFor(5, TimeUnit.SECONDS)
             drain.join(1_000)
-            return Exec(-1, snapshot(output), System.currentTimeMillis() - started, timedOut = true)
+            return Exec(-1, output.text(), System.currentTimeMillis() - started, timedOut = true)
         }
         drain.join(2_000)
-        return Exec(process.exitValue(), snapshot(output), System.currentTimeMillis() - started, timedOut = false)
+        return Exec(process.exitValue(), output.text(), System.currentTimeMillis() - started, timedOut = false)
     }
-
-    private fun snapshot(output: StringBuilder): String = synchronized(output) { output.toString() }
 
     data class Exec(val exitCode: Int, val output: String, val ms: Long, val timedOut: Boolean) {
         val ok: Boolean get() = exitCode == 0 && !timedOut

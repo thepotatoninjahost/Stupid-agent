@@ -119,4 +119,65 @@ class PatchRegistryTest {
         assertEquals("notify", tool!!.name)
         PatchRegistry.resetForTest()
     }
+
+    /**
+     * M-7 (code review, 2026-11-20): a patch dex built against a different app
+     * version does not throw ClassNotFoundException — it throws an Error when
+     * it links. `catch (Exception)` did not see those, so one bad patch made
+     * every dispatch of that class throw, i.e. the kernel, a tool or the
+     * healer died on every call. The registry must contain the failure and
+     * fall back to the unpatched class.
+     */
+    private class ExplodingLoader(private val error: Throwable) : ClassLoader(null) {
+        override fun loadClass(name: String, resolve: Boolean): Class<*> = throw error
+    }
+
+    @Test
+    fun `a patch that cannot link is contained and dropped`() {
+        PatchRegistry.resetForTest()
+        val errors = listOf(
+            NoClassDefFoundError("host/vorv/llm/Llm\$Model"),
+            LinkageError("dalvik.system.BaseDexClassLoader"),
+            IncompatibleClassChangeError("Tool.run"),
+            ExceptionInInitializerError(IllegalStateException("static init")),
+            OutOfMemoryError("dex map"),
+        )
+        for (e in errors) {
+            PatchRegistry.resetForTest()
+            PatchRegistry.registerLoader(ExplodingLoader(e))
+            val created = PatchRegistry.create(host.vorv.tools.Tool::class.java, "host.vorv.tools.ShellTool")
+            assertNull("${e.javaClass.simpleName} escaped create()", created)
+            // Dropped: the same broken loader is not retried on the next call.
+            assertEquals(0, PatchRegistry.activeLoadersForTest())
+            assertNull(PatchRegistry.create(host.vorv.tools.Tool::class.java, "host.vorv.tools.ShellTool"))
+        }
+        PatchRegistry.resetForTest()
+    }
+
+    @Test
+    fun `a good patch still wins over the original`() {
+        PatchRegistry.resetForTest()
+        val good = object : ClassLoader(null) {
+            override fun loadClass(name: String, resolve: Boolean): Class<*> =
+                if (name == "host.vorv.tools.ShellTool") GoodShell::class.java
+                else super.loadClass(name, resolve)
+        }
+        PatchRegistry.registerLoader(good)
+        val created = PatchRegistry.create(host.vorv.tools.Tool::class.java, "host.vorv.tools.ShellTool")
+        assertNotNull(created)
+        assertTrue(created is GoodShell)
+        assertEquals(1, PatchRegistry.activeLoadersForTest())
+        PatchRegistry.resetForTest()
+    }
+
+    /** Minimal patch-shaped Tool used only to prove dispatch still works. */
+    private class GoodShell : host.vorv.tools.Tool {
+        override val name = "shell"
+        override val description = "patched"
+        override fun schema() = com.google.gson.JsonObject()
+        override suspend fun run(
+            input: com.google.gson.JsonObject,
+            ctx: host.vorv.tools.ToolContext,
+        ) = host.vorv.tools.ToolResult(ok = true, output = "patched", durationMs = 0)
+    }
 }

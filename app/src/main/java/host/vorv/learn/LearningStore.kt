@@ -48,9 +48,31 @@ class LearningStore(private val dao: LearningDao) {
     suspend fun answerableCount(): Int = dao.answerableCount()
 
     /** The corpus the trainer and the GPU job read. */
-    suspend fun exportJsonl(): String = LearningLedger.exportJsonl(rows())
+    suspend fun exportJsonl(): String = LearningLedger.exportJsonl(freezeHeldOut(rows()))
 
-    suspend fun stats(): LearningLedger.DatasetStats = LearningLedger.stats(rows())
+    suspend fun stats(): LearningLedger.DatasetStats = LearningLedger.stats(freezeHeldOut(rows()))
+
+    /**
+     * C-3 (code review, 2026-11-20): write the hold-out set down before it is
+     * used. [LearningLedger.assignSplits] only ever adds to it, but that rule
+     * needs the previous answer to be somewhere — without this, every row read
+     * back from the table was TRAIN and last generation's validation rows were
+     * quietly trained on.
+     */
+    private suspend fun freezeHeldOut(rows: List<LearningLedger.Row>): List<LearningLedger.Row> {
+        val assigned = LearningLedger.assignSplits(rows)
+        val alreadyVal = rows.asSequence()
+            .filter { it.split == LearningLedger.Split.VAL }
+            .map { it.dedupeKey }
+            .toSet()
+        val fresh = assigned.asSequence()
+            .filter { it.split == LearningLedger.Split.VAL && it.dedupeKey !in alreadyVal }
+            .map { it.dedupeKey }
+            .toList()
+        // Bound the bind-variable count (SQLite's default limit is 999).
+        fresh.chunked(500).forEach { dao.markVal(it) }
+        return assigned
+    }
 
     /** Forget one topic, everywhere. */
     suspend fun forget(topic: String): Int {

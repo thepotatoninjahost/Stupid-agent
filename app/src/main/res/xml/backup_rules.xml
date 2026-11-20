@@ -13,12 +13,31 @@
   restore would yield a secret store that can never decrypt again (and
   blocks clean re-creation). The user re-enters the key on a new install,
   exactly like every other credential-holding app.
+
+  M-8 (code review, 2026-11-20): the rules excluded the DB and the key file
+  but not the app's own multi-hundred-MB working state — the GenieX model
+  (filesDir/geniex, gigabytes), the trained-brain store, the bundled JVM and
+  dexer (forge), the unpacked Debian userland (linux), the hot-patch store
+  with its Keystore-wrapped key, the healer's class jar, and the computer
+  home. Android's backup quota is 25 MB for the whole app: any one of those
+  makes the entire backup fail, including the small DataStore settings the
+  rules exist to preserve. They are excluded by name here, which keeps the
+  settings (filesDir/datastore) in the backup.
 -->
 <full-backup-content>
     <exclude domain="database" path="vorv.db" />
     <exclude domain="database" path="vorv.db-wal" />
     <exclude domain="database" path="vorv.db-shm" />
     <exclude domain="sharedpref" path="vorv_secrets.xml" />
+    <!-- Heavy machine state: never transferable, and larger than the quota. -->
+    <exclude domain="file" path="geniex" />
+    <exclude domain="file" path="brain" />
+    <exclude domain="file" path="forge" />
+    <exclude domain="file" path="linux" />
+    <exclude domain="file" path="computer" />
+    <exclude domain="file" path="hotpatch" />
+    <exclude domain="file" path="hotpatch_quarantine" />
+    <exclude domain="file" path="healer" />
     <exclude domain="external" path="crash_logs" />
     <exclude domain="external" path="watchdog" />
     <exclude domain="external" path="healer" />

@@ -39,7 +39,10 @@ class LinuxSystemArgvTest {
         // for libgl1-mesa-dri; --link2symlink turns a link into a symlink, which
         // is the Termux fix for exactly that.
         assertEquals("--link2symlink", a[2])
-        assertEquals(listOf("-r", rootfs.absolutePath), a.subList(3, 5))
+        // #9 (code review, 2026-11-20): proot must take its tracees with it,
+        // otherwise a cancelled compile keeps writing into the rootfs.
+        assertEquals("--kill-on-exit", a[3])
+        assertEquals(listOf("-r", rootfs.absolutePath), a.subList(4, 6))
         for (sys in listOf("/dev", "/proc", "/sys")) {
             val i = a.indexOf(sys)
             assertTrue("$sys must be bound", i > 0 && a[i - 1] == "-b")

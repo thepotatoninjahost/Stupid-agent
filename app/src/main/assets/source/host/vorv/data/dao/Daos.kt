@@ -174,6 +174,12 @@ interface LearningDao {
     @Query("SELECT COUNT(*) FROM learning_rows WHERE kind IN ('CHAT_ASSISTANT','CORRECTION','TEACHER_DISTIL','PLAN','PATCH')")
     suspend fun answerableCount(): Int
 
+    // C-3 (code review, 2026-11-20): the hold-out set is persisted so it can
+    // only grow. Room has no "mark one" helper for this — the split is a column
+    // of a row that already exists.
+    @Query("UPDATE learning_rows SET split = 'VAL' WHERE dedupeKey IN (:keys)")
+    suspend fun markVal(keys: List<String>)
+
     @Query("DELETE FROM learning_rows WHERE dedupeKey = :key")
     suspend fun delete(key: String)
 

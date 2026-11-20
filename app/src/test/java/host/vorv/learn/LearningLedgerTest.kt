@@ -75,6 +75,53 @@ class LearningLedgerTest {
         assertEquals(18, LearningLedger.dataset(ledger, includeVal = false).size)
     }
 
+    /**
+     * C-3 (code review, 2026-11-20): the hold-out set only grows. The old rule
+     * took the newest tenth by position every time, so rows 19 and 20 were
+     * validation at generation 1 and silently became TRAIN at generation 2 —
+     * after their score had been used to promote a generation. Every later
+     * validation loss then measured partly on data the model had fitted.
+     */
+    @Test
+    fun `a validation row is never demoted to training`() {
+        var ledger = emptyList<LearningLedger.Row>()
+        for (i in 1..20) {
+            ledger = LearningLedger.ingest(ledger, row(i.toLong(), LearningLedger.Kind.CHAT_ASSISTANT, "q$i", "a$i"))
+        }
+        val first = LearningLedger.assignSplits(ledger)
+        val heldOut = first.filter { it.split == LearningLedger.Split.VAL }.map { it.dedupeKey }.toSet()
+        assertEquals(2, heldOut.size)
+
+        // Persist what was held out (that is what LearningStore does), then
+        // ten newer rows arrive.
+        var persisted = first
+        for (i in 21..30) {
+            persisted = LearningLedger.ingest(persisted, row(i.toLong(), LearningLedger.Kind.CHAT_ASSISTANT, "q$i", "a$i"))
+        }
+        val second = LearningLedger.assignSplits(persisted)
+
+        assertTrue(
+            "the generation-1 validation rows came back as training material",
+            second.filter { it.dedupeKey in heldOut }.all { it.split == LearningLedger.Split.VAL },
+        )
+        // New rows are ADDED to the hold-out set, not swapped in for it.
+        assertEquals(heldOut.size + 3, second.count { it.split == LearningLedger.Split.VAL })
+        // And the training set really excludes them.
+        val trained = LearningLedger.dataset(persisted)
+            .map { it.output }
+            .toSet()
+        assertFalse(trained.contains("a19"))
+        assertFalse(trained.contains("a20"))
+    }
+
+    @Test
+    fun `an unheld corpus still trains on everything`() {
+        val ledger = (1..9).map { row(it.toLong(), LearningLedger.Kind.CHAT_ASSISTANT, "q$it", "a$it") }
+        val split = LearningLedger.assignSplits(ledger)
+        assertTrue(split.all { it.split == LearningLedger.Split.TRAIN })
+        assertEquals(9, LearningLedger.dataset(split).size)
+    }
+
     @Test
     fun `pruning drops low weight oldest rows first and protects corrections`() {
         val rows = (1..10).map { row(it.toLong(), LearningLedger.Kind.CHAT_ASSISTANT, "q$it", "a$it") } +

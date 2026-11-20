@@ -63,6 +63,22 @@ class MemoryWriteTool(private val db: VorvDatabase) : Tool {
 }
 
 /**
+ * Turns arbitrary user text into a MATCH expression FTS4 cannot choke on.
+ *
+ * Each word becomes a quoted literal with a prefix marker (`"term"*`), joined
+ * by spaces — implicit AND in both FTS4 query syntaxes, and no operator a
+ * user can reach (quotes are stripped by the split, and AND/OR/NOT/NEAR only
+ * count as operators unquoted). Words are capped so a pasted paragraph cannot
+ * become a 500-term query. Returns null when nothing searchable is left.
+ */
+internal fun ftsQuery(raw: String, maxTerms: Int = 8): String? =
+    raw.split(Regex("[^\\p{L}\\p{N}_]+"))
+        .filter { it.isNotEmpty() }
+        .take(maxTerms)
+        .joinToString(" ") { "\"$it\"*" }
+        .ifEmpty { null }
+
+/**
  * memory_recall - search long-term memory by keyword (FTS4 + LIKE fallback).
  *
  * v0.5.0: vector path removed (GenieX doesn't expose embed() through
@@ -93,12 +109,24 @@ class MemoryRecallTool(private val db: VorvDatabase) : Tool {
         val query = input.get("query")?.asString ?: return ToolResult(ok = false, output = "", error = "missing query", durationMs = System.currentTimeMillis() - t0)
         val limit = input.get("limit")?.takeIf { !it.isJsonNull }?.asInt ?: 5
 
-        val results = try {
-            db.knowledgeDao().searchFts("$query*", limit).ifEmpty {
+        // #14 (code review, 2026-11-20): the raw query used to go straight
+        // into a MATCH expression as `"$query*"`. A quote, a colon, a `-`, a
+        // stray `*` or a word like OR/NOT/NEAR is FTS4 SYNTAX, so a user
+        // asking about C++ or "the "best" way" got a SQLiteException — which
+        // the catch below turned into a full-string LIKE, i.e. a silently
+        // different (and usually empty) search. [ftsQuery] makes every word a
+        // quoted literal, so nothing the user types can be an operator.
+        val fts = ftsQuery(query)
+        val results = if (fts == null) {
+            emptyList()
+        } else {
+            try {
+                db.knowledgeDao().searchFts(fts, limit).ifEmpty {
+                    db.knowledgeDao().searchLike(query, limit)
+                }
+            } catch (e: Exception) {
                 db.knowledgeDao().searchLike(query, limit)
             }
-        } catch (e: Exception) {
-            db.knowledgeDao().searchLike(query, limit)
         }
 
         results.forEach { db.knowledgeDao().markRecalled(it.id) }
