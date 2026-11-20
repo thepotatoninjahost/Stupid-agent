@@ -10,6 +10,8 @@ import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
 import com.geniex.sdk.bean.SamplerConfig
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Local LLM - real on-device inference via Qualcomm GenieX on the S25's Hexagon NPU.
@@ -75,6 +77,13 @@ class LocalLlm(
 
     /** The real ceiling: GenerationConfig.maxTokens below. */
     override val maxOutputTokens: Int get() = MAX_OUTPUT_TOKENS
+
+    /**
+     * C-2 (code review, 2026-11-20): a slow phone can spend a minute per
+     * hundred tokens, so the cloud-shaped 240 s wall would cut honest local
+     * work. This is a backstop against a wedged engine, not a pace target.
+     */
+    override val callBudgetMs: Long get() = 30 * 60_000L
 
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
@@ -184,7 +193,23 @@ class LocalLlm(
         }
     }
 
-    override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
+    /**
+     * L-10 (code review, 2026-11-20): one llama.cpp context, one generation.
+     * Nothing in this class serialised [ensureLoaded] or
+     * `generateStreamFlow` — it was safe only because the ViewModel's busy
+     * flag and ModelRepository's lock happened to keep a second caller away.
+     * A Brain probe, a WorkManager job or the healer running beside a chat
+     * would drive the same native context from two coroutines, which is
+     * garbled output or a native crash, not an error message. Generation is
+     * serial on one engine anyway, so the lock costs nothing real.
+     */
+    private val engineLock = Mutex()
+
+    override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
+        engineLock.withLock { generate(messages, tools) }
+
+    /** The actual turn; only ever called with [engineLock] held. */
+    private suspend fun generate(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
         val wrapper = ensureLoaded()
 
         val geniexMessages = messages.map { m ->

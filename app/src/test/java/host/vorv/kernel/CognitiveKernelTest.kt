@@ -45,6 +45,15 @@ class CognitiveKernelTest {
         }
     }
 
+    /** Never answers at all: the kernel's own call budget (C-2) must stop it. */
+    private class SilentLlm : Llm {
+        override val label = "silent"
+        override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
+            delay(Long.MAX_VALUE)
+            error("unreachable")
+        }
+    }
+
     private class FakeTool(
         override val name: String,
         private val result: ToolResult = ToolResult(true, "did $name", 1),
@@ -91,6 +100,23 @@ class CognitiveKernelTest {
         CognitiveKernel(sink, tools, tmp.newFolder("outputs"))
 
     // ---------------------------------------------------- tests
+
+    /**
+     * C-2 (code review, 2026-11-20): nothing wrapped `llm.step` before — only
+     * tools had timeouts — so a model that stopped answering left the task
+     * spinning forever. `runTest` advances virtual time, so the 240 s budget
+     * is exercised without waiting for it.
+     */
+    @Test
+    fun `a model that never answers is cut off by the call budget`() = runTest {
+        val sink = FakeSink()
+        val result = kernel(sink, emptyList()).run("t1", "q", SilentLlm(), null)
+        assertFalse(result.ok)
+        assertTrue(
+            "expected the timeout to be reported, got: ${result.error}",
+            result.error?.contains("did not answer within") == true,
+        )
+    }
 
     @Test
     fun `immediate text answer is returned and flagged uncited`() = runTest {

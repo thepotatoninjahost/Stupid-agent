@@ -62,6 +62,15 @@ class CognitiveKernel(
          *  slow on-device inference time. */
         const val MAX_NUDGES = 1
 
+        /**
+         * C-2 (code review, 2026-11-20): one model turn may not outlive this.
+         * There was no timeout around `llm.step` at all — only tools were
+         * wrapped — so a hung provider or a wedged chain (routes x models x
+         * retries x 150 s) looked exactly like a spinner with no error, and
+         * STOP only took effect once the blocking read returned. The call is
+         * cancelled when this expires, which closes the HTTP call underneath.
+         */
+        const val LLM_CALL_BUDGET_MS = 240_000L
         /** Truncated tool-call replies tolerated per task (review 2026-11-20):
          *  each one is refused and the model is told to split the work; if it
          *  keeps overrunning the output ceiling there is nothing to salvage,
@@ -242,6 +251,8 @@ class CognitiveKernel(
         var consecutiveFailCount = 0
         var retryCorrectiveUsed = false
         var lastToolError: String? = null
+        // C-2: the engine's own wall, capped by the kernel's backstop.
+        var callBudget = LLM_CALL_BUDGET_MS
 
         try {
             while (iterations < MAX_ITERATIONS) {
@@ -249,12 +260,17 @@ class CognitiveKernel(
                 eventSink.setTaskIterations(taskId, iterations)
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
-                val resp = try {
+                val answer = try {
                     // M-2: compact history to the engine's honest budget right
                     // before every call — growth without bound used to overflow
                     // the 4096-token context opaquely.
                     compactHistoryIfNeeded(messages, llm.contextTokenBudget)
-                    llm.step(messages, toolSpecs)
+                    // C-2: withTimeoutOrNull only eats its OWN timeout; a user
+                    // STOP still arrives as a CancellationException below.
+                    callBudget = minOf(LLM_CALL_BUDGET_MS, llm.callBudgetMs)
+                    withTimeoutOrNull(callBudget) {
+                        llm.step(messages, toolSpecs)
+                    }
                 } catch (e: CancellationException) {
                     // v0.6.16: user pressed STOP mid-generation — propagate.
                     throw e
@@ -274,6 +290,14 @@ class CognitiveKernel(
                     _trace.emit(TraceStep.Error("LLM call failed: $honest"))
                     break
                 }
+                if (answer == null) {
+                    val why = "the model did not answer within ${callBudget / 1000} s " +
+                        "and the call was cancelled; nothing was executed for this step"
+                    lastError = why
+                    _trace.emit(TraceStep.Error(why))
+                    break
+                }
+                val resp = answer
                 when (resp) {
                     is Llm.LlmResponse.Text -> {
                         // ---- nudge (v0.6.13): answer-with-commands-but-no-tool-call ----

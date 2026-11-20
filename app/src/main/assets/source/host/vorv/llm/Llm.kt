@@ -5,13 +5,23 @@ import com.google.gson.JsonParser
 import host.vorv.llm.provider.ProviderRegistry
 import host.vorv.tools.NetworkGuard
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import host.vorv.tools.Attempt
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Cloud model catalog for Z.ai. The free tier (GLM-4.7-Flash) is the
@@ -89,6 +99,16 @@ interface Llm {
      * are generous; the on-device engine reserves 2048.
      */
     val maxOutputTokens: Int get() = 8192
+
+    /**
+     * C-2 (code review, 2026-11-20): how long ONE [step] may take before the
+     * kernel cancels it. The engine owns this number because only it knows how
+     * slow it legitimately is: a cloud call is over in seconds, while the
+     * on-device engine at a few tokens per second can honestly need minutes
+     * for its whole 2048-token reply. Cancellation is cooperative, so a user
+     * STOP works regardless of this value.
+     */
+    val callBudgetMs: Long get() = 240_000L
 
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
@@ -180,6 +200,15 @@ class CloudLlm(
     private val maxAttempts: Int = MAX_ATTEMPTS,
     private val backoffMs: Long = 1_500L,
     private val provider: host.vorv.llm.provider.Provider? = null,
+    /**
+     * C-2 (code review, 2026-11-20): the whole [step] — every attempt, every
+     * backoff — shares one wall-clock budget. Before this, one call could sit
+     * in a blocking read for up to 150 s and the retry loop could spend that
+     * four times over, while the kernel had no timeout around it at all: a
+     * stopped task kept its spinner, and STOP only took effect when the
+     * blocking read happened to return.
+     */
+    private val requestBudgetMs: Long = REQUEST_BUDGET_MS,
 ) : Llm {
     private val model: String get() = modelName
     override val label = "$model (cloud)"
@@ -243,7 +272,12 @@ class CloudLlm(
             var lastErr: String? = null
             var lastCode = 0
             val url = ProviderRegistry.chatCompletionsUrl(baseUrl)
+            // C-2: the deadline is shared by every attempt, so a hanging
+            // provider costs one budget, not maxAttempts x one read timeout.
+            val deadline = System.currentTimeMillis() + requestBudgetMs
             for (attempt in 0 until maxAttempts) {
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0) break
                 try {
                     val payload = if (includeTools) bodyWithTools else bodyNoTools
                     val req = host.vorv.llm.provider.BrainHttp
@@ -253,7 +287,11 @@ class CloudLlm(
                         .post(payload.toRequestBody("application/json".toMediaType()))
                         .build()
 
-                    client.newCall(req).execute().use { res ->
+                    // The exchange is async and cancellable: STOP (or the
+                    // deadline) cancels the OkHttp Call itself, so a blocking
+                    // read can no longer outlive the task that asked for it.
+                    val call = client.newCall(req)
+                    withTimeout(remaining) { call.awaitResponse() }.use { res ->
                         val responseBody = res.body?.string().orEmpty()
                         // Redacted truth for Brain health: the address, the
                         // model, THAT a key was sent (never which), the code
@@ -329,6 +367,14 @@ class CloudLlm(
                             Llm.LlmResponse.Text(content, done = finish == "stop")
                         }
                     }
+                } catch (e: TimeoutCancellationException) {
+                    // Our own deadline, not the caller's cancellation: this is
+                    // a failed attempt, and the message says what happened.
+                    lastErr = "$model did not answer within ${requestBudgetMs / 1000}s"
+                    if (attempt < maxAttempts - 1) {
+                        val left = deadline - System.currentTimeMillis()
+                        if (left > 0) delay(kotlin.math.min(backoffMs * (1L shl attempt), left))
+                    }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     // N-L1 (VRA-2026-1103): cancellation is not a retryable
                     // failure — the task was timed out or cancelled. Retrying
@@ -353,8 +399,37 @@ class CloudLlm(
             }
         }
 
+    /**
+     * C-2 (code review, 2026-11-20): start an OkHttp call without blocking the
+     * thread, and cancel it when the coroutine is cancelled. `execute()` cannot
+     * observe coroutine cancellation at all, which is why STOP used to wait for
+     * the in-flight read to finish.
+     */
     companion object {
         private const val MAX_ATTEMPTS = 4
+        /** C-2: wall-clock budget for one [step], retries and backoff included. */
+        internal const val REQUEST_BUDGET_MS = 150_000L
+        /** C-2: the Setup probe asks for 8 tokens; 30 s is generous for that. */
+        private const val PROBE_BUDGET_MS = 30_000L
+
+        /**
+         * C-2: the one cancellable HTTP exchange. `execute()` cannot observe
+         * coroutine cancellation at all, which is why STOP used to wait for the
+         * in-flight read to finish; this cancels the OkHttp Call instead, and
+         * closes a response that arrives too late for a cancelled caller.
+         */
+        private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation { Attempt.of("cancel the in-flight model call") { cancel() } }
+            enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!cont.isCancelled) cont.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (cont.isCancelled) response.close() else cont.resume(response)
+                }
+            })
+        }
 
         /**
          * L-5 (code review, 2026-11): marks a DETERMINISTIC failure (HTTP
@@ -409,7 +484,9 @@ class CloudLlm(
                         .addHeader("Content-Type", "application/json")
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
-                    client.newCall(req).execute().use { res ->
+                    // C-2: the probe is a call to someone else's server too, so
+                    // it gets a wall and a cancellable transport like `step`.
+                    withTimeout(PROBE_BUDGET_MS) { client.newCall(req).awaitResponse() }.use { res ->
                         val text = res.body?.string().orEmpty()
                         val exchange = BrainFacts.Exchange(
                             url = url,
