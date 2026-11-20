@@ -62,6 +62,12 @@ class CognitiveKernel(
          *  slow on-device inference time. */
         const val MAX_NUDGES = 1
 
+        /** Truncated tool-call replies tolerated per task (review 2026-11-20):
+         *  each one is refused and the model is told to split the work; if it
+         *  keeps overrunning the output ceiling there is nothing to salvage,
+         *  so the task ends honestly instead of looping to MAX_ITERATIONS. */
+        const val MAX_TRUNCATIONS = 2
+
         /** Night session 2026-11-08: per-family cap for citation-gate
          *  evidence — generous (a ref can cite iteration-1 output in a
          *  20-iteration task), bounded so a huge task cannot grow memory
@@ -179,6 +185,7 @@ class CognitiveKernel(
         var toolCallCount = 0
         var lastError: String? = null
         var nudgesUsed = 0
+        var truncationsUsed = 0
         val rateCounts = HashMap<String, Int>()
 
         // Night session 2026-11-08 (acceptance-prep audit) — the citation
@@ -374,6 +381,41 @@ class CognitiveKernel(
                         messages.add(Llm.Message("assistant", resp.reasoning ?: "", toolCalls = resp.toolCalls))
 
                         for (tc in resp.toolCalls) {
+                            // M-1b (review 2026-11-20): the reply was cut at the
+                            // engine's output ceiling and this call was recovered
+                            // from INCOMPLETE JSON. Running it executed truncated
+                            // arguments — a file_write that wrote half a file and
+                            // reported ok = true. Refuse it and say how to split
+                            // the work; nothing from this generation is executed.
+                            if (resp.truncated) {
+                                truncationsUsed++
+                                if (truncationsUsed > MAX_TRUNCATIONS) {
+                                    val why = "The reply kept hitting the engine's " +
+                                        "${llm.maxOutputTokens}-token output ceiling, so no tool call " +
+                                        "could be completed. Nothing was executed. Ask for the work in " +
+                                        "smaller pieces (one file at a time, or shorter content per write)."
+                                    _trace.emit(TraceStep.Error(why))
+                                    return KernelApi.TaskResult(
+                                        false, why, iterations, toolCitations, toolCallCount,
+                                        error = "output_truncated",
+                                    )
+                                }
+                                val errMsg = "Your reply hit the engine's ${llm.maxOutputTokens}-token " +
+                                    "output ceiling, so this '${tc.name}' call was cut off mid-JSON " +
+                                    "and was NOT executed — nothing was written, run or changed. " +
+                                    "Redo it in smaller pieces: file_write takes append=true, so send " +
+                                    "the first part with append=false and then keep calling it with " +
+                                    "append=true until the whole content is on disk; for any other " +
+                                    "tool, send a smaller request."
+                                _trace.emit(TraceStep.Error(errMsg))
+                                messages.add(Llm.Message(
+                                    "tool",
+                                    JsonObject().apply { addProperty("error", errMsg) }.toString(),
+                                    toolCallId = tc.id,
+                                ))
+                                continue
+                            }
+
                             val tool = toolMap[tc.name]
                             if (tool == null) {
                                 val errMsg = "Unknown tool: ${tc.name}"

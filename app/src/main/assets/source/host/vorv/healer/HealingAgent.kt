@@ -63,6 +63,23 @@ import java.util.Locale
  * explanation; the diagnostic bundle is still available. SECURITY.md
  * documents the coverage.
  */
+
+/**
+ * Kotlin chars per output token, deliberately low: indentation, long
+ * identifiers and JSON escaping all cost more tokens than plain English, so
+ * 3 (not 4) keeps the estimate on the safe side.
+ */
+internal const val SELF_FIX_CHARS_PER_TOKEN = 3
+
+/** Chars a whole-file rewrite can realistically emit within [maxOutputTokens]. */
+internal fun selfFixBudgetChars(maxOutputTokens: Int): Int =
+    maxOutputTokens * SELF_FIX_CHARS_PER_TOKEN
+
+/** True when a class of [sourceChars] cannot be re-emitted whole by an engine
+ *  with [maxOutputTokens] — the gate self_fix refuses on before generating. */
+internal fun selfFixCannotEmitWhole(sourceChars: Int, maxOutputTokens: Int): Boolean =
+    sourceChars > selfFixBudgetChars(maxOutputTokens)
+
 class HealingAgent(
     private val context: Context,
     private val llm: Llm,
@@ -93,15 +110,17 @@ class HealingAgent(
         @Volatile internal var lastCompileDurationMs: Long = -1L
 
         /** Caps for prompt construction — problem inputs are untrusted data.
-         *  H3b (code review, 2026-11): MAX_SOURCE_CHARS raised 8 000 →
-         *  131 072 (128 KB). self_fix must re-emit the WHOLE file, so a cap
-         *  smaller than the file guarantees a broken patch — and the largest
-         *  bundled source (AgentViewModel.kt) is ~47 K chars. Every real
-         *  file now fits; a hypothetical larger file is refused honestly in
-         *  modifyInternal instead of silently truncated. */
+         *  MAX_SOURCE_CHARS only bounds what goes INTO the prompt on the
+         *  analysis path; the real limit for self_fix is the engine's own
+         *  output ceiling (see [SELF_FIX_CHARS_PER_TOKEN] and modifyInternal).
+         *  (H3b's 131 072 was sized on a mis-measured "largest file is
+         *  ~47 K chars" — AgentViewModel.kt is 107 526 chars, and the
+         *  on-device engine can emit ~6 K chars anyway, so that cap never
+         *  described a file that could actually be re-emitted.) */
         private const val MAX_STACK_CHARS = 4000
         private const val MAX_TRACE_CHARS = 1000
         private const val MAX_SOURCE_CHARS = 131_072
+
         private const val MAX_COMPILER_ERROR_CHARS = 1500
         private const val MAX_PROBLEM_CHARS = 4000
         private const val MAX_DIAGNOSTICS_CHARS = 2000
@@ -199,15 +218,20 @@ class HealingAgent(
             return HealResult(false, error = "source not bundled for $targetClass " +
                 "(assets/source mirror) — the heal refuses to patch against unknown code")
         }
-        // H3b: a file beyond the prompt budget cannot be re-emitted whole;
-        // truncating it silently guaranteed a broken patch. Refuse honestly
-        // (no bundled file is remotely this large — the cap is 2.8× the
-        // biggest class file, this guard is for future drift).
-        if (buggySource.length > MAX_SOURCE_CHARS) {
+        // self_fix asks the model to re-emit the WHOLE file, so a file larger
+        // than the answering engine's output ceiling can never come back
+        // complete: the reply is cut mid-code and the "patch" is a fragment
+        // that cannot compile. Compare against the engine that will answer
+        // (the on-device one emits 2048 tokens ≈ 6 K chars) and refuse BEFORE
+        // a generation is spent, instead of failing three compile attempts.
+        val emittableChars = selfFixBudgetChars(llm.maxOutputTokens)
+        if (selfFixCannotEmitWhole(buggySource.length, llm.maxOutputTokens)) {
             return HealResult(false, error = "source for $targetClass is " +
-                "${buggySource.length} chars — beyond the ${MAX_SOURCE_CHARS}-char " +
-                "self-patch budget. Split the class; self_fix will not emit a " +
-                "patch it cannot reproduce completely.")
+                "${buggySource.length} chars, but ${llm.label} can emit at most " +
+                "~$emittableChars chars in one reply (${llm.maxOutputTokens} tokens) and " +
+                "self_fix rewrites the file whole — nothing was generated, because a " +
+                "truncated rewrite cannot compile. Fix a smaller class, or run this " +
+                "patch on an engine with a larger output budget.")
         }
         Log.i(TAG, "source: $sourceFile (${buggySource.length} chars)")
 

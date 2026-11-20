@@ -73,6 +73,9 @@ class LocalLlm(
      */
     override val contextTokenBudget: Int get() = CONTEXT_BUDGET
 
+    /** The real ceiling: GenerationConfig.maxTokens below. */
+    override val maxOutputTokens: Int get() = MAX_OUTPUT_TOKENS
+
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
 
@@ -213,9 +216,12 @@ class LocalLlm(
         }
 
         val generationConfig = GenerationConfig().apply {
-            // 2048, not 768: long file_write payloads were getting truncated
-            // mid-JSON (audit finding M-1), producing unparseable tool calls.
-            maxTokens = 2048
+            // MAX_OUTPUT_TOKENS, not 768: long file_write payloads were still
+            // truncated mid-JSON (audit finding M-1) — and raising the number
+            // only moves the wall. Callers must chunk: a reply cut at this
+            // ceiling comes back from ToolCallParser with truncated = true and
+            // the kernel refuses to run it (see LlmResponse.ToolUse).
+            maxTokens = MAX_OUTPUT_TOKENS
             samplerConfig = SamplerConfig().apply {
                 temperature = 0.2f
                 topP = 0.9f
