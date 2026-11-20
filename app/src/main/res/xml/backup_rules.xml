@@ -38,6 +38,10 @@
     <exclude domain="file" path="hotpatch" />
     <exclude domain="file" path="hotpatch_quarantine" />
     <exclude domain="file" path="healer" />
+    <!-- M-9: the software patch-signing private key (Ed25519/EC
+         PKCS#8) is raw key material when Keystore is unavailable; it must
+         not leave the device even as an unused backup. -->
+    <exclude domain="file" path="patchkeys" />
     <exclude domain="external" path="crash_logs" />
     <exclude domain="external" path="watchdog" />
     <exclude domain="external" path="healer" />

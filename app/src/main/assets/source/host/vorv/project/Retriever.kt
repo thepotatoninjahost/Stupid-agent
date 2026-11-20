@@ -77,17 +77,27 @@ class Retriever(private val embedder: Embedder = HashedEmbedder()) {
  */
 object RepoMap {
 
+    @Volatile private var cachedRoot: String? = null
     @Volatile private var cachedRevision = Int.MIN_VALUE
     @Volatile private var cachedBudget = -1
     @Volatile private var cachedMap: String? = null
 
-    /** Cached per index revision and budget: built once per request, not per message. */
+    /**
+     * Cached per index revision and budget: built once per request, not per
+     * message.
+     *
+     * M-11 (code review, 2026-11-20): the key is (root, revision, budget).
+     * Revision restarts at 1 for every project, so keying on revision alone
+     * handed folder B the map built for folder A — the model then "knew" a
+     * file list for a directory it was never shown.
+     */
     fun map(snapshot: IndexSnapshot, budgetTokens: Int, maxFilesPerDir: Int = 6): String {
         val cached = cachedMap
-        if (cached != null && snapshot.revision == cachedRevision &&
+        if (cached != null && snapshot.root == cachedRoot && snapshot.revision == cachedRevision &&
             budgetTokens == cachedBudget && maxFilesPerDir == CACHED_MAX_FILES
         ) return cached
         val text = build(snapshot, budgetTokens, maxFilesPerDir)
+        cachedRoot = snapshot.root
         cachedRevision = snapshot.revision
         cachedBudget = budgetTokens
         CACHED_MAX_FILES = maxFilesPerDir

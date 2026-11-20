@@ -68,6 +68,25 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
     private val runMutex = Mutex()
 
     /**
+     * M-9 (code review, 2026-11-20): a run that blew the hard Kotlin wall is
+     * STILL INSIDE CPython — the daemon thread cannot be killed, and the lock
+     * is released on return. The old code therefore let the model's very next
+     * python_exec start a second script in the same interpreter while the
+     * first was still executing, with the sandbox's global state (scrubbed
+     * modules, audit hook, stdout) shared between them. Once that has
+     * happened this process can no longer promise one-run-at-a-time, so the
+     * tool refuses further executions and says why; a restart clears it.
+     */
+    @Volatile
+    private var runawayInterpreter = false
+
+    /** Test hook: how a hard-timeout leak is detected without a real stall. */
+    internal fun isRunawayForTest(): Boolean = runawayInterpreter
+
+    /** Test hook: simulate the state a hard timeout leaves behind. */
+    internal fun markRunawayForTest() { runawayInterpreter = true }
+
+    /**
      * Per-task one-shot consent (audit C-1): the first call prompts.
      *
      * M-8 (code review, 2026-11): FAIL-CLOSED tri-state. The old
@@ -152,6 +171,17 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
             }
         }
 
+        if (runawayInterpreter) {
+            return@withContext ToolResult(
+                ok = false, output = "", durationMs = System.currentTimeMillis() - t0,
+                error = "python_exec is unavailable for the rest of this session: an " +
+                    "earlier run exceeded the hard timeout and is still executing inside " +
+                    "the Python interpreter, which cannot be interrupted. Running another " +
+                    "script now would run two at once in the same interpreter. Restart the " +
+                    "app, or use another tool.",
+            )
+        }
+
         if (started.compareAndSet(false, true)) {
             try {
                 if (!Python.isStarted()) Python.start(AndroidPlatform(appContext))
@@ -185,11 +215,16 @@ class PythonExecTool(private val appContext: android.content.Context) : Tool {
 
                 worker.join((timeoutMs + 3_000).toLong())
                 if (worker.isAlive) {
+                    // M-9: the thread is still inside CPython and cannot be
+                    // stopped. Poison the interpreter so no second script can
+                    // start alongside it (see runawayInterpreter).
+                    runawayInterpreter = true
                     return@withContext ToolResult(
                         ok = false,
                         output = "",
                         error = "Python execution hard-timed-out after ${timeoutMs}ms " +
-                            "(uninterruptible native call; the sandbox trace watchdog also fired).",
+                            "(uninterruptible native call; the sandbox trace watchdog also fired). " +
+                            "python_exec will refuse further runs until the app restarts.",
                         durationMs = System.currentTimeMillis() - t0,
                     )
                 }

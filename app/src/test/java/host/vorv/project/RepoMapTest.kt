@@ -96,4 +96,18 @@ class RepoMapTest {
         val wider = RepoMap.map(snapshot, 200)
         assertTrue(wider.length > 0)
     }
+
+    @Test
+    fun `a different project with the same revision is not handed the previous map`() {
+        // M-11 regression: revision restarts at 1 per project, so keying the
+        // cache on revision alone made project B's prompt show project A's
+        // file list.
+        val a = IndexSnapshot(revision = 1, files = listOf(file("alpha/OnlyInA.kt")), root = "content://tree/a")
+        val b = IndexSnapshot(revision = 1, files = listOf(file("beta/OnlyInB.kt")), root = "content://tree/b")
+
+        assertTrue(RepoMap.map(a, 200).contains("OnlyInA.kt"))
+        val mapOfB = RepoMap.map(b, 200)
+        assertTrue(mapOfB.contains("OnlyInB.kt"))
+        assertTrue("project B must not see project A's files: $mapOfB", !mapOfB.contains("OnlyInA.kt"))
+    }
 }

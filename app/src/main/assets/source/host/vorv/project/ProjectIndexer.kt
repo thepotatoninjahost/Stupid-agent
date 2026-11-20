@@ -35,7 +35,19 @@ class ProjectIndexer(
             if (head.any { it == 0.toByte() }) { skipped[meta.path] = "binary"; continue }
             val fp = fingerprint(meta, head)
 
-            if (old != null && old.fingerprint == fp) { files += old; continue }
+            // M-12 (code review, 2026-11-20): reused chunks count against the
+            // chunk cap too. They did not, so an incremental rebuild of a large
+            // project added a full cap of new chunks on top of everything it
+            // reused and the "cap" measured only the edited files.
+            if (old != null && old.fingerprint == fp) {
+                if (totalChunks + old.chunks.size > MAX_CHUNKS) {
+                    skipped[meta.path] = "chunk cap reached"
+                    continue
+                }
+                totalChunks += old.chunks.size
+                files += old
+                continue
+            }
 
             val text = source.read(meta)
             if (text == null) { skipped[meta.path] = "unreadable"; continue }

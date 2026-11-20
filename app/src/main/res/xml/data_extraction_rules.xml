@@ -19,6 +19,15 @@
         <exclude domain="database" path="vorv.db-wal" />
         <exclude domain="database" path="vorv.db-shm" />
         <exclude domain="sharedpref" path="vorv_secrets.xml" />
+        <exclude domain="file" path="geniex" />
+        <exclude domain="file" path="brain" />
+        <exclude domain="file" path="forge" />
+        <exclude domain="file" path="linux" />
+        <exclude domain="file" path="computer" />
+        <exclude domain="file" path="hotpatch" />
+        <exclude domain="file" path="hotpatch_quarantine" />
+        <exclude domain="file" path="healer" />
+        <exclude domain="file" path="patchkeys" />
         <exclude domain="external" path="crash_logs" />
         <exclude domain="external" path="watchdog" />
         <exclude domain="external" path="healer" />
@@ -28,6 +37,15 @@
         <exclude domain="database" path="vorv.db-wal" />
         <exclude domain="database" path="vorv.db-shm" />
         <exclude domain="sharedpref" path="vorv_secrets.xml" />
+        <exclude domain="file" path="geniex" />
+        <exclude domain="file" path="brain" />
+        <exclude domain="file" path="forge" />
+        <exclude domain="file" path="linux" />
+        <exclude domain="file" path="computer" />
+        <exclude domain="file" path="hotpatch" />
+        <exclude domain="file" path="hotpatch_quarantine" />
+        <exclude domain="file" path="healer" />
+        <exclude domain="file" path="patchkeys" />
         <exclude domain="external" path="crash_logs" />
         <exclude domain="external" path="watchdog" />
         <exclude domain="external" path="healer" />

@@ -40,17 +40,21 @@ object ProjectIndexCache {
             }
             return withContext(Dispatchers.IO) {
                 val source = DocTreeFileSource(context, Uri.parse(treeUri))
+                val previous = if (uri == treeUri) snapshot else null
                 source.problem?.let {
+                    // M-10 (code review, 2026-11-20): this used to set uri
+                    // BEFORE the takeIf, so a failed open of a DIFFERENT
+                    // folder returned the previous project's snapshot and the
+                    // prompt showed another project's code as this one's.
                     uri = treeUri
                     failure = it
-                    return@withContext Result(snapshot.takeIf { uri == treeUri }, it)
+                    return@withContext Result(previous, it)
                 }
-                val previous = if (uri == treeUri) snapshot else null
                 val next = try {
                     ProjectIndexer(source).build(previous).copy(root = treeUri)
                 } catch (e: Exception) {
                     failure = "Indexing the project failed: ${e.message ?: e::class.java.simpleName}"
-                    return@withContext Result(snapshot.takeIf { uri == treeUri }, failure!!)
+                    return@withContext Result(previous, failure)
                 }
                 uri = treeUri
                 snapshot = next
