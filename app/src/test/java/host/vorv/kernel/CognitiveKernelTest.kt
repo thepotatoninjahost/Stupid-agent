@@ -1021,6 +1021,30 @@ class CognitiveKernelTest {
     }
 
     @Test
+    fun `one truncated reply with two calls costs a single retry`() = runTest {
+        val sink = FakeSink()
+        var ran = 0
+        val tool = FakeTool("file_write", onRun = { ran++ })
+        val reply = Llm.LlmResponse.ToolUse(
+            toolCalls = listOf(
+                Llm.ToolCall(id = "call-1", name = "file_write", arguments = """{"x":"a"}"""),
+                Llm.ToolCall(id = "call-2", name = "file_write", arguments = """{"x":"b"}"""),
+            ),
+            reasoning = null,
+            truncated = true,
+        )
+        val llm = FakeLlm(listOf(
+            reply,
+            reply,
+            Llm.LlmResponse.Text("Now I know to write in pieces.", done = true),
+        ))
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertEquals("no truncated call runs", 0, ran)
+        assertTrue("two replies are tolerated; the budget counts replies, not calls", result.ok)
+    }
+
+    @Test
     fun `repeated truncation ends the task honestly as output_truncated`() = runTest {
         val sink = FakeSink()
         var ran = false

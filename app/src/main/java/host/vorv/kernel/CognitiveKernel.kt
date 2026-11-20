@@ -380,42 +380,46 @@ class CognitiveKernel(
                         // Record assistant message with tool_calls
                         messages.add(Llm.Message("assistant", resp.reasoning ?: "", toolCalls = resp.toolCalls))
 
-                        for (tc in resp.toolCalls) {
-                            // M-1b (review 2026-11-20): the reply was cut at the
-                            // engine's output ceiling and this call was recovered
-                            // from INCOMPLETE JSON. Running it executed truncated
-                            // arguments — a file_write that wrote half a file and
-                            // reported ok = true. Refuse it and say how to split
-                            // the work; nothing from this generation is executed.
-                            if (resp.truncated) {
-                                truncationsUsed++
-                                if (truncationsUsed > MAX_TRUNCATIONS) {
-                                    val why = "The reply kept hitting the engine's " +
-                                        "${llm.maxOutputTokens}-token output ceiling, so no tool call " +
-                                        "could be completed. Nothing was executed. Ask for the work in " +
-                                        "smaller pieces (one file at a time, or shorter content per write)."
-                                    _trace.emit(TraceStep.Error(why))
-                                    return KernelApi.TaskResult(
-                                        false, why, iterations, toolCitations, toolCallCount,
-                                        error = "output_truncated",
-                                    )
-                                }
-                                val errMsg = "Your reply hit the engine's ${llm.maxOutputTokens}-token " +
-                                    "output ceiling, so this '${tc.name}' call was cut off mid-JSON " +
-                                    "and was NOT executed — nothing was written, run or changed. " +
-                                    "Redo it in smaller pieces: file_write takes append=true, so send " +
-                                    "the first part with append=false and then keep calling it with " +
-                                    "append=true until the whole content is on disk; for any other " +
-                                    "tool, send a smaller request."
-                                _trace.emit(TraceStep.Error(errMsg))
+                        // M-1b (review 2026-11-20): the reply was cut at the
+                        // engine's output ceiling and its calls were recovered
+                        // from INCOMPLETE JSON. Running them executed truncated
+                        // arguments — a file_write that wrote half a file and
+                        // reported ok = true. Refuse the whole generation and
+                        // say how to split the work. Counted per REPLY, not per
+                        // call, so one over-long answer cannot burn the budget.
+                        if (resp.truncated) {
+                            truncationsUsed++
+                            val names = resp.toolCalls.joinToString { "'${it.name}'" }
+                            if (truncationsUsed > MAX_TRUNCATIONS) {
+                                val why = "The reply kept hitting the engine's " +
+                                    "${llm.maxOutputTokens}-token output ceiling, so no tool call " +
+                                    "could be completed. Nothing was executed. Ask for the work in " +
+                                    "smaller pieces (one file at a time, or shorter content per write)."
+                                _trace.emit(TraceStep.Error(why))
+                                return KernelApi.TaskResult(
+                                    false, why, iterations, toolCitations, toolCallCount,
+                                    error = "output_truncated",
+                                )
+                            }
+                            val errMsg = "Your reply hit the engine's ${llm.maxOutputTokens}-token " +
+                                "output ceiling, so $names was cut off mid-JSON and was NOT " +
+                                "executed — nothing was written, run or changed. " +
+                                "Redo it in smaller pieces: file_write takes append=true, so send " +
+                                "the first part with append=false and then keep calling it with " +
+                                "append=true until the whole content is on disk; for any other " +
+                                "tool, send a smaller request."
+                            _trace.emit(TraceStep.Error(errMsg))
+                            for (tc in resp.toolCalls) {
                                 messages.add(Llm.Message(
                                     "tool",
                                     JsonObject().apply { addProperty("error", errMsg) }.toString(),
                                     toolCallId = tc.id,
                                 ))
-                                continue
                             }
+                            continue
+                        }
 
+                        for (tc in resp.toolCalls) {
                             val tool = toolMap[tc.name]
                             if (tool == null) {
                                 val errMsg = "Unknown tool: ${tc.name}"
