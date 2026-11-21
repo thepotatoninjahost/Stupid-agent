@@ -47,4 +47,26 @@ class BrainTargetTest {
         // H-5: a cleartext address is refused here too.
         assertNotNull(BrainTarget.refusal("http://openrouter.ai/api/v1", "qwen/qwen3-coder"))
     }
+    @Test
+    fun `the selected provider supplies its own address and default model`() {
+        // The 0.9.30 bug this pins: the provider chip said Z.ai (or any
+        // provider), the key belonged to it, and a blank address silently
+        // sent that key to OpenRouter with a model it never chose.
+        val t = BrainTarget.resolveFor("", "", ProviderRegistry.DEFAULT_ID)
+        assertEquals("https://openrouter.ai/api/v1", t.baseUrl)
+        assertEquals("qwen/qwen3-coder", t.modelId)
+
+        assertEquals(
+            "https://api.deepseek.com/v1",
+            BrainTarget.baseFor("", "deepseek"),
+        )
+        assertEquals(
+            "https://mine.test/v1",
+            BrainTarget.baseFor("https://mine.test/v1", "deepseek"),
+        )
+        // A provider with no compiled default model must not borrow another
+        // vendor's id: the blank stays blank, and refusal says what to do.
+        assertEquals("", BrainTarget.modelFor("", "deepseek"))
+        assertNotNull(BrainTarget.refusal(BrainTarget.baseFor("", "deepseek"), ""))
+    }
 }

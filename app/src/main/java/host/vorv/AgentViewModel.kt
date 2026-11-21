@@ -148,10 +148,12 @@ data class AgentState(
     val selectedModelId: String = "omnicoder9b",
     val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
-    /** 0.9.18 — which provider the cloud brain uses ("" = the Z.ai preset). */
-    val providerId: String = "z.ai",
+    /** Which provider the cloud brain uses ("" = [ProviderRegistry.DEFAULT_ID]). */
+    val providerId: String = host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID,
     /** 0.9.18 — model ids the provider itself listed; empty until refreshed. */
     val catalogIds: List<String> = emptyList(),
+    /** What the refresh left out and why (e.g. GLM ids the owner does not use). */
+    val catalogNote: String? = null,
     val catalogLoading: Boolean = false,
     /** 0.9.18 — why the model list could not be read. Shown, never swallowed. */
     val catalogError: String? = null,
@@ -516,7 +518,7 @@ class AgentViewModel(
             // old collector watched the single Z.ai slot, so choosing another
             // provider reported "no key" while its key sat in the same file.
             secrets.keys.collect {
-                val id = _state.value.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                val id = _state.value.providerId.let(::normalizeProviderId)
                 _state.update { st ->
                     refresh(st.copy(hasApiKey = secrets.keyFor(id).isNotBlank()))
                 }
@@ -529,7 +531,12 @@ class AgentViewModel(
         }
         viewModelScope.launch {
             prefs.cloudProviderId.collect { id ->
-                val real = id.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                // A provider id that no longer exists (the removed Z.ai/GLM
+                // preset) must land on the default, not keep an orphan key
+                // that would be sent to a different vendor's address.
+                val real = if (host.vorv.llm.provider.ProviderRegistry.byId(id) == null) {
+                    host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID
+                } else id
                 _state.update { st ->
                     refresh(st.copy(providerId = real, hasApiKey = secrets.keyFor(real).isNotBlank()))
                 }
@@ -836,9 +843,10 @@ class AgentViewModel(
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
             // 0.9.30: no compiled-in model catalogue. A blank address means the
             // owner's default (BrainTarget), so a fresh key is tested against it.
-            val target = host.vorv.llm.provider.BrainTarget.resolve(
+            val target = host.vorv.llm.provider.BrainTarget.resolveFor(
                 prefs.cloudBaseUrl.first(),
                 prefs.cloudCustomModel.first(),
+                _state.value.providerId,
             )
             val probe = CloudLlm.probe(key, target.baseUrl, target.modelId)
             if (probe.isSuccess) {
@@ -866,7 +874,7 @@ class AgentViewModel(
             prefs.setCloudBaseUrl(baseUrl)
             prefs.setCloudCustomModel(model)
             val pid = prefs.cloudProviderId.first()
-                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                .let(::normalizeProviderId)
             val key = secrets.keyFor(pid)
             if (model.isBlank()) {
                 _state.update {
@@ -881,7 +889,11 @@ class AgentViewModel(
                 return@launch
             }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val probe = CloudLlm.probeAt(key, baseUrl.ifBlank { "https://api.z.ai/api/paas/v4" }, model)
+            val probe = CloudLlm.probeAt(
+                key,
+                host.vorv.llm.provider.BrainTarget.baseFor(baseUrl, pid),
+                host.vorv.llm.provider.BrainTarget.modelFor(model, pid),
+            )
             _state.update {
                 it.copy(
                     keyTesting = false,
@@ -930,15 +942,16 @@ class AgentViewModel(
     /** Saves (encrypted) the key FOR THE SELECTED PROVIDER, then proves it. */
     fun saveProviderKey(key: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val id = _state.value.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val id = _state.value.providerId.let(::normalizeProviderId)
             secrets.setProviderKey(id, key)
             _state.update { s ->
                 refresh(s.copy(hasApiKey = key.isNotBlank(), keyTestResult = null))
             }
             _state.update { it.copy(keyTesting = true) }
-            val target = host.vorv.llm.provider.BrainTarget.resolve(
+            val target = host.vorv.llm.provider.BrainTarget.resolveFor(
                 _state.value.cloudBaseUrl,
                 _state.value.cloudCustomModel,
+                id,
             )
             val base = target.baseUrl
             val model = target.modelId
@@ -969,15 +982,21 @@ class AgentViewModel(
     fun refreshProviderModels() {
         viewModelScope.launch(Dispatchers.IO) {
             val s = _state.value
-            val id = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val id = s.providerId.let(::normalizeProviderId)
             val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
                 ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, s.cloudBaseUrl)
             _state.update { it.copy(catalogLoading = true, catalogError = null) }
             val listing = catalog.fetch(provider, secrets.keyFor(id))
+            val usable = listing.entries.map { e -> e.id }
+                .filterNot { host.vorv.llm.provider.ProviderRegistry.isRemovedModelId(it) }
+            val hidden = listing.entries.size - usable.size
             _state.update {
                 it.copy(
                     catalogLoading = false,
-                    catalogIds = listing.entries.map { e -> e.id },
+                    catalogIds = usable,
+                    catalogNote = if (hidden > 0) {
+                        "$hidden GLM model${if (hidden == 1) "" else "s"} hidden - you asked for none."
+                    } else null,
                     catalogError = listing.error?.let { err ->
                         "Could not read the model list: $err. You can still type a model name."
                     },
@@ -990,7 +1009,7 @@ class AgentViewModel(
     fun testProvider() {
         viewModelScope.launch(Dispatchers.IO) {
             val s = _state.value
-            val id = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+            val id = s.providerId.let(::normalizeProviderId)
             val key = secrets.keyFor(id)
             if (key.isBlank()) {
                 _state.update {
@@ -999,7 +1018,7 @@ class AgentViewModel(
                 return@launch
             }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val target = host.vorv.llm.provider.BrainTarget.resolve(s.cloudBaseUrl, s.cloudCustomModel)
+            val target = host.vorv.llm.provider.BrainTarget.resolveFor(s.cloudBaseUrl, s.cloudCustomModel, id)
             val base = target.baseUrl
             val model = target.modelId
             val probe = CloudLlm.probeAt(key, base, model)
@@ -1032,9 +1051,9 @@ class AgentViewModel(
     ): List<host.vorv.llm.provider.ProviderChainLlm.Route> {
         val routes = host.vorv.tools.Attempt.of("list the providers this owner holds keys for") {
             val pid = prefs.cloudProviderId.first()
-                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                .let(::normalizeProviderId)
             val chosen = host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(pid, baseUrl)
-            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel)
+            val target = host.vorv.llm.provider.BrainTarget.resolveFor(baseUrl, customModel, pid)
             host.vorv.llm.provider.ProviderChainLlm.routes(
                 chosen = chosen,
                 chosenBaseUrl = target.baseUrl,
@@ -1477,7 +1496,11 @@ class AgentViewModel(
                 val chosenMode = prefs.llmMode.first()
                 // 0.9.18 — the key belongs to the SELECTED provider.
                 val providerId = prefs.cloudProviderId.first()
-                    .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                    .let { raw ->
+                        if (host.vorv.llm.provider.ProviderRegistry.byId(raw) == null) {
+                            host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID
+                        } else raw
+                    }
                 val key = secrets.keyFor(providerId)
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
                 // No cloud key but an on-phone coder in storage: the coder answers,
@@ -1492,11 +1515,10 @@ class AgentViewModel(
                     providerId = providerId,
                     keyPresent = key.isNotBlank(),
                     keyReadError = null,
-                    baseUrl = prefs.cloudBaseUrl.first().ifBlank {
-                        host.vorv.llm.provider.BrainTarget.DEFAULT_BASE
-                    },
+                    baseUrl = host.vorv.llm.provider.BrainTarget
+                        .baseFor(prefs.cloudBaseUrl.first(), providerId),
                     modelId = host.vorv.llm.provider.BrainTarget
-                        .resolve(prefs.cloudBaseUrl.first(), prefs.cloudCustomModel.first()).modelId,
+                        .resolveFor(prefs.cloudBaseUrl.first(), prefs.cloudCustomModel.first(), providerId).modelId,
                     localModelId = choice.id,
                     localDownloaded = ModelManager.isDownloaded(choice),
                 )
@@ -1516,8 +1538,10 @@ class AgentViewModel(
                     }
                 }
                 val autoFallback = prefs.autoFallback.first()
-                val cloudBaseUrl = prefs.cloudBaseUrl.first()
-                val customModel = prefs.cloudCustomModel.first()
+                val cloudBaseUrl = host.vorv.llm.provider.BrainTarget
+                    .baseFor(prefs.cloudBaseUrl.first(), providerId)
+                val customModel = host.vorv.llm.provider.BrainTarget
+                    .modelFor(prefs.cloudCustomModel.first(), providerId)
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 modelRepository.markBusy(true)
@@ -1847,7 +1871,7 @@ class AgentViewModel(
             try {
                 val chosenMode = prefs.llmMode.first()
                 val bootPid = prefs.cloudProviderId.first()
-                    .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+                    .let(::normalizeProviderId)
                 val key = secrets.keyFor(bootPid)
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
                 // No cloud key but an on-phone coder in storage: the coder answers,
@@ -1865,8 +1889,10 @@ class AgentViewModel(
                     }
                 }
                 val autoFallback = prefs.autoFallback.first()
-                val cloudBaseUrl = prefs.cloudBaseUrl.first()
-                val customModel = prefs.cloudCustomModel.first()
+                val cloudBaseUrl = host.vorv.llm.provider.BrainTarget
+                    .baseFor(prefs.cloudBaseUrl.first(), bootPid)
+                val customModel = host.vorv.llm.provider.BrainTarget
+                    .modelFor(prefs.cloudCustomModel.first(), bootPid)
                 val wsUri = _state.value.workspaceUri.ifBlank { null }
 
                 modelRepository.markBusy(true)
@@ -2104,15 +2130,15 @@ class AgentViewModel(
     private fun brainFacts(s: AgentState): BrainFacts {
         val choice = ModelChoice.fromId(s.selectedModelId)
         val base = host.vorv.llm.BrainState.facts.value
-        val providerId = s.providerId.ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
+        val providerId = s.providerId.let(::normalizeProviderId)
         val provider = host.vorv.llm.provider.ProviderRegistry.byId(providerId)
         return base.copy(
             llmMode = s.llmMode,
             providerId = providerId,
             providerLabel = provider?.label ?: "your provider",
             keyReadError = s.keyReadError,
-            baseUrl = s.cloudBaseUrl.ifBlank { host.vorv.llm.provider.BrainTarget.DEFAULT_BASE },
-            modelId = host.vorv.llm.provider.BrainTarget.resolve(s.cloudBaseUrl, s.cloudCustomModel).modelId,
+            baseUrl = host.vorv.llm.provider.BrainTarget.baseFor(s.cloudBaseUrl, providerId),
+            modelId = host.vorv.llm.provider.BrainTarget.resolveFor(s.cloudBaseUrl, s.cloudCustomModel, providerId).modelId,
             keyPresent = s.hasApiKey,
             localModelId = choice.id,
             localModelName = choice.displayName.substringBefore("(").trim(),
@@ -2207,9 +2233,6 @@ class AgentViewModel(
         private const val CLOUD_TASK_TIMEOUT_MS = 5 * 60_000L
         private const val LOCAL_TASK_TIMEOUT_MS = 15 * 60_000L
         private const val RETENTION_DAYS = 30
-        /** The Z.ai preset's address — one default among the providers, not "the" cloud. */
-        private const val ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
-
         /**
          * Setup → TEST runs exactly this inside the guest: it answers whether
          * the Debian root filesystem boots, which release it is, and whether the
@@ -2233,3 +2256,13 @@ class AgentViewModel(
         }
     }
 }
+
+/**
+ * A stored provider id that no longer exists (the removed Z.ai/GLM preset)
+ * lands on the default. Keeping "z.ai" would send that orphan key to
+ * OpenRouter's address, which is the 401 the owner saw as "no key".
+ */
+private fun normalizeProviderId(raw: String): String =
+    if (host.vorv.llm.provider.ProviderRegistry.byId(raw) == null) {
+        host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID
+    } else raw

@@ -203,7 +203,7 @@ fun SettingsScreen(
                         "No network, no key. Tool calls are parsed from the model's chat template."
                 state.llmMode == "local" ->
                     "Local selected, but ${activeChoice.displayName.substringBefore("(").trim()} isn't downloaded yet."
-                state.hasApiKey -> "Active: ${state.cloudCustomModel.ifBlank { "your provider's model" }} with native function calling." +
+                state.hasApiKey -> "Active: " + activeModelSentence(state) + " with native function calling." +
                     if (state.autoFallback && state.localModelReady) " If the cloud fails mid-task, the offline engine finishes the job." else ""
                 else -> "Cloud selected, no key set. Add one below or download a local model."
             },
@@ -214,7 +214,7 @@ fun SettingsScreen(
         // ------------------------------------------------ provider + key
         Text("Cloud coder", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Pick who runs the cloud brain. Z.ai is one option, not the only one. " +
+            "Pick who runs the cloud brain. OpenRouter is the default, and GLM models are not offered. " +
                 "Each provider keeps its own key, encrypted at rest (Android Keystore). " +
                 "Nothing is ever uploaded, committed, or logged — and saving always runs one real call.",
             color = OnSurfaceVariant, fontSize = 11.sp,
@@ -305,6 +305,9 @@ fun SettingsScreen(
         state.catalogError?.let { msg ->
             Text("✗ $msg", color = Error, fontSize = 11.sp)
         }
+        state.catalogNote?.let { msg ->
+            Text(msg, color = OnSurfaceVariant, fontSize = 11.sp)
+        }
         if (state.catalogIds.isNotEmpty()) {
             Text(
                 "${state.catalogIds.size} models this key can use — tap one:",
@@ -331,13 +334,14 @@ fun SettingsScreen(
         }
 
         // ------------------------------------------ a coder you choose
-        // 0.9.13 — the cloud brain used to be Z.ai only. Any provider whose API
-        // takes the same request (address .../chat/completions, Bearer key)
-        // works now; blank fields keep the Z.ai chain exactly as before.
+        // 0.9.13 — any provider whose API takes the same request (address
+        // .../chat/completions, Bearer key) works. A blank address keeps the
+        // selected provider's own address and its one default model.
         Text("Use a different coder (optional)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "Have a key from another provider? Put its address and the model name below and it becomes " +
-                "the cloud brain. Leave the address blank to use the default (Qwen3 Coder on OpenRouter). " +
+                "the cloud brain. Leave both blank to use the selected provider's default " +
+                "(${defaultModelName(state)} on ${defaultProviderLabel(state)}). " +
                 "Saving runs one real test call, so the answer here is proof, not a promise.",
             color = OnSurfaceVariant, fontSize = 11.sp,
         )
@@ -356,7 +360,7 @@ fun SettingsScreen(
         OutlinedTextField(
             value = providerModel,
             onValueChange = { providerModel = it; providerSaved = false },
-            placeholder = { Text("Model name, e.g. kimi-k2-0905-preview") },
+            placeholder = { Text("Model name — blank means ${defaultModelName(state)}") },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             singleLine = true,
@@ -375,7 +379,8 @@ fun SettingsScreen(
                 when {
                     state.keyTesting -> "Testing that coder…"
                     providerSaved -> "Saved ✓ — see test result above"
-                    providerUrl.isBlank() && providerModel.isBlank() -> "Clear — use Z.ai"
+                    providerUrl.isBlank() && providerModel.isBlank() ->
+                        "Clear — use the default (${defaultProviderLabel(state)})"
                     else -> "Save coder & Test"
                 }
             )
@@ -689,4 +694,28 @@ fun SettingsScreen(
             fontSize = 11.sp,
         )
     }
+}
+
+/** The model the header and the gate will really use, for the Active line. */
+private fun activeModelName(state: host.vorv.AgentState): String {
+    val custom = state.cloudCustomModel.trim()
+    return custom.ifBlank { host.vorv.llm.provider.BrainTarget.modelFor("", state.providerId) }
+        .ifBlank { "your provider's model" }
+}
+
+private fun defaultModelName(state: host.vorv.AgentState): String =
+    host.vorv.llm.provider.BrainTarget.modelFor("", state.providerId)
+        .ifBlank { "a model you name" }
+
+private fun defaultProviderLabel(state: host.vorv.AgentState): String =
+    host.vorv.llm.provider.ProviderRegistry.orDefault(state.providerId).label
+
+/** "qwen/qwen3-coder on OpenRouter (the default)" or "<id> on <provider>". */
+private fun activeModelSentence(state: host.vorv.AgentState): String {
+    val model = activeModelName(state)
+    val provider = defaultProviderLabel(state)
+    val isDefault = state.cloudCustomModel.isBlank() &&
+        state.cloudBaseUrl.isBlank() &&
+        model == host.vorv.llm.provider.BrainTarget.modelFor("", state.providerId)
+    return if (isDefault) "$model on $provider (the default)" else "$model on $provider"
 }

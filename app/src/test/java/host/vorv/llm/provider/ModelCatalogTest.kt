@@ -107,7 +107,7 @@ class ModelCatalogTest {
     fun `cache is per provider and reports its age`() {
         var now = 1_000_000L
         val c = ModelCatalog(clock = { now })
-        val p = ProviderRegistry.byId(ProviderRegistry.ZAI_ID)!!
+        val p = ProviderRegistry.byId(ProviderRegistry.DEFAULT_ID)!!
         c.rememberForTest(ModelCatalog.Listing(p.id, listOf(ModelCatalog.Entry("m")), now))
         assertEquals(1, c.cached(p.id)?.entries?.size)
         assertTrue(c.isFresh(p.id))

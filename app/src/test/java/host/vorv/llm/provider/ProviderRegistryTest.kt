@@ -30,25 +30,29 @@ class ProviderRegistryTest {
     }
 
     @Test
-    fun `z ai keeps the address and key slot existing installs already use`() {
-        val z = ProviderRegistry.byId(ProviderRegistry.ZAI_ID)
-        assertNotNull(z)
-        assertEquals("https://api.z.ai/api/paas/v4", z!!.baseUrl)
-        // The 0.6.0 install wrote KEY_ZAI; the per-provider store must keep
-        // that exact slot, or every upgrade loses its key.
-        assertEquals("zai_api_key", host.vorv.data.SecretsStore.prefNameFor("z.ai"))
+    fun `the default provider is OpenRouter with the large Qwen3 Coder`() {
+        assertEquals("openrouter", ProviderRegistry.DEFAULT_ID)
+        val d = ProviderRegistry.byId(ProviderRegistry.DEFAULT_ID)!!
+        assertEquals("https://openrouter.ai/api/v1", d.baseUrl)
+        assertEquals("qwen/qwen3-coder", d.defaultModel)
+        // An install that still holds "z.ai" (or nothing) must land on the
+        // default route rather than on a provider that no longer exists.
+        assertEquals(ProviderRegistry.DEFAULT_ID, ProviderRegistry.orDefault("").id)
+        assertEquals(ProviderRegistry.DEFAULT_ID, ProviderRegistry.orDefault("z.ai").id)
         assertEquals("key.openrouter", host.vorv.data.SecretsStore.prefNameFor("openrouter"))
+        // The legacy slot is still readable, so an old key is never lost.
+        assertEquals("zai_api_key", host.vorv.data.SecretsStore.prefNameFor("z.ai"))
     }
 
     @Test
     fun `chat url is built once, without doubling the path`() {
         assertEquals(
-            "https://api.z.ai/api/paas/v4/chat/completions",
-            ProviderRegistry.chatCompletionsUrl("https://api.z.ai/api/paas/v4"),
+            "https://openrouter.ai/api/v1/chat/completions",
+            ProviderRegistry.chatCompletionsUrl("https://openrouter.ai/api/v1"),
         )
         assertEquals(
-            "https://api.z.ai/api/paas/v4/chat/completions",
-            ProviderRegistry.chatCompletionsUrl("https://api.z.ai/api/paas/v4/"),
+            "https://openrouter.ai/api/v1/chat/completions",
+            ProviderRegistry.chatCompletionsUrl("https://openrouter.ai/api/v1/"),
         )
         // An owner who pasted the full endpoint (a very common paste) must not
         // end up calling /chat/completions/chat/completions.
@@ -72,7 +76,7 @@ class ProviderRegistryTest {
     fun `the owner's provider with no key is never ordered first`() {
         val router = ProviderRouter()
         val custom = Provider.custom("https://llm.example.test/v1")
-        val zai = ProviderRegistry.byId(ProviderRegistry.ZAI_ID)!!
+        val zai = ProviderRegistry.byId(ProviderRegistry.DEFAULT_ID)!!
         val order = router.order(
             chosen = custom.id,
             candidates = listOf(custom, zai),
@@ -117,5 +121,15 @@ class ProviderRegistryTest {
         router.record("a", code = 200)
         assertEquals(ProviderRouter.Health.OK, router.state("a").health)
         assertEquals(0L, router.state("a").until)
+    }
+    @Test
+    fun `no preset offers a GLM model, and a live listing cannot offer one either`() {
+        val offered = ProviderRegistry.presets.flatMap { it.suggestions + it.defaultModel }
+        assertTrue("no compiled GLM id may survive: $offered", offered.none { ProviderRegistry.isRemovedModelId(it) })
+        assertTrue(ProviderRegistry.isRemovedModelId("glm-4.7-flash"))
+        assertTrue(ProviderRegistry.isRemovedModelId("z-ai/glm-4.7"))
+        assertTrue(ProviderRegistry.isRemovedModelId("GLM-5.3-Flash"))
+        assertTrue(!ProviderRegistry.isRemovedModelId("qwen/qwen3-coder"))
+        assertEquals(null, ProviderRegistry.byId("z.ai"))
     }
 }

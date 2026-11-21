@@ -54,7 +54,7 @@ class VorvPrefs(private val context: Context) {
      */
     val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "omnicoder9b" }
 
-    /** 0.9.18 — which cloud provider is selected ("" = the Z.ai preset). */
+    /** Which cloud provider is selected ("" = [ProviderRegistry.DEFAULT_ID], OpenRouter). */
     val cloudProviderId: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_PROVIDER_ID] ?: "" }
     /** Whether the POST_NOTIFICATIONS runtime prompt has been shown (Android 13+). */
     val notifPermissionAsked: Flow<Boolean> = context.vorvPrefs.data.map { it[NOTIF_ASKED] ?: false }
@@ -117,7 +117,7 @@ class VorvPrefs(private val context: Context) {
         context.vorvPrefs.edit { it.remove(BRAIN_FACTS) }
     }
 
-    /** Specific cloud provider chosen in Setup ("" = the built-in Z.ai preset). */
+    /** Specific cloud provider chosen in Setup ("" = the default, OpenRouter). */
     suspend fun readCloudProviderId(): String =
         context.vorvPrefs.data.first()[CLOUD_PROVIDER_ID] ?: ""
 

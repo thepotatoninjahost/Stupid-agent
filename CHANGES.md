@@ -1,3 +1,30 @@
+# Default cloud brain: the large Qwen on OpenRouter (2026-11-21)
+
+The owner's decision, now the code's default: the cloud brain is
+`qwen/qwen3-coder` (OpenRouter's "Qwen: Qwen3 Coder 480B A35B") at
+`https://openrouter.ai/api/v1`. Z.ai is still a selectable provider, but it is
+no longer the default and it suggests no model ids.
+
+- **Old:** `ProviderRegistry.ZAI_ID` was the provider a fresh install (and a
+  stored blank) landed on, so the model box was filled from the Z.ai preset and
+  a Z.ai/GLM id could be sent to whichever address was set. "Refresh model
+  list" showed whatever the chosen provider served, GLM ids included.
+- **New:** `ProviderRegistry.DEFAULT_ID = "openrouter"`; `Provider.defaultModel`
+  and `BrainTarget.baseFor/modelFor/resolveFor` resolve a chosen provider's own
+  address and model when the owner left them blank; `ProviderRegistry.orDefault`
+  maps an unknown or removed id to the default, and `AgentViewModel` normalises
+  a stored `z.ai` the same way; `ProviderRegistry.isRemovedModelId` keeps any
+  `glm` id out of the live catalogue and `catalogNote` says how many were hidden.
+  Setup's Active line names the model that will really be used, marked
+  "(the default)".
+- **Kept on purpose:** every `qwen3` cloud suggestion, and the legacy `z.ai`
+  key slot so an old key is not lost.
+- **Not in the app:** there is no trainer-model setting and no teacher pipeline.
+  `tools/train` fine-tunes the 9B base (`Tesslate/OmniCoder-9B-GGUF`) from the
+  phone's ledger export; nothing in it calls a cloud model.
+- **Limit:** the installed v0.9.29 APK still contains the old GLM strings; only
+  a new build replaces them.
+
 # Review fixes: 2026-11-21
 
 The findings of `REVIEW-2026-11-21.md` (C-1 … L-2), fixed in the order the fix

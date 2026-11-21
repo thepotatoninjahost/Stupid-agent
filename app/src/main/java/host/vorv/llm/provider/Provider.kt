@@ -22,6 +22,11 @@ data class Provider(
     val modelsPath: String = "/models",
     /** Whether the provider is known to accept OpenAI-style tool schemas. */
     val supportsTools: Boolean = true,
+    /**
+     * The id this provider serves when the owner has not chosen one. A default,
+     * not a catalogue: no other ids are compiled in.
+     */
+    val defaultModel: String = "",
     /** Suggested strong coder/reasoner ids; only suggestions, never trusted. */
     val suggestions: List<String> = emptyList(),
     val notes: String = "",
@@ -58,26 +63,24 @@ data class Provider(
  */
 object ProviderRegistry {
 
-    const val ZAI_ID = "z.ai"
+    /** The owner's route: OpenRouter with the large Qwen3 Coder as its model. */
+    const val DEFAULT_ID = "openrouter"
+
+    /**
+     * GLM ids are not used (owner decision: "all of the GLM models need to be
+     * removed"). The compiled catalogue is gone; this also keeps a provider's
+     * live /models listing from offering them back.
+     */
+    fun isRemovedModelId(id: String): Boolean = id.lowercase().contains("glm")
 
     val presets: List<Provider> = listOf(
         Provider(
-            id = ZAI_ID,
-            label = "Z.ai",
-            baseUrl = "https://api.z.ai/api/paas/v4",
-            freeTier = true,
-            capability = Provider.Capability.CODE,
-            // No suggestions (owner decision): GLM ids are not used, and the
-            // catalog's own /models listing is the honest source of ids.
-            suggestions = emptyList(),
-            notes = "This is the provider the owner already had; it is one option now, not the only one.",
-        ),
-        Provider(
-            id = "openrouter",
+            id = DEFAULT_ID,
             label = "OpenRouter",
             baseUrl = "https://openrouter.ai/api/v1",
             capability = Provider.Capability.CODE,
             modelsPath = "/models",
+            defaultModel = "qwen/qwen3-coder",
             suggestions = listOf("qwen/qwen3-coder", "deepseek/deepseek-chat-v3.1"),
             notes = "One key, many vendors. Model ids are vendor/model.",
         ),
@@ -162,6 +165,9 @@ object ProviderRegistry {
     )
 
     fun byId(id: String): Provider? = presets.firstOrNull { it.id == id }
+
+    /** The preset the app starts on; an unknown or legacy id lands here too. */
+    fun orDefault(id: String): Provider = byId(id) ?: byId(DEFAULT_ID)!!
 
     /** A preset, or an ad-hoc provider at the address the owner typed. */
     fun byIdOrCustom(id: String, baseUrl: String): Provider =

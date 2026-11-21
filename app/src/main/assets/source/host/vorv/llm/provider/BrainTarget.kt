@@ -37,6 +37,25 @@ object BrainTarget {
         }
     }
 
+    /**
+     * The address a chosen provider uses when the owner typed none: that
+     * provider's own preset, never another vendor's. An id with no preset
+     * (a legacy or custom one) lands on the default route.
+     */
+    fun baseFor(baseUrl: String, providerId: String): String =
+        baseUrl.trim().ifBlank {
+            ProviderRegistry.orDefault(providerId).baseUrl.trim()
+                .ifBlank { DEFAULT_BASE }
+        }
+
+    /** The model a chosen provider serves when the owner typed none. */
+    fun modelFor(model: String, providerId: String): String =
+        model.trim().ifBlank { ProviderRegistry.orDefault(providerId).defaultModel }
+
+    /** [resolve] with the provider's own address and default model filled in. */
+    fun resolveFor(baseUrl: String, model: String, providerId: String): Engine =
+        resolve(baseFor(baseUrl, providerId), modelFor(model, providerId))
+
     /** Null when the engine can be built, otherwise the sentence to show. */
     fun refusal(baseUrl: String, model: String): String? {
         // H-5: Setup shows this before the user can save a cleartext address.
