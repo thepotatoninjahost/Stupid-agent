@@ -97,83 +97,99 @@ class NativeTestTool(private val appContext: Context) : Tool {
             val install = installer.install(apk)
             if (!install.ok) return@withContext fail("install failed: ${install.detail}")
             val pkg = install.packageName!!
-
-            val checks = mutableListOf<String>()
-            val failures = mutableListOf<String>()
-
-            fun record(name: String, pass: Boolean, detail: String = "") {
-                if (pass) checks += "ok   $name${if (detail.isEmpty()) "" else "  ($detail)"}"
-                else {
-                    failures += "FAIL $name${if (detail.isEmpty()) "" else "  ($detail)"}"
-                    checks += "FAIL $name${if (detail.isEmpty()) "" else "  ($detail)"}"
-                }
+            // Finding 22: without this the service would report and tap
+            // whatever app the user happened to have in front.
+            UiAutomationService.beginSession(pkg)
+            try {
+                runScoped(installer, pkg, steps, input, started)
+            } finally {
+                UiAutomationService.endSession()
             }
+        }
 
-            val open = openAndWait(pkg, 20_000)
-            record("app opens", open.ok, open.detail)
-            if (!open.ok) {
-                if (input.get("uninstall_after")?.asBoolean == true) {
-                    val u = installer.uninstall(pkg)
-                    record("uninstall", u.ok, u.detail)
-                }
-                return@withContext result(checks, failures, started, pkg)
+    private suspend fun runScoped(
+        installer: AppInstaller,
+        pkg: String,
+        steps: JsonArray,
+        input: JsonObject,
+        started: Long,
+    ): ToolResult {
+        val checks = mutableListOf<String>()
+        val failures = mutableListOf<String>()
+
+        fun record(name: String, pass: Boolean, detail: String = "") {
+            if (pass) checks += "ok   $name${if (detail.isEmpty()) "" else "  ($detail)"}"
+            else {
+                failures += "FAIL $name${if (detail.isEmpty()) "" else "  ($detail)"}"
+                checks += "FAIL $name${if (detail.isEmpty()) "" else "  ($detail)"}"
             }
+        }
 
-            delay(1_200) // let the first frame settle
-
-            for ((index, raw) in steps.withIndex()) {
-                val step = raw.asJsonObject
-                val op = step.get("op")?.asString?.lowercase() ?: "?" 
-                val text = step.get("text")?.asString.orEmpty()
-                val budget = (step.get("timeout_ms")?.asLong ?: 6_000L).coerceIn(300L, 30_000L)
-                val label = "#${index + 1} $op${if (text.isEmpty()) "" else " '$text'"}"
-                val service = UiAutomationService.service()
-                if (service == null) {
-                    record(label, false, "testing was switched off mid-run")
-                    break
-                }
-                when (op) {
-                    "assert_text", "assert_screen" -> {
-                        val found = waitForText(service, text, budget)
-                        record(label, found, if (found) "" else "not on screen")
-                    }
-                    "assert_not_text" -> {
-                        val found = waitForText(service, text, 800)
-                        record(label, !found, if (found) "still on screen" else "")
-                    }
-                    "wait_text" -> {
-                        val found = waitForText(service, text, budget)
-                        record(label, found, if (found) "" else "never appeared")
-                    }
-                    "click" -> {
-                        val clicked = UiAutomationService.service()
-                            ?.click(UiAutomationService.Lookup(text, exact = false)) ?: false
-                        record(label, clicked, if (clicked) "" else "nothing clickable matched")
-                        if (clicked) delay(600)
-                    }
-                    "type" -> {
-                        val into = step.get("into")?.asString?.takeIf { it.isNotBlank() } ?: text
-                        val typed = UiAutomationService.service()?.type(
-                            UiAutomationService.Lookup(into, exact = false), text,
-                        ) ?: false
-                        record(label, typed, if (typed) "" else "no editable field matched '$into'")
-                    }
-                    else -> record(label, false, "unknown op '$op'")
-                }
-                val stillThere = UiAutomationService.foregroundPackage() == pkg
-                if (!stillThere) {
-                    record("app still running after step ${index + 1}", false,
-                        "foreground is ${UiAutomationService.foregroundPackage() ?: "unknown"} — it likely crashed")
-                    break
-                }
-            }
-
+        val open = openAndWait(pkg, 20_000)
+        record("app opens", open.ok, open.detail)
+        if (!open.ok) {
             if (input.get("uninstall_after")?.asBoolean == true) {
                 val u = installer.uninstall(pkg)
                 record("uninstall", u.ok, u.detail)
             }
-            result(checks, failures, started, pkg)
+            return result(checks, failures, started, pkg)
         }
+
+        delay(1_200) // let the first frame settle
+
+        for ((index, raw) in steps.withIndex()) {
+            val step = raw.asJsonObject
+            val op = step.get("op")?.asString?.lowercase() ?: "?" 
+            val text = step.get("text")?.asString.orEmpty()
+            val budget = (step.get("timeout_ms")?.asLong ?: 6_000L).coerceIn(300L, 30_000L)
+            val label = "#${index + 1} $op${if (text.isEmpty()) "" else " '$text'"}"
+            val service = UiAutomationService.service()
+            if (service == null) {
+                record(label, false, "testing was switched off mid-run")
+                break
+            }
+            when (op) {
+                "assert_text", "assert_screen" -> {
+                    val found = waitForText(service, text, budget)
+                    record(label, found, if (found) "" else "not on screen")
+                }
+                "assert_not_text" -> {
+                    val found = waitForText(service, text, 800)
+                    record(label, !found, if (found) "still on screen" else "")
+                }
+                "wait_text" -> {
+                    val found = waitForText(service, text, budget)
+                    record(label, found, if (found) "" else "never appeared")
+                }
+                "click" -> {
+                    val clicked = UiAutomationService.service()
+                        ?.click(UiAutomationService.Lookup(text, exact = false)) ?: false
+                    record(label, clicked, if (clicked) "" else "nothing clickable matched")
+                    if (clicked) delay(600)
+                }
+                "type" -> {
+                    val into = step.get("into")?.asString?.takeIf { it.isNotBlank() } ?: text
+                    val typed = UiAutomationService.service()?.type(
+                        UiAutomationService.Lookup(into, exact = false), text,
+                    ) ?: false
+                    record(label, typed, if (typed) "" else "no editable field matched '$into'")
+                }
+                else -> record(label, false, "unknown op '$op'")
+            }
+            val stillThere = UiAutomationService.foregroundPackage() == pkg
+            if (!stillThere) {
+                record("app still running after step ${index + 1}", false,
+                    "foreground is ${UiAutomationService.foregroundPackage() ?: "unknown"} — it likely crashed")
+                break
+            }
+        }
+
+        if (input.get("uninstall_after")?.asBoolean == true) {
+            val u = installer.uninstall(pkg)
+            record("uninstall", u.ok, u.detail)
+        }
+        return result(checks, failures, started, pkg)
+    }
 
     private data class Opened(val ok: Boolean, val detail: String)
 

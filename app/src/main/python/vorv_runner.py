@@ -415,6 +415,65 @@ _safe_builtins["setattr"] = _GUARD_NS["_guarded_setattr"]
 _safe_builtins["hasattr"] = _GUARD_NS["_guarded_hasattr"]
 
 # --------------------------------------------------------------------------
+# Layer 2b (finding 17): the one door a builtin function still leaves open.
+#
+# Every callable in _safe_builtins is the REAL builtin (copying
+# builtins.__dict__ is what makes print/len/... work at C speed), so user
+# code can always take `print.__self__` and get the real builtins module
+# back — dunder *attribute syntax* is not something a namespace scrub can
+# remove. From there, `builtins.__import__("os")` returns the cached real
+# module (sys.modules short-circuits sys.meta_path), and os.environ,
+# os.listdir and os.stat hand out secrets the sandbox is supposed to hide.
+#
+# No reference to the real __import__ may live in code user code can reach:
+#   gate.__globals__["_real_import"] -> .__self__ -> the whole thing again.
+# So the gate holds nothing and refuses everyone for the duration of the run.
+# The window is one bounded exec (the tool's own mutex serialises runs); any
+# other thread's import during it fails loudly instead of leaking quietly.
+_GATE_SRC = """
+def _deny_import(name, *args, **kwargs):
+    raise ImportError(
+        "Vorv sandbox: import machinery is unavailable while python_exec runs")
+
+
+def _deny_builtin(*args, **kwargs):
+    raise PermissionError(
+        "Vorv sandbox: this builtin is unavailable while python_exec runs")
+"""
+_GATE_NS = {"__builtins__": {"ImportError": builtins.ImportError,
+                            "PermissionError": builtins.PermissionError}}
+exec(compile(_GATE_SRC, "<vorv-gate>", "exec"), _GATE_NS)
+_DENY = {
+    "__import__": _GATE_NS["_deny_import"],
+    "eval": _GATE_NS["_deny_builtin"],
+    "exec": _GATE_NS["_deny_builtin"],
+    "compile": _GATE_NS["_deny_builtin"],
+    "open": _GATE_NS["_deny_builtin"],
+}
+
+# Captured once, before the first swap: the originals only ever live here.
+_REAL_BUILTIN_ATTRS = {name: getattr(builtins, name) for name in _DENY}
+
+
+def _gate_builtins():
+    """Close the real builtins' dangerous entries; returns the restore map."""
+    saved = {name: getattr(builtins, name) for name in _REAL_BUILTIN_ATTRS}
+    for name in _REAL_BUILTIN_ATTRS:
+        try:
+            setattr(builtins, name, _DENY[name])
+        except Exception:  # pragma: no cover - a frozen builtins module
+            pass
+    return saved
+
+
+def _ungate_builtins(saved):
+    for name, value in saved.items():
+        try:
+            setattr(builtins, name, value)
+        except Exception:  # pragma: no cover
+            pass
+
+# --------------------------------------------------------------------------
 # Layer 3 (enforcement side): meta-path finder, defined in a clean namespace
 # --------------------------------------------------------------------------
 _FINDER_SRC = """
@@ -481,10 +540,14 @@ def run_code(code, timeout_ms=_TIMEOUT_DEFAULT_MS):
     def _worker():
         deadline = time.monotonic() + (timeout_ms / 1000.0)
         tracer = _TRACER_NS["_make_tracer"](time.monotonic, deadline)
+        saved = _gate_builtins()
         try:
             sys.settrace(tracer)
             try:
-                exec(code_obj, {"__builtins__": _safe_builtins, "__name__": "__vorv_sandbox__"})
+                # The gate replaces builtins.exec for everyone, so the runner
+                # calls the original it saved a moment ago.
+                saved["exec"](code_obj, {"__builtins__": _safe_builtins,
+                                         "__name__": "__vorv_sandbox__"})
             finally:
                 sys.settrace(None)
         except TimeoutError as e:
@@ -492,6 +555,8 @@ def run_code(code, timeout_ms=_TIMEOUT_DEFAULT_MS):
             state["error"] = str(e)
         except BaseException as e:  # SystemExit, KeyboardInterrupt, everything
             state["error"] = "%s: %s" % (type(e).__name__, e)
+        finally:
+            _ungate_builtins(saved)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()

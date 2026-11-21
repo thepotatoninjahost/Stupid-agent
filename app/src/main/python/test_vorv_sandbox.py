@@ -5,6 +5,7 @@ every known escape route is blocked and that legitimate computation works.
 
 Usage: python3 test_vorv_sandbox.py   (exit 0 = all pass)
 """
+import builtins
 import json
 import os
 import sys
@@ -139,6 +140,31 @@ expect_ok(
     "f = __builtins__['__import__']\nprint(f.__globals__.get('sys', 'CLEAN'))",
     "CLEAN")
 
+# --------------------------------------------- finding 17: print.__self__
+# Every safe builtin is the REAL builtin function, whose .__self__ is the
+# real builtins module. Attribute syntax cannot be scrubbed, so the module
+# itself is disarmed for the duration of the run instead.
+expect_blocked(
+    "PoC: print.__self__.__import__('os')",
+    "b = print.__self__\nprint(b.__import__('os').getcwd())",
+    ("sandbox", "import"))
+expect_blocked(
+    "PoC: os.environ via print.__self__",
+    "b = print.__self__\nprint(sorted(b.__import__('os').environ))",
+    ("sandbox", "import"))
+expect_blocked(
+    "PoC: sys.modules via print.__self__",
+    "b = print.__self__\nprint(len(b.__import__('sys').modules))",
+    ("sandbox", "import"))
+expect_blocked(
+    "PoC: len.__self__.eval",
+    "b = len.__self__\nprint(b.eval('1 + 1'))",
+    ("sandbox", "builtin"))
+expect_blocked(
+    "PoC: len.__self__.open",
+    "b = len.__self__\nprint(b.open('/etc/passwd').read())",
+    ("sandbox", "builtin"))
+
 # ---------------------------------------------------------------- allowed
 expect_ok("arithmetic + print", "print(2 + 2)", "4")
 expect_ok("math", "import math\nprint(math.sqrt(16))", "4.0")
@@ -212,4 +238,14 @@ print()
 if FAILURES:
     print("FAILED (%d): %s" % (len(FAILURES), ", ".join(FAILURES)))
     sys.exit(1)
-print("ALL SANDBOX TESTS PASSED")
+# The gate must never outlive a run: the interpreter (and every other
+# thread's import) has to be exactly as it was afterwards.
+if builtins.open is not vorv_runner._REAL_BUILTIN_ATTRS["open"]:
+    FAILURES.append("builtins.open was not restored after run_code")
+if builtins.__import__ is not vorv_runner._REAL_BUILTIN_ATTRS["__import__"]:
+    FAILURES.append("builtins.__import__ was not restored after run_code")
+if builtins.exec is not vorv_runner._REAL_BUILTIN_ATTRS["exec"]:
+    FAILURES.append("builtins.exec was not restored after run_code")
+if len(FAILURES) == 0:
+    print("  PASS  [restored] real builtins back after every run")
+    print("ALL SANDBOX TESTS PASSED")

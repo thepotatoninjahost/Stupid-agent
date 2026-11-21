@@ -58,6 +58,10 @@ class UiAutomationService : AccessibilityService() {
      * than a 2 MB string that silently truncates mid-sentence.
      */
     fun snapshot(maxNodes: Int = 120): List<Node> {
+        // Finding 22: an accessibility service can read whatever is on
+        // screen, including a password manager. It is only ever allowed to
+        // look at the app the agent just installed and opened.
+        if (!scopedToSession()) return emptyList()
         val root = rootInActiveWindow ?: return emptyList()
         val out = ArrayList<Node>(maxNodes)
         walk(root, out, maxNodes)
@@ -106,6 +110,7 @@ class UiAutomationService : AccessibilityService() {
     fun exists(lookup: Lookup): Boolean = find(lookup) != null
 
     private fun find(lookup: Lookup): AccessibilityNodeInfo? {
+        if (!scopedToSession()) return null
         val root = rootInActiveWindow ?: return null
         // Id lookups are precise and cheap: try them first.
         if (lookup.viewId != null) {
@@ -141,6 +146,13 @@ class UiAutomationService : AccessibilityService() {
         return null
     }
 
+    /**
+     * True only while a test session is open AND the app under test is the
+     * one in front. Anything else — Settings, the launcher, another app the
+     * user switched to — reads as an empty screen.
+     */
+    private fun scopedToSession(): Boolean = allowsRead(session.get(), currentPackage.get())
+
     /** What to look for: any of text, description or view id. */
     data class Lookup(
         val text: String? = null,
@@ -151,10 +163,25 @@ class UiAutomationService : AccessibilityService() {
     companion object {
         private val instance = AtomicReference<UiAutomationService?>(null)
         private val currentPackage = AtomicReference<String?>(null)
+        private val session = AtomicReference<String?>(null)
 
         val isEnabled: Boolean get() = instance.get() != null
 
         fun foregroundPackage(): String? = currentPackage.get()
+
+        /**
+         * Starts a test session for [pkg]. Until [endSession], the service
+         * reports and taps nothing that is not [pkg].
+         */
+        fun beginSession(pkg: String) = session.set(pkg)
+
+        fun endSession() = session.set(null)
+
+        fun sessionTargetForTest(): String? = session.get()
+
+        /** The rule itself, kept pure so it can be pinned by a plain unit test. */
+        internal fun allowsRead(target: String?, foreground: String?): Boolean =
+            target != null && target == foreground
 
         /** Null when the service is not enabled by the user. */
         fun service(): UiAutomationService? = instance.get()
