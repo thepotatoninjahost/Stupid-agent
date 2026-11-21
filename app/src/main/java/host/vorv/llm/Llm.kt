@@ -243,7 +243,12 @@ class CloudLlm(
                         .build()
 
                     client.newCall(req).execute().use { res ->
-                        val responseBody = res.body?.string().orEmpty()
+                        // M-1 (code review, 2026-11): read a ceiling, not the
+                        // whole stream — a huge or endless body used to be
+                        // buffered in full (OOM), and an OutOfMemoryError is
+                        // not an Exception, so it escaped every retry and the
+                        // task died with no message.
+                        val responseBody = readBounded(res.body)
                         // Redacted truth for Brain health: the address, the
                         // model, THAT a key was sent (never which), the code
                         // and the body head. A 401 then names its own cause
@@ -297,7 +302,17 @@ class CloudLlm(
                             // now fail fast via [NonRetryableLlmException].
                             throw LlmHttpException(res.code, responseBody.take(300))
                         }
-                        val json = JsonParser.parseString(responseBody).asJsonObject
+                        val json = try {
+                            JsonParser.parseString(responseBody).asJsonObject
+                        } catch (e: Exception) {
+                            // Name the real cause: a bare "Expected BEGIN_OBJECT"
+                            // told nobody which provider or how big it was.
+                            throw RuntimeException(
+                                "LLM reply was not a completion object (HTTP ${res.code}, " +
+                                    "${responseBody.length} chars read): ${e.message}",
+                                e,
+                            )
+                        }
 
                         // Defensive: some error shapes return an empty choices array (audit M-4).
                         val choices = json.getAsJsonArray("choices")
@@ -352,6 +367,42 @@ class CloudLlm(
 
     companion object {
         private const val MAX_ATTEMPTS = 4
+
+        /**
+         * M-1: a completion body is read up to this many bytes, then the read
+         * stops. UTF-8 yields at most one char per byte, so the char cap
+         * below can only cut what the byte cap already bounded.
+         */
+        internal const val MAX_RESPONSE_BYTES = 2_000_000
+        internal const val MAX_RESPONSE_CHARS = 1_000_000
+
+        /** A probe only keeps 600 chars, so this ceiling is generous. */
+        internal const val PROBE_BODY_BYTES = 64_000
+
+        /**
+         * Reads at most [maxBytes] of [body] and closes nothing (the caller's
+         * `use` closes). A body that produced more is handed on with the
+         * honest truncation marker instead of looking complete.
+         */
+        internal fun readBounded(
+            body: okhttp3.ResponseBody?,
+            maxBytes: Int = MAX_RESPONSE_BYTES,
+        ): String {
+            if (body == null) return ""
+            val buffer = okio.Buffer()
+            val source = body.source()
+            var overflow = false
+            while (buffer.size < maxBytes) {
+                val read = source.read(buffer, (maxBytes - buffer.size).toLong())
+                if (read == -1L) break
+            }
+            if (buffer.size >= maxBytes) {
+                // One more byte tells us whether the ceiling cut anything.
+                overflow = source.read(okio.Buffer(), 1L) != -1L
+            }
+            val text = buffer.readUtf8()
+            return if (overflow) host.vorv.tools.capWithMarker(text, MAX_RESPONSE_CHARS) else text
+        }
 
         /**
          * L-5 (code review, 2026-11): marks a DETERMINISTIC failure (HTTP
@@ -414,7 +465,8 @@ class CloudLlm(
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(req).execute().use { res ->
-                        val text = res.body?.string().orEmpty()
+                        // M-1: a probe reads 600 chars; never buffer more.
+                        val text = readBounded(res.body, PROBE_BODY_BYTES)
                         val exchange = BrainFacts.Exchange(
                             url = url,
                             model = model,
