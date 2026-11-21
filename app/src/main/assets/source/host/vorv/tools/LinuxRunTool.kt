@@ -12,6 +12,12 @@ import kotlinx.coroutines.withContext
  * This is the general-purpose capability: install packages, compile in any
  * language the distribution carries, run scripts, keep files between calls.
  * It is not a simulator of a computer; it is one.
+ *
+ * H-1 (code review, 2026-11): this tool used to run every command with no
+ * consent gate at all — `shell` asked, `linux_run` did not, and the model
+ * reaches for whichever it likes. It now mirrors `ShellTool`'s gate exactly:
+ * the dead-shell breaker first, then the session grant (audited), then the
+ * per-command dialog, and fail-closed when the bridge is missing.
  */
 class LinuxRunTool(private val guest: GuestShell) : Tool {
 
@@ -48,9 +54,31 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
             if (command.isNullOrEmpty()) {
                 return@withContext fail("command is required")
             }
+            // A previous command that never came back means the guest is wedged;
+            // retrying cannot fix that (same breaker ShellTool honours).
+            SessionGrants.shellBlockedReason?.let { reason ->
+                return@withContext fail(ShellTool.blockedShellMessage(reason))
+            }
+
             val budget = (input.get("timeout_ms")?.asLong ?: 180_000L).coerceIn(1_000L, 600_000L)
 
+            // Same consent contract as `shell`: the session grant replaces the
+            // dialog but audits every command; without it, the user sees the
+            // COMPLETE command and a missing bridge fails closed.
+            if (SessionGrants.shellAllCommands) {
+                SessionGrants.auditAutoRun(command)
+            } else {
+                val confirm = ctx.confirm
+                    ?: return@withContext fail(
+                        "User confirmation bridge unavailable — refusing to run linux_run (fail closed).",
+                    )
+                if (!confirm("${ShellTool.CONSENT_PREFIX}\n\n$command\n\nAllow?")) {
+                    return@withContext fail("User DENIED the linux_run command. Do not claim it ran.")
+                }
+            }
+
             val shell = guest.run(command, budget, emptyList(), "/root")
+            if (!shell.timedOut) SessionGrants.markShellVerified()
             val header = when {
                 shell.ok -> "exit 0"
                 shell.timedOut -> "TIMEOUT — stopped after ${budget}ms"
