@@ -14,7 +14,14 @@ import java.util.concurrent.ConcurrentHashMap
  * for a day, and a chosen id that is not in it is badged "not in the list".
  */
 class ModelCatalog(
-    client: OkHttpClient = OkHttpClient(),
+    // L-2: the guarded client is the default, not something one call site
+    // remembers to pass. Redirects stay off for the request below.
+    client: OkHttpClient = OkHttpClient.Builder()
+        .dns(host.vorv.tools.NetworkGuard.PublicDns)
+        .followRedirects(false)
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .build(),
     private val ttlMs: Long = 24 * 60 * 60 * 1000L,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {

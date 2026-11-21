@@ -1,5 +1,7 @@
 package host.vorv.llm.provider
 
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -12,6 +14,55 @@ import org.junit.Test
 class ModelCatalogTest {
 
     private val catalog = ModelCatalog()
+
+    @Test
+    fun `l2 the default client goes through the network guard`() = runBlocking {
+        // localhost resolves through OkHttp's Dns; with the guard as the
+        // default it throws before any connection is attempted.
+        val p = Provider.custom("http://localhost:1")
+        val listing = ModelCatalog().fetch(p, apiKey = "")
+        val error = listing.error.orEmpty()
+        assertTrue("error was: $error", error.contains("Vorv network guard"))
+    }
+
+    @Test
+    fun `l2 the default client refuses a redirect and names it`() = runBlocking {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse {
+                return if (request.path == "/models") {
+                    okhttp3.mockwebserver.MockResponse()
+                        .setResponseCode(307)
+                        .addHeader("Location", "/target")
+                } else {
+                    okhttp3.mockwebserver.MockResponse().setBody("""{"data":[{"id":"target"}]}""")
+                }
+            }
+        }
+        server.start()
+        try {
+            val base = server.url("/").toString().trimEnd('/')
+            val p = Provider.custom(base)
+            // The default client's guard refuses loopback (proved above), so
+            // this test injects a loopback-capable client to reach the wire
+            // and prove the catalog refuses the redirect on ANY client.
+            val localClient = OkHttpClient.Builder()
+                .dns { listOf(java.net.InetAddress.getLoopbackAddress()) }
+                .build()
+            val listing = ModelCatalog(localClient).fetch(p, apiKey = "")
+            val error = listing.error.orEmpty()
+            assertTrue("error was: $error", error.contains("/target") && error.contains("redirects are refused"))
+            // The redirect must not have been followed.
+            var paths = mutableListOf<String>()
+            while (true) {
+                val r = server.takeRequest(200, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+                paths.add(r.path!!)
+            }
+            assertEquals(listOf("/models"), paths)
+        } finally {
+            server.shutdown()
+        }
+    }
 
     @Test
     fun `reads the openai models shape`() {

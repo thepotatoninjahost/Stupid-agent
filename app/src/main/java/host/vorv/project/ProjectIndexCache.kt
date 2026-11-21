@@ -69,13 +69,5 @@ object ProjectIndexCache {
         return "$body\n\nIndex status: $problem"
     }
 
-    /** Forget the index, e.g. when the owner picks a different folder. */
-    fun forget() {
-        uri = null
-        snapshot = null
-        builtAt = 0L
-        failure = null
-    }
-
     data class Result(val snapshot: IndexSnapshot?, val problem: String?)
 }
