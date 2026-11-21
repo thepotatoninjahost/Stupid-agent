@@ -191,8 +191,8 @@ class ModelRepository(private val appContext: Context) {
      *  1. Lifecycle discipline (audit H-4: "ModelRepository serializes every
      *     engine transition behind one Mutex") silently had a hole: repair
      *     engines were born and died outside the ledger.
-     *  2. Wasted NPU memory: when the resident engine IS the strongest
-     *     repair model (local mode with the 7B selected), the repair path
+     *  2. Wasted NPU memory: when the resident engine IS the repair model
+     *     (local mode with the one on-device model selected), the repair path
      *     STILL built a SECOND native engine for the same weights — two
      *     GenieX instances on the NPU at once, exactly the doubling the
      *     crash-dialog busy-check (N-L8) exists to prevent.
@@ -204,10 +204,8 @@ class ModelRepository(private val appContext: Context) {
      * to the caller with owned = true — release it in a finally block
      * exactly like the old direct construction did.
      *
-     * Strongest-model semantics are unchanged (v0.6.9): the 7B writes the
-     * repairs whenever it is on the device; a weak model never writes
-     * repairs while a stronger one sits on disk. Reuse only happens when
-     * the resident engine IS that strongest model.
+     * Reuse only happens when the resident engine IS the repair model —
+     * OmniCoder-9B. There is no weaker second model to fall back to.
      */
     suspend fun acquireRepairEngine(): RepairEngineHandle = mutex.withLock {
         val choice = ModelManager.bestRepairModel()

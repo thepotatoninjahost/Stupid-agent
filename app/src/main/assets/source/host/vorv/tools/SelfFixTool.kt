@@ -50,10 +50,9 @@ import kotlinx.coroutines.flow.first
  * budget and the 15-minute local-mode task timeout, audit N-L7,
  * VRA-2026-1103: the previous 21-minute figure was unreachable).
  *
- * MODEL (v0.6.9): patch generation uses the STRONGEST coder model on the
- * device — the 7B whenever it is downloaded. The 3B is only a fallback
- * for devices that never pulled the 7B, and the tool says so honestly.
- * A weak model never writes repairs while a stronger one sits on disk.
+ * MODEL: patch generation uses the on-device coder model (OmniCoder-9B)
+ * when it is downloaded. There is no smaller fallback — a missing model is
+ * reported honestly and nothing is generated.
  */
 class SelfFixTool(
     private val appContext: Context,
@@ -70,8 +69,7 @@ class SelfFixTool(
             "cryptographically signed, and shown to the user for approval BEFORE it is " +
             "applied; it becomes active at the next app start, and is rolled back " +
             "automatically if the app crashes in the patched class. Requires: a coder " +
-            "model downloaded (the 7B is used when present — strongest model writes " +
-            "the repairs; the 3B only if the 7B was never pulled) and the app's own " +
+            "model downloaded (OmniCoder-9B writes the repairs) and the app's own " +
             "compiler (tools/forge/fetch-runtime.sh). No workspace folder and no other " +
             "app are needed."
 
@@ -149,15 +147,13 @@ class SelfFixTool(
                     "Use 'Retry normal boot' from the safe-mode screen first.",
             )
         }
-        // Strongest-first repair model (v0.6.9): the 7B writes the patches
-        // whenever it is on the device; the 3B is a last-resort fallback,
-        // never the first choice for code repair.
+        // Patches are written by the on-device model (OmniCoder-9B).
         val repairModel = ModelManager.bestRepairModel()
         if (repairModel == null) {
             return ToolResult(
                 ok = false, output = "", durationMs = elapsed(t0),
                 error = "No coder model is downloaded — self-fix generates patches with " +
-                    "the strongest on-device coder model (the 7B; Setup tab). " +
+                    "the on-device coder model (OmniCoder-9B; Setup tab). " +
                     "Nothing was changed.",
             )
         }
@@ -181,9 +177,7 @@ class SelfFixTool(
         // engine already IS the strongest repair model (no second native
         // instance on the NPU), and time-bounded-owned otherwise. The old
         // direct `LocalLlm(...)` construction was a hole in the H-4 ledger
-        // and doubled NPU memory when the 7B was already resident.
-        // Strongest-model semantics are unchanged: bestRepairModel() inside
-        // the repository picks the 7B whenever it is downloaded.
+        // and doubled NPU memory when the model was already resident.
         val repository = (appContext as? VorvApplication)?.modelRepository
         val handle = repository?.acquireRepairEngine()
             ?: run {
@@ -203,7 +197,7 @@ class SelfFixTool(
             ?: return ToolResult(
                 ok = false, output = "", durationMs = elapsed(t0),
                 error = "No coder model is downloaded — self-fix generates patches with " +
-                    "the strongest on-device coder model (the 7B; Setup tab). " +
+                    "the on-device coder model (OmniCoder-9B; Setup tab). " +
                     "Nothing was changed.",
             )
         return try {

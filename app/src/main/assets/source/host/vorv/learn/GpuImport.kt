@@ -25,7 +25,7 @@ object GpuImport {
     const val MANIFEST = "manifest.json"
     const val METRICS = "metrics.json"
 
-    /** A 7B-class model at 4-bit is ~3.5-4.5 GB; anything this small is a stub. */
+    /** A 9B-class model at 4-bit is over 5 GB; anything this small is a stub. */
     const val MIN_MODEL_BYTES = 1L * 1024 * 1024 * 1024
 
     data class Bundle(
@@ -82,7 +82,7 @@ object GpuImport {
         }
         if (bundle.modelBytes < minModelBytes) {
             return Result.Refused(
-                "The model file is ${megabytes(bundle.modelBytes)} MB. A real 7B model is " +
+                "The model file is ${megabytes(bundle.modelBytes)} MB. A real 9B model is " +
                     "over 1000 MB, so this is a stub or a half download — nothing was imported."
             )
         }

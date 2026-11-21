@@ -416,8 +416,7 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, "Analyzing crash on-device…", Toast.LENGTH_SHORT).show()
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Strongest-first repair model (v0.6.9): analysis runs on the
-                // best coder model on the device — 7B when downloaded.
+                // Analysis runs on the on-device model, when it is downloaded.
                 val repairModel = ModelManager.bestRepairModel()
                 if (repairModel == null) {
                     toastMain("No coder model is downloaded — analysis needs one (Setup tab).")
@@ -490,13 +489,11 @@ class MainActivity : ComponentActivity() {
                         "self-repair. Nothing was changed.", false)
                     return@launch
                 }
-                // Strongest-first repair model (v0.6.9): patches are written
-                // by the best coder model on the device — the 7B whenever it
-                // is downloaded; the 3B only when the 7B is absent.
+                // Patches are written by the on-device model (OmniCoder-9B).
                 val repairModel = ModelManager.bestRepairModel()
                 if (repairModel == null) {
                     onDone(false, "No coder model is downloaded — self-repair needs the " +
-                        "strongest on-device coder model (the 7B; Setup tab). " +
+                        "on-device coder model (OmniCoder-9B; Setup tab). " +
                         "Nothing was changed.", false)
                     return@launch
                 }
@@ -516,7 +513,7 @@ class MainActivity : ComponentActivity() {
                 val repairLlm = handle.llm
                 if (repairLlm == null) {
                     onDone(false, "No coder model is downloaded — self-repair needs the " +
-                        "strongest on-device coder model (the 7B; Setup tab). " +
+                        "on-device coder model (OmniCoder-9B; Setup tab). " +
                         "Nothing was changed.", false)
                     return@launch
                 }

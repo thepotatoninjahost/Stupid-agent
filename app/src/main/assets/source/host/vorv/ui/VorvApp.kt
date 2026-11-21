@@ -198,7 +198,7 @@ private fun AppHeader(busy: Boolean, llmLabel: String, onStop: () -> Unit = {}) 
         )
         Spacer(Modifier.width(12.dp))
         // Constrain the title+subtitle column so a long label like
-        // "Local — Qwen2.5-Coder-7B-Instruct not pulled" can't push the
+        // "Local — OmniCoder-9B not pulled" can't push the
         // Idle/Live pill off the right edge of the screen.
         Column(modifier = Modifier.weight(1f)) {
             Text("Vorv", color = OnBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
