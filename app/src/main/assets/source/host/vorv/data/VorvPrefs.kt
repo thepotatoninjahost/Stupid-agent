@@ -118,8 +118,12 @@ class VorvPrefs(private val context: Context) {
     suspend fun readBrainFactsJson(): String =
         context.vorvPrefs.data.first()[BRAIN_FACTS] ?: ""
 
-    suspend fun setBrainFactsJson(json: String) {
-        context.vorvPrefs.edit { it[BRAIN_FACTS] = json }
+    /**
+     * H-4: brain facts moved to noBackupFilesDir ([host.vorv.llm.BrainFactsStore]).
+     * This key must not survive in the backed-up prefs file.
+     */
+    suspend fun eraseLegacyBrainFacts() {
+        context.vorvPrefs.edit { it.remove(BRAIN_FACTS) }
     }
 
     /** Specific cloud provider chosen in Setup ("" = the built-in Z.ai preset). */

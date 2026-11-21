@@ -465,19 +465,13 @@ class AgentViewModel(
 
         // 0.9.18 — Brain health survives a restart, and every fact a brain
         // publishes re-renders the header through the ONE resolution.
+        // H-4: the record lives in noBackupFilesDir, so it survives a restart
+        // but never enters a cloud backup or a device-to-device transfer.
         viewModelScope.launch(Dispatchers.IO) {
-            val saved = runCatching { prefs.readBrainFactsJson() }.getOrDefault("")
-            if (saved.isNotBlank()) {
-                host.vorv.llm.BrainState.attachStore(
-                    save = { json -> viewModelScope.launch(Dispatchers.IO) { prefs.setBrainFactsJson(json) } },
-                    load = { saved },
-                )
-            } else {
-                host.vorv.llm.BrainState.attachStore(
-                    save = { json -> viewModelScope.launch(Dispatchers.IO) { prefs.setBrainFactsJson(json) } },
-                    load = { null },
-                )
-            }
+            val store = host.vorv.llm.BrainFactsStore(appContext)
+            runCatching { store.migrateLegacy(prefs) }
+                .onFailure { android.util.Log.w("VorvBrainFacts", "legacy brain-facts migration failed: ${it.message}") }
+            host.vorv.llm.BrainState.attachStore(save = store::save, load = store::load)
         }
         viewModelScope.launch {
             host.vorv.llm.BrainState.facts.collect {
