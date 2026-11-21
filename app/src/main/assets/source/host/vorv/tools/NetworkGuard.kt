@@ -67,6 +67,18 @@ object NetworkGuard {
      */
     @Throws(UnknownHostException::class)
     fun checkHostAllowed(host: String) {
+        resolveChecked(host)
+    }
+
+    /**
+     * H-2 (code review, 2026-11): the guest egress proxy needs the ADDRESSES it
+     * vetted, not just a yes/no — resolving a second time to connect would
+     * reopen the DNS-rebinding hole [PublicDns] exists to close. This is the one
+     * resolution path: denylist, then DNS, then reject if ANY address is
+     * private/loopback.
+     */
+    @Throws(UnknownHostException::class)
+    fun resolveChecked(host: String): List<InetAddress> {
         if (isBlockedHost(host)) {
             throw UnknownHostException("Vorv network guard: host '$host' is not allowed")
         }
@@ -76,20 +88,21 @@ object NetworkGuard {
             if (isBlockedAddress(literal)) {
                 throw UnknownHostException("Vorv network guard: address '$host' is private/loopback")
             }
-            return
+            return listOf(literal)
         }
-        val addrs = try {
-            InetAddress.getAllByName(host)
-        } catch (e: UnknownHostException) {
-            throw e
-        }
+        val addrs = Dns.SYSTEM.lookup(host)
         val bad = addrs.firstOrNull { isBlockedAddress(it) }
         if (bad != null) {
             throw UnknownHostException(
                 "Vorv network guard: '$host' resolves to a private/loopback address (${bad.hostAddress})"
             )
         }
+        if (addrs.isEmpty()) {
+            throw UnknownHostException("Vorv network guard: '$host' resolved to no address")
+        }
+        return addrs
     }
+
 
     /**
      * Syntactic IP-literal detection (audit L-8): a hostname that IS an
@@ -127,18 +140,6 @@ object NetworkGuard {
      * makes SSRF-to-LAN impossible for every request through that client.
      */
     object PublicDns : Dns {
-        override fun lookup(hostname: String): List<InetAddress> {
-            if (isBlockedHost(hostname)) {
-                throw UnknownHostException("Vorv network guard: host '$hostname' is not allowed")
-            }
-            val addrs = Dns.SYSTEM.lookup(hostname)
-            val bad = addrs.firstOrNull { isBlockedAddress(it) }
-            if (bad != null) {
-                throw UnknownHostException(
-                    "Vorv network guard: '$hostname' resolves to a private/loopback address (${bad.hostAddress})"
-                )
-            }
-            return addrs
-        }
+        override fun lookup(hostname: String): List<InetAddress> = resolveChecked(hostname)
     }
 }

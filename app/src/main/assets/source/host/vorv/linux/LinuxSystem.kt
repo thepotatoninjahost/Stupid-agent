@@ -1,6 +1,7 @@
 package host.vorv.linux
 
 import android.content.Context
+import android.util.Log
 import host.vorv.tools.GuestShell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -36,6 +37,9 @@ class LinuxSystem(private val context: Context) : GuestShell {
     private val payload by lazy { LinuxPayload(context) }
 
     private val provisioner = RootfsProvisioner(STAMP)
+
+    /** H-2: the loopback HTTP proxy every guest command is pointed at. */
+    private val egressProxy = GuestEgressProxy()
 
     /**
      * 0.9.14 — set when the tree check found pieces missing and the rootfs was
@@ -174,6 +178,19 @@ class LinuxSystem(private val context: Context) : GuestShell {
         workDir: String,
     ): Shell = withContext(Dispatchers.IO) {
         provision().onFailure { return@withContext Shell(-1, "", it.message ?: "not provisioned", true) }
+        // H-2: provisioning can delete and re-extract the rootfs, so the hosts
+        // blocklist is (re)written after it and before anything runs.
+        writeGuestHosts()
+        // Fail closed: a guest command with no egress guard is the hole this
+        // fixes, so if the proxy cannot start the command does not run.
+        val proxyPort = runCatching { egressProxy.ensureStarted() }.getOrElse {
+            return@withContext Shell(
+                -1,
+                "vorv: the guest egress guard could not start, so the command was not run (H-2).",
+                null,
+                false,
+            )
+        }
         val proot = payload.executable()
             ?: return@withContext Shell(
                 -1, "",
@@ -188,7 +205,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
         val loader = resolveLoader()
             ?: return@withContext Shell(-1, "", missingLoaderMessage(), true)
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
-        val env = guestEnv(loader, tmp, proot.parentFile ?: File("/"))
+        val env = guestEnv(loader, tmp, proot.parentFile ?: File("/"), proxyPort)
         val first = launch(argv, env, home, timeoutMs)
         if (first.exitCode == 0 || first.timedOut || !first.output.contains("execve(")) {
             return@withContext first
@@ -227,6 +244,14 @@ class LinuxSystem(private val context: Context) : GuestShell {
             false,
         )
     }
+
+    /**
+     * H-2: a best-effort blocklist inside the guest. 0.0.0.0, NOT 127.0.0.1:
+     * proot shares the phone's network stack, so a loopback mapping could
+     * reach a service the phone itself runs. Rewritten per command because
+     * provisioning may re-extract the rootfs; ten lines cost nothing.
+     */
+    internal fun writeGuestHosts() = writeGuestHosts(rootfs)
 
     /** One proot run: start it, drain its output, enforce the timeout. */
     private fun launch(argv: List<String>, env: Map<String, String>, home: File, timeoutMs: Long): Shell {
@@ -315,7 +340,29 @@ class LinuxSystem(private val context: Context) : GuestShell {
         )
 
         /** proot's environment: its loader, its libraries, a writable /tmp. */
-        internal fun guestEnv(loader: File, tmp: File, nativeDir: File): Map<String, String> = mapOf(
+        internal fun guestEnv(
+            loader: File,
+            tmp: File,
+            nativeDir: File,
+            proxyPort: Int? = null,
+        ): Map<String, String> = buildMap {
+            putAll(baseGuestEnv(loader, tmp, nativeDir))
+            if (proxyPort != null) {
+                // H-2: every guest HTTP(S) request goes through the loopback
+                // guard. no_proxy is emptied on purpose: a default that skipped
+                // the proxy for some host would be a hole in the policy.
+                val proxy = "http://127.0.0.1:$proxyPort"
+                put("http_proxy", proxy)
+                put("https_proxy", proxy)
+                put("HTTP_PROXY", proxy)
+                put("HTTPS_PROXY", proxy)
+                put("ALL_PROXY", proxy)
+                put("no_proxy", "")
+                put("NO_PROXY", "")
+            }
+        }
+
+        private fun baseGuestEnv(loader: File, tmp: File, nativeDir: File): Map<String, String> = mapOf(
             // PROOT_LOADER is exec'd by proot, so it must sit in a directory the
             // platform allows execution from — never in filesDir on Android 10+.
             "PROOT_LOADER" to loader.absolutePath,
@@ -333,6 +380,22 @@ class LinuxSystem(private val context: Context) : GuestShell {
             "TERM" to "dumb",
             "LANG" to "C.UTF-8",
         )
+
+        /** H-2: writes the guest's /etc/hosts (see [GUEST_HOSTS]). */
+        internal fun writeGuestHosts(rootfs: File) {
+            runCatching {
+                File(rootfs, "etc").mkdirs()
+                File(rootfs, "etc/hosts").writeText(GUEST_HOSTS)
+            }.onFailure {
+                Log.w("VorvLinux", "could not write the guest hosts blocklist: ${it.message}")
+            }
+        }
+
+        /** H-2: the guest's /etc/hosts; metadata names point at 0.0.0.0. */
+        internal const val GUEST_HOSTS =
+            "127.0.0.1 localhost\n" +
+                "::1 localhost ip6-localhost ip6-loopback\n" +
+                "0.0.0.0 metadata.google.internal metadata.goog instance-data\n"
 
         /** Bumped when the payload layout changes, so provision() re-extracts. */
         internal const val STAMP = "debian-12-bookworm-arm64-proot-5.1.107"

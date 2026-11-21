@@ -125,4 +125,42 @@ class LinuxSystemArgvTest {
         assertFalse(candidates.any { it.isFile })
         assertEquals(File(appStorage, "loader").canonicalPath, candidates.last().canonicalPath)
     }
+
+    @Test
+    fun `every guest command is pointed at the loopback egress guard`() {
+        val native = File("/data/app/~~x==/host.vorv-y==/lib/arm64")
+        val loader = File(native, "libforge-proot-loader.so")
+        val env = LinuxSystem.guestEnv(loader, tmp, native, proxyPort = 43219)
+        val proxy = "http://127.0.0.1:43219"
+        assertEquals(proxy, env["http_proxy"])
+        assertEquals(proxy, env["https_proxy"])
+        assertEquals(proxy, env["HTTP_PROXY"])
+        assertEquals(proxy, env["HTTPS_PROXY"])
+        assertEquals(proxy, env["ALL_PROXY"])
+        // Empty, not absent: a default that skipped the proxy would be a hole.
+        assertTrue(env.containsKey("no_proxy"))
+        assertEquals("", env["no_proxy"])
+        assertEquals("", env["NO_PROXY"])
+    }
+
+    @Test
+    fun `without a proxy port the environment is unchanged`() {
+        val native = File("/data/app/~~x==/host.vorv-y==/lib/arm64")
+        val env = LinuxSystem.guestEnv(File(native, "libforge-proot-loader.so"), tmp, native)
+        assertFalse(env.keys.any { it.contains("proxy", ignoreCase = true) })
+    }
+
+    @Test
+    fun `the guest hosts file sends metadata hosts to 0_0_0_0`() {
+        val dir = Files.createTempDirectory("guest-hosts").toFile()
+        // No Context needed: the writer takes the rootfs it should use.
+        LinuxSystem.writeGuestHosts(dir)
+        val hosts = File(dir, "etc/hosts").readText()
+        assertTrue(hosts.contains("127.0.0.1 localhost"))
+        assertTrue(hosts.contains("::1 localhost"))
+        // 0.0.0.0, never 127.0.0.1: proot shares the phone's network stack, so
+        // a loopback mapping could reach a service the phone itself runs.
+        assertTrue(hosts.contains("0.0.0.0 metadata.google.internal metadata.goog instance-data"))
+        assertFalse(hosts.contains("127.0.0.1 metadata"))
+    }
 }
