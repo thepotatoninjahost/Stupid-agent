@@ -48,7 +48,7 @@ class MakeBundleTest(unittest.TestCase):
             "model": self.model,
             "probes": probes(),
             "metrics": json.load(open(self.metrics)),
-            "base": "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "base": "Tesslate/OmniCoder-9B-GGUF",
             "corpus_sha256": "abc123",
             "config": '{"loraR": 16}',
         }

@@ -7,7 +7,7 @@ writes one artifact only if the tuned model is better than the model it started
 from — measured on the held-out slice, before and after.
 
     python train_vorv_l.py --corpus corpus/ --out run1/ \
-        --base Qwen/Qwen2.5-Coder-7B-Instruct --steps 300
+        --base Tesslate/OmniCoder-9B-GGUF --steps 300
 
 Nothing here decides what "better" means on its own: it writes metrics.json in
 the same shape the phone's PromotionGate reads, so the same refusal rules apply
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--base", default="Qwen/Qwen2.5-Coder-7B-Instruct")
+    parser.add_argument("--base", default="Tesslate/OmniCoder-9B-GGUF")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--max-seq", type=int, default=2048)

@@ -5,7 +5,7 @@ The phone refuses anything it cannot check, so this writer fails loudly when a
 piece of evidence is missing instead of producing a bundle that will be turned
 away later:
 
-  * the model file must exist and be over 1 GiB (a 7B model at 4-bit is ~4 GB);
+  * the model file must exist and be over 1 GiB (the 9B at Q4_0 is ~5.3 GB);
   * ``--probes`` must record a passed/total count for every probe kind the
     phone's suite grades, measured with the same suite version;
   * the model's SHA-256 and byte length are computed here and written into the
@@ -14,7 +14,7 @@ away later:
 Usage (on Kaggle/Colab, after training):
 
     python make_bundle.py --model out/model.gguf --probes out/probes.json \\
-        --metrics out/metrics.json --base Qwen/Qwen2.5-Coder-7B-Instruct \\
+        --metrics out/metrics.json --base Tesslate/OmniCoder-9B-GGUF \\
         --corpus-sha256 <sha> --out out/vorv-l-bundle.zip
 """
 
@@ -104,7 +104,7 @@ def build_manifest(
     # is wrong in a specific way is told that instead of "too small".
     if size < MIN_MODEL_BYTES:
         raise BundleError(
-            f"{model} is {size} bytes; a real 7B model is over {MIN_MODEL_BYTES}. "
+            f"{model} is {size} bytes; a real 9B model is over {MIN_MODEL_BYTES}. "
             "Refusing to pack a stub."
         )
     return {
