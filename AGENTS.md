@@ -37,6 +37,10 @@ were reported as fixed and were not.
 - Every accepted piece of work is committed and pushed to `main` and, when it is
   an app change, published as a release, because the owner keeps their record
   only in this repository.
+- After editing anything under `app/src/main/java`, run
+  `./gradlew :app:syncSourceMirror` and commit `app/src/main/assets/source`
+  too. Since M-4 the build does not sync it for you: `verifySourceMirror` runs
+  before build and test and fails, naming the files, when the mirror is stale.
 
 ## Field lessons
 

@@ -1,3 +1,184 @@
+# Review fixes: 2026-11-21
+
+The findings of `REVIEW-2026-11-21.md` (C-1 … L-2), fixed in the order the fix
+plan set, one commit per step, on branch `lemon/execute-review-plan`. Suite
+after the last step: 831 tests in 108 classes, 0 failures
+(`./gradlew :app:testDebugUnitTest -x checkPayload -x provisionPayload`).
+"Limit" is what this fix does *not* cover.
+
+## C-1 — hot patches now execute
+- **Old:** `PatchRegistry.create` always returned an instance of the original
+  class; the patch dex was loaded into a loader nobody dispatched through, so
+  "Applied patch" was a lie.
+- **New:** `PatchDexLoader` loads the patch, `HotPatcher` refuses a patch that
+  does not shadow its target, `PatchRegistry` remembers the loader per class
+  and refuses to hand back an object whose class came from the app loader.
+  `PatchDexLoaderTest`/`PatchRegistryTest` pin both.
+- **Limit:** verified for the classes the patcher can reach reflectively; a
+  patch whose constructor runs side effects still runs them.
+
+## C-2 — the consent and success text now say what happened
+- **Old:** the dialog promised "Verified: full public API kept" and the result
+  said the patch was applied without either being checked.
+- **New:** `PatchVerifier.shadowsOriginal` must see a *different* class than the
+  running one, `surfaceVerified` is derived from that result, and both the
+  dialog and the `SelfFixTool` result have an honest NOT-verified branch.
+  `ConsentPromptTest` pins both wordings.
+- **Limit:** "verified" means the public surface still matches — not that the
+  patched behaviour is correct.
+
+## H-1 — `linux_run` asks before it runs
+- **Old:** `linux_run` ran any command with no gate, while the `shell` tool beside
+  it did ask.
+- **New:** it mirrors `ShellTool`'s consent gate verbatim (same prefix, same
+  blocked-command sentence, session grant, audit line), and fails closed when no
+  consent bridge is present. `LinuxRunToolTest` covers deny/allow/no-bridge.
+- **Limit:** one confirmed command grants the session, exactly as `shell` did
+  before; that grant model is unchanged.
+
+## H-2 — the guest's egress goes through the app's guard
+- **Old:** the Debian guest had direct network access; `NetworkGuard` only
+  covered the app's own sockets.
+- **New:** `GuestEgressProxy` (loopback HTTP proxy) resolves once through
+  `NetworkGuard`, refuses private/link-local answers, and `LinuxSystem` writes
+  proxy env plus a metadata blocklist into `/etc/hosts`. A start failure refuses
+  the command instead of running it unguarded.
+- **Limit:** this is a proxy + hosts-file design, not syscall interception: a
+  program that ignores `http_proxy` and opens a raw socket to a literal IP is
+  not intercepted. Ordinary package managers, `curl`, `pip` and `apt` are.
+
+## H-3 — the web harness guards every request
+- **Old:** only top-level navigation was checked; images, scripts and XHR from
+  the page went wherever they liked.
+- **New:** `GuardedWebViewClient` applies the policy to every request the
+  `WebView` makes, and the harness policy is an origin test (`LocalAppOrigin`)
+  rather than a URL-prefix test. `GuardedWebViewClientTest` covers it.
+- **Limit:** WebView traffic only — the guest path is H-2, not this.
+
+## H-4 — brain facts stay on the phone
+- **Old:** the prompt-derived facts were written to normal prefs and rode along
+  in cloud backup.
+- **New:** `BrainFactsStore` writes them to `noBackupFilesDir/llm/` with a
+  temp-file rename, and migrates the old value once, erasing the pref only
+  after the file write succeeded.
+- **Limit:** backups made before this build still contain the old value until
+  they age out.
+
+## H-5 — a prompt only goes to https, and a redirect is refused
+- **Old:** the client followed 3xx and accepted `http://` addresses, so a
+  provider address (or a redirect) could send the key and the prompt in clear.
+- **New:** `ProviderUrl.rejectionReason` is checked in Setup, `BrainDoctor`,
+  `CloudLlm.step`, `probeAt` and `ModelCatalog`; redirects are off on every
+  client instance, including an injected one. `TransportPolicyTest`, 6 tests.
+- **Limit:** `http://` to loopback stays allowed for tests. A proxy the owner
+  configures at the OS level is outside this check.
+
+## H-6 — the patch key and signed patches stay off the backup
+- **Old:** the fallback signing key and the patch/quarantine trees were in
+  `filesDir`, which is backed up.
+- **New:** the key moved to `noBackupFilesDir` with a parse-then-delete
+  migration; `backup_rules.xml` and `data_extraction_rules.xml` exclude
+  `hotpatch`, `hotpatch_quarantine` and `patchkeys`. `PatchKeyBackupTest`.
+- **Limit:** a key already uploaded in an older backup stays there — rotating
+  it is still the owner's call.
+
+## M-1 — a huge or bad LLM reply is cut and named
+- **Old:** the whole response was read into memory and a parse failure was
+  rethrown as a generic error.
+- **New:** `readBounded` stops at 2,000,000 bytes / 1,000,000 chars with a
+  visible marker, and the parse error names the HTTP code and the characters
+  read. `LlmBodyLimitTest`, 5 tests.
+- **Limit:** the marker means the model's reply is truncated, not summarised.
+
+## M-2 — a GPU bundle import has size limits
+- **Old:** the zip and every entry were read and copied without a cap.
+- **New:** 12 GiB archive, 12 GiB model, 1 MiB per sidecar, counted as the bytes
+  are copied; a bundle that hits a cap is refused and its partial files removed.
+- **Limit:** 12 GiB is a ceiling, not a check that the model is sane.
+
+## M-3 — the verifier is tested
+- **Old:** `PatchVerifier.verify` had no test at all, so the completeness gate
+  could regress silently.
+- **New:** `PatchVerifierTest` compiles a real Java fixture at test time and
+  proves a missing method on a *different* class is caught.
+- **Limit:** bytecode is not executed in the verifier, only compared.
+
+## M-4 — the source mirror is verified, not generated
+- **Old:** `preBuild` ran `syncSourceMirror`, so `SourceMirrorTest` could never
+  see drift.
+- **New:** `verifySourceMirror` runs before build and test, names missing,
+  differing and orphan files, and writes nothing; `syncSourceMirror` is manual
+  (documented in `DEVELOPMENT.md`).
+- **Limit:** the check compares text, not byte-for-byte line endings.
+
+## M-7 — a swipe away is a user close, and one death is one report
+- **Old:** every main-process death looked like a crash, including the owner
+  swiping the app away.
+- **New:** `UserCloseMarker` records the swipe from `onTaskRemoved`, and
+  `CrashEvents.claim` reports a death once inside its window. A window of 0
+  now means "every death is new" (the comparison is strict).
+- **Limit:** a crash within the dedupe window after a swipe is attributed to the
+  close.
+
+## L-1 — dead code removed
+- `ProjectIndexCache.forget()` deleted; nothing called it.
+
+## L-2 — the default catalog client is guarded
+- `ModelCatalog`'s default client now uses `NetworkGuard.PublicDns`, no
+  redirects and bounded timeouts, so a future call site cannot bypass H-5.
+- **Limit:** an explicitly injected client is the caller's responsibility.
+
+---
+
+# Phase F: one on-device model, one cloud default (owner request)
+
+The owner: "all of the GLM models need to be removed because im not using them
+either", and, verbatim, "with training the 9B model will be a large Qwen3 coder
+model."
+
+## On device
+- **Removed:** `Qwen2.5-Coder-7B` and `Qwen2.5-Coder-3B` (both `ModelChoice`
+  entries, the 7B → 3B repair ladder, and the copy naming them).
+- **Added:** `OmniCoder-9B (Q4_0, 5.31 GB)` —
+  `Tesslate/OmniCoder-9B-GGUF`, `omnicoder-9b-q4_0.gguf`, 5,313,356,096 bytes,
+  resolved from the HuggingFace API and its final `content-length`. Q4_0 because
+  Q4_K_M is documented as suboptimal on the Hexagon NPU; a coding-specialised 9B
+  because it is the largest that fits the S25 at that precision.
+- **Weight cleanup:** the two Qwen directories under `geniex/models/bartowski/`
+  are deleted on the next boot scan, logged per directory, and nothing else
+  under `geniex/models` is touched. A stored `qwen7b`/`qwen3b` pref is
+  normalised to `omnicoder9b`.
+- **Repair path:** one model, no smaller fallback; the label and every message
+  say so.
+- **Training scripts:** `tools/train` now defaults `--base` to
+  `Tesslate/OmniCoder-9B-GGUF` (34 Python tests OK).
+
+## Cloud
+- **Removed:** `enum class CloudModel`, the whole GLM catalogue, `CloudChainLlm`
+  and the model chain, `cloudModelId` in prefs/state, the Cloud Model picker,
+  `cloudModel` arguments, the Z.ai GLM suggestions and `z-ai/glm-4.7`.
+- **Default route:** `https://openrouter.ai/api/v1` + `qwen/qwen3-coder`
+  (`BrainTarget.DEFAULT_BASE` / `DEFAULT_MODEL`). A blank address means that
+  default; an address with no model name is refused with "Setup → Refresh
+  list". A fresh install therefore needs only an OpenRouter key; an install
+  holding only a Z.ai key must pick Z.ai in Setup, and the Setup copy says so.
+- **Kept:** every Qwen3-Coder cloud suggestion (`qwen/qwen3-coder` on
+  OpenRouter, `qwen-3-coder-480b` on Cerebras,
+  `Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8` on Together and the Fireworks
+  equivalent) — the owner named a large Qwen3 Coder as the model that helps
+  train the 9B. **No trainer-model setting and no teacher producer exist in
+  this build** (`TEACHER_DISTIL` is a ledger kind with no writer), so nothing
+  was wired for training in this round; this entry records the decision.
+
+## Not done here
+- **Step 25 (device proof) — not verified.** There is no ADB device in this
+  environment: the 9B pull, `getPaths()` and the Qwen weight cleanup call the
+  GenieX SDK and were not run. Check on the S25: logcat shows
+  `Applied patch: …`, the 9B downloads to 5,313,356,096 bytes and loads, and
+  the two Qwen directories are gone.
+- `REVIEW-2026-11-21.md` is the review itself and is left untracked for the
+  owner to keep or discard.
+
 # The agent is shown the project it has open (step 7)
 
 Plan step 7, items 5–7: a 10,000-file tree the agent can still find code in,
