@@ -15,6 +15,12 @@ package host.vorv.healer
  *
  * Construction sites must create the healer through
  * [host.vorv.watchdog.PatchRegistry.create] with this interface.
+ *
+ * CONSENT CONTRACT: `onConsent` returns the approval token that the device's
+ * security hardware signed after it authenticated the user (see
+ * [host.vorv.watchdog.PatchConsent]), or null when the user declined or the
+ * device could not authenticate them. The healer never registers a patch
+ * without a token that verifies — an in-app "yes" alone is not approval.
  */
 interface HealerApi {
 
@@ -25,7 +31,7 @@ interface HealerApi {
     suspend fun heal(
         crash: CrashInfo,
         workspaceUri: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
     ): HealResult
 
     /**
@@ -36,7 +42,7 @@ interface HealerApi {
     suspend fun modify(
         request: HealRequest,
         workspaceUri: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
     ): HealResult
 
     /**

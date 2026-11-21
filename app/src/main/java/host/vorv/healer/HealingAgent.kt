@@ -136,7 +136,7 @@ class HealingAgent(
     override suspend fun heal(
         crash: CrashInfo,
         workspaceUri: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
     ): HealResult {
         val target = crash.crashedClass
             ?.let { if (PatchRegistry.isPatchableClass(it)) it else null }
@@ -168,7 +168,7 @@ class HealingAgent(
     override suspend fun modify(
         request: HealRequest,
         workspaceUri: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
     ): HealResult = withContext(Dispatchers.IO) {
         try {
             withTimeout(TOTAL_HEAL_BUDGET_MS) {
@@ -187,7 +187,7 @@ class HealingAgent(
     private suspend fun modifyInternal(
         request: HealRequest,
         workspaceUri: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
     ): HealResult {
         val problem = request.problem.trim().take(MAX_PROBLEM_CHARS)
         if (problem.length < 10) {
@@ -307,11 +307,18 @@ class HealingAgent(
             surfaceVerified = true,
             attempts = attempts,
         )
-        val approved = runCatching { onConsent(proposal) }.getOrDefault(false)
-        if (!approved) {
+        // The token must come from the device's own authentication prompt
+        // (fingerprint / face / PIN), not from an in-app boolean: the app can
+        // draw a dialog, but it cannot mint this signature. A null here means
+        // the user declined, authentication failed, or the phone has no lock
+        // screen — all of which mean "no patch".
+        val approval = runCatching { onConsent(proposal) }.getOrNull()
+        if (approval.isNullOrBlank()) {
             compiled.cleanup()
             return HealResult(false, targetClass = targetClass,
-                error = "user denied the patch", attempts = attempts,
+                error = "the patch was not approved on this device " +
+                    "(no fingerprint/PIN confirmation) — nothing was changed",
+                attempts = attempts,
                 userApproved = false)
         }
 
@@ -324,6 +331,7 @@ class HealingAgent(
             sha256 = sha256,
             signature = signature,
             description = proposal.description,
+            approval = approval,
         )
         if (!registered) {
             compiled.cleanup()

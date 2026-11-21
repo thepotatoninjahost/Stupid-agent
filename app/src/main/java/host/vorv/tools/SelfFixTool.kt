@@ -223,7 +223,19 @@ class SelfFixTool(
                     patchIdPrefix = "fix",
                 ),
                 workspaceUri,
-            ) { proposal -> confirm(approvalMessage(proposal)) }
+            ) { proposal ->
+                // Two steps, and both are required. The dialog explains what
+                // will be applied; the signature is the approval. The dialog
+                // alone is not consent — it is app code and can be skipped, so
+                // the token is only accepted from the device's own prompt.
+                if (!confirm(approvalMessage(proposal))) {
+                    null
+                } else {
+                    host.vorv.watchdog.PatchApprovalBroker.request(
+                        host.vorv.watchdog.PatchConsent.statement(
+                            proposal.patchId, proposal.targetClass, proposal.sha256))
+                }
+            }
 
             formatResult(result, t0, llm.label)
         } finally {

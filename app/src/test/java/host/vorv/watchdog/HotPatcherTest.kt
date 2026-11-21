@@ -78,6 +78,8 @@ class HotPatcherTest {
             sha256 = sha,
             signature = sig,
             description = "test",
+            approval = "EC:" + android.util.Base64.encodeToString(
+                ByteArray(70), android.util.Base64.NO_WRAP),
         )
         assertFalse(ok)
     }
@@ -95,12 +97,14 @@ class HotPatcherTest {
             signature = "Ed25519:" + android.util.Base64.encodeToString(
                 ByteArray(64), android.util.Base64.NO_WRAP),
             description = "test",
+            approval = "EC:" + android.util.Base64.encodeToString(
+                ByteArray(70), android.util.Base64.NO_WRAP),
         )
         assertFalse("a forged signature must be refused", ok)
     }
 
     @Test
-    fun `a fully valid patch registers with a signed manifest entry`() {
+    fun `a patch with a valid dex signature but no device-signed approval is refused`() {
         val data = "real-dex-bytes".toByteArray()
         val sha = HotPatcher.sha256Hex(data)
         val sig = PatchKeys.sign(context, data)!!
@@ -112,10 +116,57 @@ class HotPatcherTest {
             sha256 = sha,
             signature = sig,
             description = "test patch",
+            approval = "",
+        )
+        assertFalse("approval is required — an in-app yes is not consent", ok)
+        assertFalse(File(context.filesDir, "hotpatch/test_ok.dex").exists())
+        assertEquals(0, HotPatcher.readApprovedIds(context).size)
+    }
+
+    @Test
+    fun `a forged approval token is refused`() {
+        val data = "real-dex-bytes".toByteArray()
+        val sha = HotPatcher.sha256Hex(data)
+        val sig = PatchKeys.sign(context, data)!!
+        val ok = HotPatcher.registerApprovedPatch(
+            context = context,
+            patchId = "test_ok",
+            targetClass = "host.vorv.tools.NotifyTool",
+            dexBytes = data,
+            sha256 = sha,
+            signature = sig,
+            description = "test patch",
+            approval = "EC:" + android.util.Base64.encodeToString(
+                ByteArray(70), android.util.Base64.NO_WRAP),
+        )
+        assertFalse("no device can have signed this", ok)
+    }
+
+    /**
+     * The write half of registration, pinned separately: this machine has no
+     * device-bound consent key, so the public entry point always refuses
+     * here. The manifest/consent-registry round trip (the org.json bug that
+     * once deleted every approved patch) is still covered, because the boot
+     * path re-verifies the token and a bad one cannot install anything.
+     */
+    @Test
+    fun `the write half records the manifest entry and the consent id`() {
+        val data = "real-dex-bytes".toByteArray()
+        val sha = HotPatcher.sha256Hex(data)
+        val sig = PatchKeys.sign(context, data)!!
+        val ok = HotPatcher.writeRegistration(
+            context = context,
+            patchId = "test_ok",
+            targetClass = "host.vorv.tools.NotifyTool",
+            dexBytes = data,
+            sha256 = sha,
+            signature = sig,
+            description = "test patch",
+            approval = "EC:" + android.util.Base64.encodeToString(
+                ByteArray(70), android.util.Base64.NO_WRAP),
         )
         assertTrue(ok)
 
-        // The manifest entry carries the signature and version gates.
         val manifest = JSONObject(
             File(context.filesDir, "hotpatch/manifest.json").readText())
         val patches = manifest.getJSONArray("patches")
@@ -128,8 +179,43 @@ class HotPatcherTest {
         assertEquals(sha, entry!!.getString("sha256"))
         assertEquals(sig, entry.getString("signature"))
         assertTrue(entry.getInt("minAppVersion") > 0)
+        assertTrue(entry.has("approval"))
 
         // And the consent registry contains the id.
         assertTrue(HotPatcher.readApprovedIds(context).contains("test_ok"))
+    }
+
+    /**
+     * Boot path: a dex that is listed, approved by id, and hash-correct is
+     * still refused when the manifest carries no device-signed approval for
+     * it. This is the gate that makes "the user approved this" impossible to
+     * fake by editing the app's own files.
+     */
+    @Test
+    fun `boot refuses a patch whose approval token is missing`() {
+        val data = "dex-bytes".toByteArray()
+        val sha = HotPatcher.sha256Hex(data)
+        val patchDir = File(context.filesDir, "hotpatch").apply { mkdirs() }
+        // A manifest entry and a consent record, both written as if by the app,
+        // and no approval token — exactly what a forged consent would look like.
+        File(patchDir, "forged_1.dex").writeBytes(data)
+        File(patchDir, "manifest.json").writeText(
+            JSONObject().put("version", 2).put("patches", JSONArray().put(
+                JSONObject().apply {
+                    put("id", "forged_1")
+                    put("sha256", sha)
+                    put("signature", "EC:AAAA")
+                    put("classes", JSONArray().put("host.vorv.tools.NotifyTool"))
+                },
+            )).toString())
+        HotPatcher.markPendingApply(context, "forged_1")
+
+        val applied = HotPatcher.loadPendingPatches(context)
+
+        assertTrue("nothing may be applied", applied.isEmpty())
+        assertFalse(File(patchDir, "forged_1.dex").exists())
+        val quarantined = File(context.filesDir, "hotpatch_quarantine")
+            .listFiles()?.any { it.name.endsWith("forged_1.dex") } == true
+        assertTrue("the refused patch is quarantined, not silently skipped", quarantined)
     }
 }

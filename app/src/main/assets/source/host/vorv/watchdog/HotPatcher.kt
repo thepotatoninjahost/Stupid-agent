@@ -90,9 +90,25 @@ object HotPatcher {
                         return@forEach
                     }
 
-                    // Gate 1: user consent.
+                    // Gate 1: user consent. Two halves, both required: the id
+                    // is in the registry, AND the manifest carries a token the
+                    // device's security hardware signed for this exact patch
+                    // after authenticating the user (PatchConsent). The second
+                    // half is what makes "the user approved this" unfakeable —
+                    // the registry alone is just a JSON file in the app's own
+                    // storage, which any code in the app could have written.
                     if (patchId !in approvedIds) {
                         quarantine(context, dexFile, "not in the consent registry — the user never approved this patch")
+                        return@forEach
+                    }
+                    val approvedClass = entry.optJSONArray("classes")?.optString(0).orEmpty()
+                    val approveStatement = PatchConsent.statement(
+                        patchId, approvedClass, entry.optString("sha256", ""))
+                    if (!PatchConsent.verify(
+                            context, approveStatement, entry.optString("approval", ""))) {
+                        quarantine(context, dexFile,
+                            "approval token missing or not signed by this device for this " +
+                                "patch — refusing (the approval cannot be verified)")
                         return@forEach
                     }
 
@@ -176,6 +192,12 @@ object HotPatcher {
     /**
      * Persist an approved patch: dex bytes into filesDir/hotpatch, a signed
      * manifest entry, and the consent record. Applies at next boot.
+     *
+     * [approval] must be the token the device's own security hardware signed
+     * after it authenticated the user (see [PatchConsent]). Nothing else is
+     * accepted: a patch without a genuine approval is refused here and
+     * quarantined again at boot, so no code inside the app can register one
+     * by claiming the user agreed.
      */
     fun registerApprovedPatch(
         context: Context,
@@ -185,6 +207,7 @@ object HotPatcher {
         sha256: String,
         signature: String,
         description: String,
+        approval: String,
     ): Boolean {
         if (!PatchRegistry.isPatchableClass(targetClass)) {
             Log.e(TAG, "refusing to register patch for non-dispatchable class $targetClass")
@@ -194,6 +217,32 @@ object HotPatcher {
             Log.e(TAG, "refusing to register patch whose signature does not verify")
             return false
         }
+        val statement = PatchConsent.statement(patchId, targetClass, sha256)
+        if (!PatchConsent.verify(context, statement, approval)) {
+            Log.e(TAG, "refusing to register $patchId: no device-signed approval for this " +
+                "exact patch (the user did not authenticate, or the token does not match)")
+            return false
+        }
+        return writeRegistration(
+            context, patchId, targetClass, dexBytes, sha256, signature, description, approval)
+    }
+
+    /**
+     * The write half of [registerApprovedPatch], separated so the manifest
+     * and consent-registry write path stays testable on a machine with no
+     * Keystore. It records [approval] in the manifest, and the boot path
+     * re-verifies that token, so a bad one here cannot install anything.
+     */
+    internal fun writeRegistration(
+        context: Context,
+        patchId: String,
+        targetClass: String,
+        dexBytes: ByteArray,
+        sha256: String,
+        signature: String,
+        description: String,
+        approval: String,
+    ): Boolean {
         return runCatching {
             val patchDir = File(context.filesDir, PATCH_DIR).apply { mkdirs() }
             File(patchDir, "$patchId.dex").writeBytes(dexBytes)
@@ -217,6 +266,7 @@ object HotPatcher {
                 put("id", patchId)
                 put("sha256", sha256)
                 put("signature", signature)
+                put("approval", approval)
                 put("classes", JSONArray().put(targetClass))
                 put("minAppVersion", host.vorv.BuildConfig.VERSION_CODE)
                 put("maxAppVersion", host.vorv.BuildConfig.VERSION_CODE + 10)

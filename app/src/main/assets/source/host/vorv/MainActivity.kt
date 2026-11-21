@@ -59,6 +59,8 @@ import host.vorv.healer.CrashParser
 import host.vorv.healer.HealerApi
 import host.vorv.healer.HealingAgent
 import host.vorv.healer.PatchProposal
+import host.vorv.watchdog.PatchApprovalBroker
+import host.vorv.watchdog.PatchConsent
 import host.vorv.llm.ModelManager
 import host.vorv.ui.VorvApp
 import host.vorv.ui.theme.VorvTheme
@@ -69,6 +71,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class MainActivity : ComponentActivity() {
 
@@ -133,6 +136,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // The one place that can run the system's user-authentication prompt
+        // for a patch approval (see PatchApprovalBroker / PatchConsent).
+        PatchApprovalBroker.attach { statement -> confirmWithDeviceLock(statement) }
 
         val app = application as VorvApplication
 
@@ -353,6 +360,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        PatchApprovalBroker.detach()
         runCatching { unbindService(watchdogConnection) }
         super.onDestroy()
     }
@@ -371,7 +379,19 @@ class MainActivity : ComponentActivity() {
      * verify it yourself) at ANY length — length is never a reason to cut
      * anything.
      */
-    private suspend fun requestPatchConsent(proposal: PatchProposal): Boolean {
+    private suspend fun requestPatchConsent(proposal: PatchProposal): String? {
+        if (!explainPatchAndAsk(proposal)) return null
+        // Approval is not an app-level "yes": the phone itself must verify the
+        // user (fingerprint / face / PIN) and sign this exact patch. See
+        // PatchConsent — the app can draw a dialog, but it cannot produce this
+        // signature without the user present.
+        val statement = PatchConsent.statement(
+            proposal.patchId, proposal.targetClass, proposal.sha256)
+        return PatchApprovalBroker.request(statement)
+    }
+
+    /** The explanatory dialog. Yes here only opens the device prompt. */
+    private suspend fun explainPatchAndAsk(proposal: PatchProposal): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         runOnUiThread {
             val pad = (16 * resources.displayMetrics.density).toInt()
@@ -391,6 +411,69 @@ class MainActivity : ComponentActivity() {
                 .show()
         }
         return runCatching { deferred.await() }.getOrDefault(false)
+    }
+
+    /**
+     * The system's own confirmation: it authenticates the user and hands back
+     * the signature, which is the only thing the healer accepts as approval.
+     * Every failure path returns null — no lock screen, no biometrics enrolled
+     * and no PIN set, prompt cancelled, or the system refused.
+     */
+    private suspend fun confirmWithDeviceLock(statement: String): String? {
+        if (!PatchConsent.hasDeviceLock(this)) {
+            Toast.makeText(
+                this,
+                "Set a screen lock (PIN, pattern, password or fingerprint) first — " +
+                    "a self-repair patch can only be approved by the phone itself.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return null
+        }
+        return withContext(Dispatchers.Main) {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                val signature = PatchConsent.newSignature(this@MainActivity)
+                if (signature == null) {
+                    if (cont.isActive) cont.resume(null)
+                    return@suspendCancellableCoroutine
+                }
+                val executor = ContextCompat.getMainExecutor(this@MainActivity)
+                val shownId = statement.substringAfter('|').substringBefore('|')
+                val prompt = android.hardware.biometrics.BiometricPrompt.Builder(this@MainActivity)
+                    .setTitle("Approve this self-repair")
+                    .setSubtitle("Signing \"yes\" for patch " + shownId)
+                    .setAllowedAuthenticators(
+                        android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                            android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                    )
+                    .build()
+                val cancel = android.os.CancellationSignal()
+                cont.invokeOnCancellation {
+                    try {
+                        cancel.cancel()
+                    } catch (t: Throwable) {
+                        android.util.Log.w("Vorv/Consent", "prompt cancel failed: ${t.message}", t)
+                    }
+                }
+                prompt.authenticate(
+                    android.hardware.biometrics.BiometricPrompt.CryptoObject(signature),
+                    cancel,
+                    executor,
+                    object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                        override fun onAuthenticationSucceeded(
+                            result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult,
+                        ) {
+                            val sig = result.cryptoObject?.signature
+                            val token = sig?.let { PatchConsent.encode(it) }
+                            if (cont.isActive) cont.resume(token)
+                        }
+
+                        override fun onAuthenticationError(code: Int, message: CharSequence) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    },
+                )
+            }
+        }
     }
 
     /**
@@ -471,7 +554,7 @@ class MainActivity : ComponentActivity() {
     private fun attemptSelfRepair(
         crashText: String,
         bootTrace: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onConsent: suspend (PatchProposal) -> String?,
         onDone: (ok: Boolean, message: String, canRestart: Boolean) -> Unit,
     ): Job {
         val app = application as VorvApplication
