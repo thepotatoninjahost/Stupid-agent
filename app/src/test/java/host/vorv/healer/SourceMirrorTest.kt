@@ -27,7 +27,11 @@ class SourceMirrorTest {
             .map { it.relativeTo(sources).path }
             .filter { !File(mirror, it).isFile }
             .toList()
-        assertEquals("missing from assets/source: $missing", emptyList<String>(), missing)
+        assertEquals(
+            "missing from assets/source: $missing — run ./gradlew :app:syncSourceMirror and commit",
+            emptyList<String>(),
+            missing,
+        )
     }
 
     @Test
@@ -40,7 +44,11 @@ class SourceMirrorTest {
             }
             .map { it.relativeTo(sources).path }
             .toList()
-        assertEquals("mirror differs from source (copy the file into assets/source): $drifted", emptyList<String>(), drifted)
+        assertEquals(
+            "mirror differs from source: $drifted — run ./gradlew :app:syncSourceMirror and commit",
+            emptyList<String>(),
+            drifted,
+        )
     }
 
     @Test
@@ -50,6 +58,10 @@ class SourceMirrorTest {
             .map { it.relativeTo(mirror).path }
             .filter { !File(sources, it).isFile }
             .toList()
-        assertEquals("assets/source holds deleted files: $orphans", emptyList<String>(), orphans)
+        assertEquals(
+            "assets/source holds deleted files: $orphans — run ./gradlew :app:syncSourceMirror and commit",
+            emptyList<String>(),
+            orphans,
+        )
     }
 }

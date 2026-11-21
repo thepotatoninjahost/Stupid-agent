@@ -133,18 +133,63 @@ chaquopy {
 // ======================================================================
 
 /**
- * H-5: sync the bundled source mirror (assets/source) from the live tree
- * on every build, so the healer's LLM always reads the code that matches
- * the running binary. The audited repo shipped a mirror that had drifted
- * from the real sources — patches would be generated against stale code.
- * Wired into preBuild: drift is structurally impossible.
+ * H-5 / M-4: the bundled source mirror (assets/source) is what the healer's
+ * LLM reads, so it must match the code that is running.
+ *
+ * M-4 (code review, 2026-11): this used to run inside preBuild, which meant a
+ * stale committed mirror was silently rewritten before tests — the mirror test
+ * could never fail, and the committed tree never showed the drift. Syncing is
+ * now a manual step, and the build VERIFIES the committed mirror instead:
+ *
+ *   ./gradlew :app:syncSourceMirror     # after editing src/main/java
+ *   ./gradlew :app:verifySourceMirror   # runs before every build and test run
  */
 tasks.register<Sync>("syncSourceMirror") {
     from("src/main/java")
     into("src/main/assets/source")
 }
 
-tasks.named("preBuild") { dependsOn("syncSourceMirror") }
+/**
+ * M-4: fails the build when the committed mirror is missing, different or
+ * holds deleted files. Never writes: the fix is always syncSourceMirror.
+ * Every file is compared, not just .kt, because Sync copies everything.
+ */
+tasks.register("verifySourceMirror") {
+    // No declared outputs: the comparison must run every time, not be skipped
+    // as up-to-date when only the sources changed.
+    outputs.upToDateWhen { false }
+    doLast {
+        val live = file("src/main/java")
+        val mirror = file("src/main/assets/source")
+        fun relativeFiles(root: java.io.File): Map<String, java.io.File> =
+            root.walkTopDown()
+                .filter { it.isFile }
+                .associateBy { it.relativeTo(root).invariantSeparatorsPath }
+        val liveFiles = relativeFiles(live)
+        val mirrorFiles = relativeFiles(mirror)
+        val missing = liveFiles.keys - mirrorFiles.keys
+        val orphan = mirrorFiles.keys - liveFiles.keys
+        val differing = (liveFiles.keys intersect mirrorFiles.keys)
+            .filter { liveFiles.getValue(it).readBytes().contentEquals(mirrorFiles.getValue(it).readBytes()) == false }
+        if (missing.isNotEmpty() || orphan.isNotEmpty() || differing.isNotEmpty()) {
+            throw GradleException(
+                buildString {
+                    appendLine("assets/source is out of date with src/main/java (M-4).")
+                    if (missing.isNotEmpty()) appendLine("  missing from the mirror: $missing")
+                    if (differing.isNotEmpty()) appendLine("  differs from the source: $differing")
+                    if (orphan.isNotEmpty()) appendLine("  in the mirror but deleted from the source: $orphan")
+                    appendLine("  run ./gradlew :app:syncSourceMirror and commit the result.")
+                },
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn("verifySourceMirror") }
+// testDebugUnitTest does not depend on preBuild, so wire it explicitly.
+tasks.matching { it.name.startsWith("test") }.configureEach {
+    dependsOn("verifySourceMirror")
+}
 
 /**
  * The computer has to be inside the APK.

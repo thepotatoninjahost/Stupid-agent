@@ -105,7 +105,7 @@ a device; `WORKLOG.md` records what was checked where.
 | `healer/`, `watchdog/` | crash capture, patch signing, hot patching |
 | `llm/`, `data/` | model providers, model manager, stores |
 | `ui/` | Compose screens |
-| `app/src/main/assets/source/` | a mirror of `app/src/main/java`, kept in step by the `syncSourceMirror` task |
+| `app/src/main/assets/source/` | a mirror of `app/src/main/java`, checked by the build (see below) |
 | `tools/forge/` | payload fetch, verification and packaging scripts |
 
 `AgentViewModel` is the largest file and holds several concerns (chat, consent,
@@ -131,3 +131,17 @@ in a comment in the workflow itself.
 A workflow file needs a `workflow`-scoped credential to push. Without that scope
 GitHub rejects the push for `.github/workflows/build.yml` only, after accepting
 every other file in the same push.
+
+## The source mirror
+
+The healer reads its own code from `app/src/main/assets/source/`, so that copy
+must match `app/src/main/java`. After editing anything under
+`app/src/main/java`, run:
+
+```bash
+./gradlew :app:syncSourceMirror
+```
+
+and commit the result. Since the M-4 fix the build does not sync it for you:
+`verifySourceMirror` runs before every build and test run and fails, naming the
+missing, differing or deleted files, when the committed mirror is out of date.
