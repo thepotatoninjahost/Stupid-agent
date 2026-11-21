@@ -71,11 +71,11 @@ object BrainDoctor {
             f.baseUrl.isBlank() -> add(
                 Check("address", State.FAIL, "no provider address", "Setup → pick a provider"),
             )
-            !(f.baseUrl.startsWith("https://") || f.baseUrl.startsWith("http://")) -> add(
+            host.vorv.llm.provider.ProviderUrl.rejectionReason(f.baseUrl) != null -> add(
                 Check(
                     "address",
                     State.FAIL,
-                    "the address does not start with https:// (${f.baseUrl})",
+                    host.vorv.llm.provider.ProviderUrl.rejectionReason(f.baseUrl)!!,
                     "Setup → fix the address",
                 ),
             )

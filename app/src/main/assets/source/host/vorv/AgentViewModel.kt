@@ -233,6 +233,7 @@ class AgentViewModel(
             .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .dns(host.vorv.tools.NetworkGuard.PublicDns)
+            .followRedirects(false)
             .build(),
     )
 

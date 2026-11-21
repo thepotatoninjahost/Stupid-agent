@@ -14,12 +14,16 @@ import java.util.concurrent.ConcurrentHashMap
  * for a day, and a chosen id that is not in it is badged "not in the list".
  */
 class ModelCatalog(
-    private val client: OkHttpClient = OkHttpClient(),
+    client: OkHttpClient = OkHttpClient(),
     private val ttlMs: Long = 24 * 60 * 60 * 1000L,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
     data class Entry(val id: String, val contextLength: Long? = null, val price: String? = null)
     data class Listing(val providerId: String, val entries: List<Entry>, val fetchedAt: Long, val error: String? = null)
+
+    // H-5: the listing carries the key in a header, so it must not follow a
+    // redirect to another host either — not even on an injected client.
+    private val client: OkHttpClient = client.newBuilder().followRedirects(false).build()
 
     private val cache = ConcurrentHashMap<String, Listing>()
 
@@ -42,7 +46,15 @@ class ModelCatalog(
                 .build()
             client.newCall(req).execute().use { res ->
                 val body = res.body?.string().orEmpty()
-                if (!res.isSuccessful) {
+                if (res.code in 300..399) {
+                    val location = res.header("Location") ?: "(no Location header)"
+                    Listing(
+                        provider.id,
+                        emptyList(),
+                        clock(),
+                        error = "provider redirected the request to $location — redirects are refused",
+                    )
+                } else if (!res.isSuccessful) {
                     Listing(
                         provider.id,
                         emptyList(),

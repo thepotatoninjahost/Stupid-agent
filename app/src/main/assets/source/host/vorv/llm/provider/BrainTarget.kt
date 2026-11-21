@@ -31,6 +31,8 @@ object BrainTarget {
 
     /** Null when the engine can be built, otherwise the sentence to show. */
     fun refusal(baseUrl: String, model: String): String? {
+        // H-5: Setup shows this before the user can save a cleartext address.
+        ProviderUrl.rejectionReason(baseUrl)?.let { return it }
         val base = baseUrl.trim().trimEnd('/')
         if (base.isBlank() || base == ZAI_BASE || model.isNotBlank()) return null
         return "This provider needs a model name — Setup → Refresh list, then pick one."

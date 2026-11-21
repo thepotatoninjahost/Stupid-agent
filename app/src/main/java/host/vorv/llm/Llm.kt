@@ -164,11 +164,20 @@ class CloudLlm(
     private val model: String get() = modelName
     override val label = "$model (cloud)"
 
-    private val client: OkHttpClient = client ?: Companion.client
+    // H-5: whatever client a caller injects, a prompt is never re-sent to a
+    // redirect target — so the policy is applied to the instance we use.
+    private val client: OkHttpClient = (client ?: Companion.client).newBuilder()
+        .followRedirects(false)
+        .build()
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
             require(apiKey.isNotBlank()) { "$model requires an API key — add one in Setup tab." }
+            // H-5: a cleartext provider address never gets a prompt, even if
+            // it was stored before this check existed.
+            host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
+                throw IllegalArgumentException(it)
+            }
 
             fun buildBody(withTools: Boolean): String = JsonObject().apply {
                 addProperty("model", model)
@@ -257,6 +266,14 @@ class CloudLlm(
                                 delay(backoffMs * (1L shl attempt) + (Math.random() * 500).toLong())
                             }
                             return@use
+                        }
+                        if (res.code in 300..399) {
+                            // H-5: with redirects off, a 3xx is where the old
+                            // client would have followed to another host and
+                            // re-sent the prompt (and the key) there.
+                            val location = res.header("Location") ?: "(no Location header)"
+                            lastErr = "provider redirected the request to $location — redirects are refused"
+                            throw LlmHttpException(res.code, lastErr)
                         }
                         if (!res.isSuccessful) {
                             val b = responseBody.lowercase()
@@ -347,6 +364,10 @@ class CloudLlm(
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .dns(NetworkGuard.PublicDns)
+            // H-5: a 307 would re-send the prompt body (and the key) to
+            // whatever host the redirect names. A redirect is an answer we
+            // refuse, not one we follow.
+            .followRedirects(false)
             .build()
 
         /**
@@ -371,6 +392,9 @@ class CloudLlm(
         ): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
+                host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
+                    return@withContext Result.failure(IllegalArgumentException(it))
+                }
                 try {
                     val body = JsonObject().apply {
                         addProperty("model", model)
