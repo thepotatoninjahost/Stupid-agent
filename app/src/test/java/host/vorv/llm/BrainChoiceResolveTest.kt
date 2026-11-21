@@ -49,7 +49,7 @@ class BrainChoiceResolveTest {
     @Test
     fun `an empty 200 is not a working brain`() {
         val r = BrainChoice.resolve(
-            facts(key = true, model = "glm-4.7-flash", probe = ok200("")),
+            facts(key = true, model = "qwen/qwen3-coder", probe = ok200("")),
         )
         assertFalse(r.usable)
         assertTrue(r.reason!!.contains("no text"))

@@ -3,29 +3,37 @@ package host.vorv.llm.provider
 /**
  * Which engine a cloud request actually uses, decided in one place.
  *
- * 0.9.13 let the owner paste any address, but the default (no model typed) still
- * fell through to the Z.ai model chain, so a different provider answered 401
- * with a key that was fine. 0.9.18 keeps the chain only for Z.ai; every other
- * address gets exactly the model chosen for it.
+ * Owner decision (2026-11): the default cloud route is the owner's Qwen3
+ * Coder, and a blank address means that default. There is no Z.ai model
+ * chain any more — one request goes to exactly one address and one model,
+ * so a provider that answers "no such model" says so instead of being
+ * silently replaced by a different family's id.
  */
 object BrainTarget {
 
-    const val ZAI_BASE = "https://api.z.ai/api/paas/v4"
+    /** The default route a blank address resolves to: the owner's trainer model. */
+    const val DEFAULT_BASE = "https://openrouter.ai/api/v1"
+    const val DEFAULT_MODEL = "qwen/qwen3-coder"
 
-    data class Engine(
-        /** True: the Z.ai catalog chain, which tries several models in turn. */
-        val useChain: Boolean,
-        val baseUrl: String,
-        val modelId: String,
-    )
+    data class Engine(val baseUrl: String, val modelId: String)
 
-    fun resolve(baseUrl: String, model: String, zaiDefaultModel: String): Engine {
+    /**
+     * Resolution rules, in this order, and nothing else:
+     *  1. an address and a model → that route, unchanged;
+     *  2. a blank address → [DEFAULT_BASE] + [DEFAULT_MODEL] ("the owner's
+     *     default", whatever the model field says);
+     *  3. an address and a blank model → [DEFAULT_MODEL] must NOT be sent to
+     *     an address the owner chose (that provider may not serve it), so
+     *     [refusal] reports it and this returns the blank id for callers that
+     *     ask anyway.
+     */
+    fun resolve(baseUrl: String, model: String): Engine {
         val base = baseUrl.trim().trimEnd('/')
+        val id = model.trim()
         return when {
-            base.isBlank() || base == ZAI_BASE ->
-                if (model.isBlank()) Engine(true, ZAI_BASE, zaiDefaultModel)
-                else Engine(false, base.ifBlank { ZAI_BASE }, model)
-            else -> Engine(false, base, model)
+            base.isBlank() -> Engine(DEFAULT_BASE, DEFAULT_MODEL)
+            id.isBlank() -> Engine(base, "")
+            else -> Engine(base, id)
         }
     }
 
@@ -34,7 +42,10 @@ object BrainTarget {
         // H-5: Setup shows this before the user can save a cleartext address.
         ProviderUrl.rejectionReason(baseUrl)?.let { return it }
         val base = baseUrl.trim().trimEnd('/')
-        if (base.isBlank() || base == ZAI_BASE || model.isNotBlank()) return null
-        return "This provider needs a model name — Setup → Refresh list, then pick one."
+        if (base.isBlank()) return null // the default route is complete
+        if (model.trim().isBlank()) {
+            return "This provider needs a model name — Setup → Refresh list, then pick one."
+        }
+        return null
     }
 }

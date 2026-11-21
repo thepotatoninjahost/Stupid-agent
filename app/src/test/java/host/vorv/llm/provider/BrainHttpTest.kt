@@ -41,8 +41,8 @@ class BrainHttpTest {
 
     @Test
     fun `a retired model points at Refresh list`() {
-        assertTrue(BrainHttp.explain(404, "not found", "Z.ai", "glm-9").contains("Refresh list"))
-        assertTrue(BrainHttp.explain(400, "{\"message\":\"model not found\"}", "Z.ai", "glm-9").contains("Refresh list"))
+        assertTrue(BrainHttp.explain(404, "not found", "Z.ai", "no-such-model").contains("Refresh list"))
+        assertTrue(BrainHttp.explain(400, "{\"message\":\"model not found\"}", "Z.ai", "no-such-model").contains("Refresh list"))
     }
 
     @Test

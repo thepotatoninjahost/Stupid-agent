@@ -144,13 +144,12 @@ class ProviderChainLlmTest {
         val routes = ProviderChainLlm.routes(
             chosen = ProviderRegistry.byId(ProviderRegistry.ZAI_ID)!!,
             chosenBaseUrl = "https://api.z.ai/api/paas/v4",
-            chosenModelId = "glm-4.7-flash",
-            chosenUsesModelChain = true,
+            chosenModelId = "qwen/qwen3-coder",
             keyFor = { keys[it.id] ?: "" },
         )
 
         assertEquals("z.ai", routes.first().providerId)
-        assertTrue(routes.first().useModelChain)
+        assertEquals("qwen/qwen3-coder", routes.first().modelId)
         assertEquals(listOf("z.ai", "groq"), routes.map { it.providerId })
         assertTrue("the model must be named", routes[1].label.contains("·"))
         assertTrue("a keyed provider keeps its own address", routes[1].baseUrl.contains("groq.com"))

@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
  * at construction and updated by every writer ([setZaiApiKey],
  * [migrateFromLegacy]) after its disk write lands. Existing collectors
  * (AgentViewModel init) see saves immediately; `.first()` readers
- * (WebTools, setCloudModel, send) get the live value.
+ * (WebTools, saveProviderKey, send) get the live value.
  *
  * Instance model: the app constructs exactly ONE SecretsStore
  * (VorvApplication) and shares it, so the in-memory flow cannot go stale

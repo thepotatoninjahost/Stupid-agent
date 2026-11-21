@@ -16,7 +16,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentState
 import host.vorv.llm.BrainDoctor
-import host.vorv.llm.CloudModel
 import host.vorv.llm.ModelChoice
 import host.vorv.ui.theme.*
 
@@ -25,7 +24,6 @@ fun SettingsScreen(
     state: AgentState,
     onSaveKey: (String) -> Unit,
     onSetMode: (String) -> Unit,
-    onSetCloudModel: (String) -> Unit,
     onSetCloudProvider: (String, String) -> Unit = { _, _ -> },
     onSetAutoFallback: (Boolean) -> Unit,
     onSetLocalModel: (String) -> Unit,
@@ -194,11 +192,10 @@ fun SettingsScreen(
             FilterChip(
                 selected = state.llmMode == "cloud",
                 onClick = { onSetMode("cloud") },
-                label = { Text("Cloud (GLM)", fontSize = 11.sp) },
+                label = { Text("Cloud", fontSize = 11.sp) },
             )
         }
         val activeChoice = ModelChoice.fromId(state.selectedModelId)
-        val activeCloud = CloudModel.fromId(state.cloudModelId)
         Text(
             when {
                 state.llmMode == "local" && state.localModelReady ->
@@ -206,7 +203,7 @@ fun SettingsScreen(
                         "No network, no key. Tool calls are parsed from the model's chat template."
                 state.llmMode == "local" ->
                     "Local selected, but ${activeChoice.displayName.substringBefore("(").trim()} isn't downloaded yet."
-                state.hasApiKey -> "Active: ${activeCloud.displayName} (${if (activeCloud.free) "free tier" else "paid per token"}) with native function calling." +
+                state.hasApiKey -> "Active: ${state.cloudCustomModel.ifBlank { "your provider's model" }} with native function calling." +
                     if (state.autoFallback && state.localModelReady) " If the cloud fails mid-task, the offline engine finishes the job." else ""
                 else -> "Cloud selected, no key set. Add one below or download a local model."
             },
@@ -214,109 +211,10 @@ fun SettingsScreen(
             fontSize = 11.sp,
         )
 
-        // ------------------------------------------------ cloud model picker (v0.7.0)
-        if (state.llmMode == "cloud" || state.hasApiKey) {
-            Text("Cloud Model", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                "The free tier costs nothing — every other model is paid per token and strictly optional. " +
-                    "Changing the model with a key saved re-tests it against the new model immediately.",
-                color = OnSurfaceVariant, fontSize = 11.sp,
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                CloudModel.entries.forEach { cm ->
-                    val selected = state.cloudModelId == cm.id
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selected) Primary.copy(alpha = 0.08f) else SurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            RadioButton(
-                                selected = selected,
-                                onClick = { onSetCloudModel(cm.id) },
-                                colors = RadioButtonDefaults.colors(selectedColor = Primary),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        cm.displayName,
-                                        color = OnBackground,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    if (cm.free) {
-                                        Spacer(Modifier.width(6.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(50),
-                                            color = Success.copy(alpha = 0.18f),
-                                        ) {
-                                            Text(
-                                                " FREE",
-                                                color = Success,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                            )
-                                        }
-                                    } else {
-                                        // Stated up front so nobody picks a paid model
-                                        // expecting it to work: without credit the app
-                                        // skips it instead of failing the task.
-                                        Spacer(Modifier.width(6.dp))
-                                        Surface(shape = RoundedCornerShape(50), color = Warning.copy(alpha = 0.18f)) {
-                                            Text(
-                                                " PAID — needs credit",
-                                                color = Warning,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                                Text(cm.shortDesc, color = OnSurfaceVariant, fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Offline fallback switch — only meaningful with a local model on disk.
-            Surface(shape = RoundedCornerShape(12.dp), color = SurfaceVariant, modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(12.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Offline fallback", color = OnBackground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            if (state.localModelReady)
-                                "If the cloud engine fails mid-task (no signal, outage), the offline engine finishes the step — the switch and its reason are logged."
-                            else
-                                "Needs a downloaded local model (see Local Models above). Currently unarmed.",
-                            color = OnSurfaceVariant,
-                            fontSize = 11.sp,
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(
-                        checked = state.autoFallback && state.localModelReady,
-                        onCheckedChange = { onSetAutoFallback(it) },
-                        enabled = state.localModelReady,
-                        colors = SwitchDefaults.colors(checkedTrackColor = Primary),
-                    )
-                }
-            }
-        }
-
         // ------------------------------------------------ provider + key
         Text("Cloud coder", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Pick who runs the cloud brain. GLM on Z.ai is one option, not the only one. " +
+            "Pick who runs the cloud brain. Z.ai is one option, not the only one. " +
                 "Each provider keeps its own key, encrypted at rest (Android Keystore). " +
                 "Nothing is ever uploaded, committed, or logged — and saving always runs one real call.",
             color = OnSurfaceVariant, fontSize = 11.sp,
@@ -364,7 +262,7 @@ fun SettingsScreen(
         ) {
             Text(
                 when {
-                    state.keyTesting -> "Testing against ${CloudModel.fromId(state.cloudModelId).displayName}…"
+                    state.keyTesting -> "Testing against ${state.cloudCustomModel.ifBlank { host.vorv.llm.provider.BrainTarget.DEFAULT_MODEL }}…"
                     saved -> "Saved ✓ — see test result below"
                     else -> "Save Key & Test"
                 }
@@ -439,7 +337,7 @@ fun SettingsScreen(
         Text("Use a different coder (optional)", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "Have a key from another provider? Put its address and the model name below and it becomes " +
-                "the cloud brain — no GLM needed. Leave both blank to stay on Z.ai. " +
+                "the cloud brain. Leave the address blank to use the default (Qwen3 Coder on OpenRouter). " +
                 "Saving runs one real test call, so the answer here is proof, not a promise.",
             color = OnSurfaceVariant, fontSize = 11.sp,
         )

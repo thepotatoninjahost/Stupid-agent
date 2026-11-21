@@ -34,7 +34,7 @@ class LearningLedgerTest {
 
     @Test
     fun `a short no after an answer is a correction and weighs the most`() {
-        assertTrue(LearningLedger.isCorrection("no, use the other model", "I chose GLM"))
+        assertTrue(LearningLedger.isCorrection("no, use the other model", "I chose Qwen"))
         assertTrue(LearningLedger.isCorrection("wrong", "here is the plan"))
         assertTrue(LearningLedger.isCorrection("use ktlint instead", "run detekt"))
         assertFalse(LearningLedger.isCorrection("no", null))

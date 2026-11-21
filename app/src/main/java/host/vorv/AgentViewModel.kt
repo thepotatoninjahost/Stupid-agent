@@ -20,7 +20,6 @@ import host.vorv.llm.BrainFacts
 import host.vorv.llm.LlmHttpException
 import host.vorv.llm.explainLlmFailure
 import host.vorv.llm.CloudLlm
-import host.vorv.llm.CloudModel
 import host.vorv.llm.FallbackLlm
 import host.vorv.llm.Llm
 import host.vorv.llm.ModelChoice
@@ -133,11 +132,9 @@ data class AgentState(
     val episodes: List<Episode> = emptyList(),
     val llmMode: String = "cloud",       // "local" | "cloud"
     val hasApiKey: Boolean = false,
-    /** v0.7.0 — selected Z.ai cloud model (free glm-4.7-flash by default). */
-    val cloudModelId: String = CloudModel.GLM_4_7_FLASH.id,
-    /** 0.9.13 — a different provider's address; blank keeps Z.ai. */
+    /** 0.9.13 — a different provider's address; blank means the owner's default. */
     val cloudBaseUrl: String = "",
-    /** 0.9.13 — that provider's model name; blank keeps the Z.ai chain. */
+    /** 0.9.13 — that provider's model name; required when an address is set. */
     val cloudCustomModel: String = "",
     /** v0.7.0 — cloud→offline fallback armed (needs a downloaded local model). */
     val autoFallback: Boolean = true,
@@ -164,7 +161,7 @@ data class AgentState(
     val brainChecks: List<BrainDoctor.Check> = emptyList(),
     /** 0.9.18 — the Copy-button text for Brain health. */
     val brainReport: String = "",
-    val currentLlmLabel: String = "GLM-4.7-Flash (cloud, free)",
+    val currentLlmLabel: String = host.vorv.llm.provider.BrainTarget.DEFAULT_MODEL + " (cloud)",
     /**
      * Setup-screen error message — when a download or model operation fails,
      * the error is surfaced here so the SettingsScreen can display it inline
@@ -555,15 +552,6 @@ class AgentViewModel(
             }
         }
         viewModelScope.launch {
-            // v0.7.0: cloud model + fallback preference → state + honest label.
-            prefs.cloudModelId.collect { id ->
-                _state.update { prev ->
-                    val next = prev.copy(cloudModelId = id)
-                    refresh(next)
-                }
-            }
-        }
-        viewModelScope.launch {
             prefs.cloudBaseUrl.collect { url ->
                 _state.update { prev ->
                     val next = prev.copy(cloudBaseUrl = url)
@@ -846,55 +834,24 @@ class AgentViewModel(
             // default cloud mode.
             _state.update { it.copy(hasApiKey = key.isNotBlank()) }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val modelId = prefs.cloudModelId.first()
-            val probe = CloudLlm.probe(key, modelId)
-            val cm = CloudModel.fromId(modelId)
+            // 0.9.30: no compiled-in model catalogue. A blank address means the
+            // owner's default (BrainTarget), so a fresh key is tested against it.
+            val target = host.vorv.llm.provider.BrainTarget.resolve(
+                prefs.cloudBaseUrl.first(),
+                prefs.cloudCustomModel.first(),
+            )
+            val probe = CloudLlm.probe(key, target.baseUrl, target.modelId)
             if (probe.isSuccess) {
                 _state.update {
                     it.copy(
                         keyTesting = false,
-                        keyTestResult = "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — key works. Cloud mode switched ON.",
+                        keyTestResult = "✓ ${target.modelId} replied “${(probe.getOrNull() ?: "").take(40)}” — key works. Cloud mode switched ON.",
                     )
                 }
                 prefs.setLlmMode("cloud")
             } else {
                 val reason = probe.exceptionOrNull()?.message ?: "unknown error"
                 _state.update { it.copy(keyTesting = false, keyTestResult = "✗ $reason") }
-            }
-        }
-    }
-
-    /**
-     * v0.7.0: pick the cloud model. When a key exists the choice is verified
-     * immediately with a real probe — an unavailable model id is caught at
-     * selection time in Setup, not mid-task.
-     */
-    fun setCloudModel(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            prefs.setCloudModelId(id)
-            val pid = prefs.cloudProviderId.first()
-                .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
-            val key = secrets.keyFor(pid)
-            if (key.isBlank()) {
-                // Saved, but nothing was proven — say exactly that.
-                _state.update {
-                    it.copy(keyTestResult = "✓ Model saved. No key for ${providerLabel(pid)}, so nothing was tested.")
-                }
-                return@launch
-            }
-            _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val base = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL }
-            val probe = CloudLlm.probeAt(key, base, id)
-            val cm = CloudModel.fromId(id)
-            _state.update {
-                it.copy(
-                    keyTesting = false,
-                    keyTestResult = if (probe.isSuccess) {
-                        "✓ ${cm.displayName} replied “${(probe.getOrNull() ?: "").take(40)}” — works with your key."
-                    } else {
-                        "✗ ${probe.exceptionOrNull()?.let { explainLlmFailure(it) } ?: "unknown error"}"
-                    },
-                )
             }
         }
     }
@@ -979,8 +936,12 @@ class AgentViewModel(
                 refresh(s.copy(hasApiKey = key.isNotBlank(), keyTestResult = null))
             }
             _state.update { it.copy(keyTesting = true) }
-            val base = _state.value.cloudBaseUrl.ifBlank { ZAI_BASE_URL }
-            val model = _state.value.cloudCustomModel.ifBlank { CloudModel.fromId(_state.value.cloudModelId).id }
+            val target = host.vorv.llm.provider.BrainTarget.resolve(
+                _state.value.cloudBaseUrl,
+                _state.value.cloudCustomModel,
+            )
+            val base = target.baseUrl
+            val model = target.modelId
             val probe = CloudLlm.probeAt(key, base, model)
             val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
                 ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, base)
@@ -1038,8 +999,9 @@ class AgentViewModel(
                 return@launch
             }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
-            val base = s.cloudBaseUrl.ifBlank { ZAI_BASE_URL }
-            val model = s.cloudCustomModel.ifBlank { CloudModel.fromId(s.cloudModelId).id }
+            val target = host.vorv.llm.provider.BrainTarget.resolve(s.cloudBaseUrl, s.cloudCustomModel)
+            val base = target.baseUrl
+            val model = target.modelId
             val probe = CloudLlm.probeAt(key, base, model)
             router.record(id, (probe.exceptionOrNull() as? LlmHttpException)?.code)
             _state.update {
@@ -1067,18 +1029,16 @@ class AgentViewModel(
     private suspend fun providerFallbacks(
         baseUrl: String,
         customModel: String,
-        cloudModel: CloudModel,
     ): List<host.vorv.llm.provider.ProviderChainLlm.Route> {
         val routes = host.vorv.tools.Attempt.of("list the providers this owner holds keys for") {
             val pid = prefs.cloudProviderId.first()
                 .ifBlank { host.vorv.llm.provider.ProviderRegistry.ZAI_ID }
             val chosen = host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(pid, baseUrl)
-            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
+            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel)
             host.vorv.llm.provider.ProviderChainLlm.routes(
                 chosen = chosen,
                 chosenBaseUrl = target.baseUrl,
                 chosenModelId = target.modelId,
-                chosenUsesModelChain = target.useChain,
                 keyFor = { p -> secrets.keyFor(p.id) },
             )
         }
@@ -1532,8 +1492,11 @@ class AgentViewModel(
                     providerId = providerId,
                     keyPresent = key.isNotBlank(),
                     keyReadError = null,
-                    baseUrl = prefs.cloudBaseUrl.first().ifBlank { ZAI_BASE_URL },
-                    modelId = prefs.cloudCustomModel.first().ifBlank { prefs.cloudModelId.first() },
+                    baseUrl = prefs.cloudBaseUrl.first().ifBlank {
+                        host.vorv.llm.provider.BrainTarget.DEFAULT_BASE
+                    },
+                    modelId = host.vorv.llm.provider.BrainTarget
+                        .resolve(prefs.cloudBaseUrl.first(), prefs.cloudCustomModel.first()).modelId,
                     localModelId = choice.id,
                     localDownloaded = ModelManager.isDownloaded(choice),
                 )
@@ -1552,7 +1515,6 @@ class AgentViewModel(
                         )
                     }
                 }
-                val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
                 val autoFallback = prefs.autoFallback.first()
                 val cloudBaseUrl = prefs.cloudBaseUrl.first()
                 val customModel = prefs.cloudCustomModel.first()
@@ -1560,8 +1522,8 @@ class AgentViewModel(
 
                 modelRepository.markBusy(true)
                 val llm: Llm = modelRepository.activeEngine(
-                    mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
-                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel, cloudModel),
+                    mode, key, choice, autoFallback, cloudBaseUrl, customModel,
+                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel),
                     onFailover = ::recordProviderFailover,
                 )
 
@@ -1902,7 +1864,6 @@ class AgentViewModel(
                         )
                     }
                 }
-                val cloudModel = CloudModel.fromId(prefs.cloudModelId.first())
                 val autoFallback = prefs.autoFallback.first()
                 val cloudBaseUrl = prefs.cloudBaseUrl.first()
                 val customModel = prefs.cloudCustomModel.first()
@@ -1910,8 +1871,8 @@ class AgentViewModel(
 
                 modelRepository.markBusy(true)
                 val llm: Llm = modelRepository.activeEngine(
-                    mode, key, choice, cloudModel, autoFallback, cloudBaseUrl, customModel,
-                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel, cloudModel),
+                    mode, key, choice, autoFallback, cloudBaseUrl, customModel,
+                    providerFallbacks = providerFallbacks(cloudBaseUrl, customModel),
                     onFailover = ::recordProviderFailover,
                 )
 
@@ -2150,8 +2111,8 @@ class AgentViewModel(
             providerId = providerId,
             providerLabel = provider?.label ?: "your provider",
             keyReadError = s.keyReadError,
-            baseUrl = s.cloudBaseUrl.ifBlank { ZAI_BASE_URL },
-            modelId = s.cloudCustomModel.ifBlank { CloudModel.fromId(s.cloudModelId).id },
+            baseUrl = s.cloudBaseUrl.ifBlank { host.vorv.llm.provider.BrainTarget.DEFAULT_BASE },
+            modelId = host.vorv.llm.provider.BrainTarget.resolve(s.cloudBaseUrl, s.cloudCustomModel).modelId,
             keyPresent = s.hasApiKey,
             localModelId = choice.id,
             localModelName = choice.displayName.substringBefore("(").trim(),

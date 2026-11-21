@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -184,15 +185,16 @@ class FallbackLlmTest {
         assertTrue("tool result kept", hasResult)
     }
 
-    // ------------------------------------------------------------ catalog
+    // ------------------------------------------------------- no catalogue
 
     @Test
-    fun `cloud model catalog defaults to the free tier`() {
-        assertEquals("glm-4.7-flash", CloudModel.fromId(null).id)
-        assertEquals("glm-4.7-flash", CloudModel.fromId("garbage").id)
-        assertEquals("glm-4.6", CloudModel.fromId("glm-4.6").id)
-        assertTrue(CloudModel.GLM_4_7_FLASH.free)
-        assertFalse(CloudModel.GLM_5_3.free)
+    fun `a cloud engine with no model name is refused, not sent`() {
+        try {
+            CloudLlm(apiKey = "k", baseUrl = "https://example.test/v1", modelName = "")
+            fail("a blank model id must never build a request")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("needs a model name"))
+        }
     }
 
     @Test

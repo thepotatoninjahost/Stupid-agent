@@ -1,6 +1,5 @@
 package host.vorv.llm.provider
 
-import host.vorv.llm.CloudChainLlm
 import host.vorv.llm.CloudLlm
 import host.vorv.llm.Llm
 import host.vorv.llm.LlmHttpException
@@ -8,10 +7,10 @@ import host.vorv.llm.LlmHttpException
 /**
  * Gate 0: two independent providers, one of them broken, chat still answers.
  *
- * [CloudChainLlm] walks the models of ONE provider. This walks the providers
- * themselves, in the order [ProviderRouter] says is worth trying, so a dead
- * address, a refused key or an outage at the chosen provider is a detour
- * instead of the end of the task.
+ * This walks the providers themselves, in the order [ProviderRouter] says is
+ * worth trying, so a dead address, a refused key or an outage at the chosen
+ * provider is a detour instead of the end of the task. One route is one
+ * address and one model — there is no model walk any more.
  *
  * What it refuses to hide:
  *  - A request the provider says is malformed (400/422 that is not about the
@@ -28,11 +27,7 @@ class ProviderChainLlm(
     routes: List<Route>,
     private val router: ProviderRouter = ProviderRouter(),
     private val engineFor: (Route) -> Llm = { route ->
-        if (route.useModelChain) {
-            CloudChainLlm(route.apiKey, listOf(host.vorv.llm.CloudModel.fromId(route.modelId)))
-        } else {
-            CloudLlm(apiKey = route.apiKey, baseUrl = route.baseUrl, modelName = route.modelId)
-        }
+        CloudLlm(apiKey = route.apiKey, baseUrl = route.baseUrl, modelName = route.modelId)
     },
 ) : Llm {
 
@@ -46,10 +41,9 @@ class ProviderChainLlm(
         val baseUrl: String,
         val apiKey: String,
         val modelId: String,
-        val useModelChain: Boolean = false,
     ) {
         /** The chosen route, or the first one when the chosen has no key. */
-        val keyless: Boolean get() = apiKey.isBlank() || baseUrl.isBlank()
+        val keyless: Boolean get() = apiKey.isBlank() || baseUrl.isBlank() || modelId.isBlank()
     }
 
     init {
@@ -156,7 +150,6 @@ class ProviderChainLlm(
             chosen: Provider,
             chosenBaseUrl: String,
             chosenModelId: String,
-            chosenUsesModelChain: Boolean,
             keyFor: (Provider) -> String,
             modelFor: (Provider) -> String = { it.suggestions.firstOrNull() ?: "" },
             others: List<Provider> = ProviderRegistry.presets,
@@ -167,7 +160,6 @@ class ProviderChainLlm(
                 baseUrl = chosenBaseUrl,
                 apiKey = keyFor(chosen),
                 modelId = chosenModelId,
-                useModelChain = chosenUsesModelChain,
             )
             val rest = others
                 .filter { it.id != chosen.id }

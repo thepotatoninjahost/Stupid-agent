@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The router and the registry are the answer to "GLM was overloaded and the app
+ * The router and the registry are the answer to "the one cloud model was overloaded and the app
  * had nothing else". These tests pin the behaviour that makes that answer real:
  * one address form, the owner's own provider honoured, and a broken key never
  * silently preferred over a working one.

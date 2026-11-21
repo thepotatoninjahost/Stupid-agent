@@ -255,7 +255,12 @@ object ModelManager {
         for (relative in removed) {
             val dir = java.io.File(ctx.filesDir, relative)
             if (!dir.exists()) continue
-            val gone = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+            val gone = try {
+                dir.deleteRecursively()
+            } catch (e: Exception) {
+                android.util.Log.w("VorvModel", "could not remove $relative: ${e.message}")
+                false
+            }
             android.util.Log.i(
                 "VorvModel",
                 if (gone) "removed the weights of a model this build no longer uses: $relative"

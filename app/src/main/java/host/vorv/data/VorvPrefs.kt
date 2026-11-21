@@ -27,13 +27,6 @@ class VorvPrefs(private val context: Context) {
     val llmMode: Flow<String> = context.vorvPrefs.data.map { it[LLM_MODE] ?: "cloud" }
 
     /**
-     * v0.7.0 — which Z.ai cloud model to use in cloud mode.
-     * Defaults to the FREE glm-4.7-flash tier; paid models are opt-in.
-     * See host.vorv.llm.CloudModel for the catalog.
-     */
-    val cloudModelId: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_MODEL_ID] ?: "glm-4.7-flash" }
-
-    /**
      * v0.7.0 — when true and a local model is downloaded, cloud tasks wrap
      * their engine in FallbackLlm: if the cloud call fails mid-task (signal
      * drop, 5xx, exhausted retries), the same step reruns on the offline
@@ -42,16 +35,15 @@ class VorvPrefs(private val context: Context) {
     val autoFallback: Flow<Boolean> = context.vorvPrefs.data.map { it[AUTO_FALLBACK] ?: true }
 
     /**
-     * 0.9.13 — any address that speaks the same language as Z.ai
+     * 0.9.13 — any address that speaks the OpenAI chat format
      * (`POST <base>/chat/completions`, `Authorization: Bearer <key>`).
-     * Blank means Z.ai's own address, so nothing changes for an existing setup.
+     * Blank means the owner's default route (BrainTarget.DEFAULT_BASE).
      */
     val cloudBaseUrl: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_BASE_URL] ?: "" }
 
     /**
-     * 0.9.13 — the exact model name that address serves. Blank means the Z.ai
-     * chain in [host.vorv.llm.CloudModel]. Set both to run a different coder
-     * (any provider whose API matches the above) without a code change.
+     * 0.9.13 — the exact model name that address serves. Required whenever an
+     * address is set: the app never sends one provider's model id to another.
      */
     val cloudCustomModel: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_CUSTOM_MODEL] ?: "" }
 
@@ -83,11 +75,6 @@ class VorvPrefs(private val context: Context) {
 
     suspend fun setLlmMode(mode: String) {
         context.vorvPrefs.edit { it[LLM_MODE] = if (mode == "local") "local" else "cloud" }
-    }
-
-    /** v0.7.0 — selects the cloud model (id must match a CloudModel entry). */
-    suspend fun setCloudModelId(id: String) {
-        context.vorvPrefs.edit { it[CLOUD_MODEL_ID] = id }
     }
 
     /** v0.7.0 — arms/disarms the offline fallback for cloud tasks. */
@@ -143,7 +130,6 @@ class VorvPrefs(private val context: Context) {
         private val CLOUD_PROVIDER_ID = stringPreferencesKey("cloud_provider_id")
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val LLM_MODE = stringPreferencesKey("llm_mode")
-        private val CLOUD_MODEL_ID = stringPreferencesKey("cloud_model_id")
         private val CLOUD_BASE_URL = stringPreferencesKey("cloud_base_url")
         private val CLOUD_CUSTOM_MODEL = stringPreferencesKey("cloud_custom_model")
         private val AUTO_FALLBACK = booleanPreferencesKey("auto_fallback")

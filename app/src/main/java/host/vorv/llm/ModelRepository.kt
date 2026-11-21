@@ -33,17 +33,17 @@ class ModelRepository(private val appContext: Context) {
      * (re)builds the LocalLlm if the selection changed since last use —
      * under the lock, so it can never race a concurrent swap.
      *
-     * v0.7.0 cloud mode: builds the SELECTED [CloudModel] (free tier by
-     * default) and, when autoFallback is armed and the local model is on
-     * disk, wraps it in [FallbackLlm] — cloud first, offline backup per
-     * step, so a mid-task signal drop degrades instead of dying. The local
-     * engine is built/reused under the same mutex (H-4 discipline).
+     * Cloud mode: one provider and one model, resolved by [BrainTarget]
+     * (a blank address means the owner's default). When autoFallback is armed
+     * and the local model is on disk it is wrapped in [FallbackLlm] — cloud
+     * first, offline backup per step, so a mid-task signal drop degrades
+     * instead of dying. The local engine is built/reused under the same
+     * mutex (H-4 discipline).
      */
     suspend fun activeEngine(
         mode: String,
         apiKey: String,
         choice: ModelChoice,
-        cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH,
         autoFallback: Boolean = true,
         baseUrl: String = "",
         customModel: String = "",
@@ -52,37 +52,20 @@ class ModelRepository(private val appContext: Context) {
     ): Llm = mutex.withLock {
         if (mode != "local") {
             require(apiKey.isNotBlank()) {
-                "Cloud mode needs a Z.ai API key — add one in Setup."
+                "Cloud mode needs a provider key — add one in Setup."
             }
-            // 0.9.18 — the chain belongs to Z.ai only. Any other address gets
-            // exactly the model chosen for it, never a Z.ai id it does not serve.
-            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel, cloudModel.id)
+            // One address, one model. A blank address is the owner's default;
+            // an address with no model is refused before a request is built.
+            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, customModel)
             host.vorv.llm.provider.BrainTarget.refusal(baseUrl, customModel)?.let {
                 throw IllegalStateException(it)
             }
-            val cloud: Llm = if (target.useChain) {
-                CloudChainLlm(
-                    apiKey,
-                    listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free },
-                )
-            } else {
-                CloudLlm(apiKey, target.baseUrl, target.modelId)
-            }
+            val cloud: Llm = CloudLlm(apiKey, target.baseUrl, target.modelId)
             // Gate 0: the chosen provider first, then every other provider the
             // owner holds a key for. One broken provider is a detour.
             val reachable: Llm = if (providerFallbacks.size > 1) {
-                host.vorv.llm.provider.ProviderChainLlm(providerFallbacks) { route ->
-                    if (route.useModelChain) {
-                        CloudChainLlm(
-                            route.apiKey,
-                            listOf(cloudModel) + CloudModel.entries
-                                .filter { it != cloudModel }
-                                .sortedByDescending { it.free },
-                        )
-                    } else {
-                        CloudLlm(route.apiKey, route.baseUrl, route.modelId)
-                    }
-                }.also { it.onFailover = onFailover }
+                host.vorv.llm.provider.ProviderChainLlm(providerFallbacks)
+                    .also { it.onFailover = onFailover }
             } else {
                 cloud
             }

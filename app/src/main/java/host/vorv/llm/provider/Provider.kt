@@ -3,7 +3,7 @@ package host.vorv.llm.provider
 /**
  * A cloud provider, as data.
  *
- * GLM on Z.ai was compiled into the brain: one base URL, one enum of model ids,
+ * One vendor's model list used to be compiled into the brain: one base URL, one enum of model ids,
  * one key slot. When that provider was over-subscribed the app had nothing —
  * which is exactly what the owner reported. Nothing here is an enum that gates
  * routing: a provider is an address, a way of presenting a key, and where its
@@ -63,12 +63,14 @@ object ProviderRegistry {
     val presets: List<Provider> = listOf(
         Provider(
             id = ZAI_ID,
-            label = "Z.ai (GLM)",
+            label = "Z.ai",
             baseUrl = "https://api.z.ai/api/paas/v4",
             freeTier = true,
             capability = Provider.Capability.CODE,
-            suggestions = listOf("glm-4.7-flash", "glm-4.6", "glm-5.3"),
-            notes = "Free tier. This is the provider the owner already had; it is one option now, not the only one.",
+            // No suggestions (owner decision): GLM ids are not used, and the
+            // catalog's own /models listing is the honest source of ids.
+            suggestions = emptyList(),
+            notes = "This is the provider the owner already had; it is one option now, not the only one.",
         ),
         Provider(
             id = "openrouter",
@@ -76,7 +78,7 @@ object ProviderRegistry {
             baseUrl = "https://openrouter.ai/api/v1",
             capability = Provider.Capability.CODE,
             modelsPath = "/models",
-            suggestions = listOf("qwen/qwen3-coder", "deepseek/deepseek-chat-v3.1", "z-ai/glm-4.7"),
+            suggestions = listOf("qwen/qwen3-coder", "deepseek/deepseek-chat-v3.1"),
             notes = "One key, many vendors. Model ids are vendor/model.",
         ),
         Provider(

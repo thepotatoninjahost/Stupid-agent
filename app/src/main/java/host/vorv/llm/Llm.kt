@@ -14,55 +14,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * Cloud model catalog for Z.ai. The free tier (GLM-4.7-Flash) is the
- * DEFAULT so a fresh install with a key costs nothing to run; the paid
- * models are opt-in, selected explicitly in Setup (v0.7.0).
- *
- * Prices shown in [shortDesc] are the published per-million-token rates at
- * the time of the v0.7.0 build; the billing page at z.ai is the source of
- * truth if they ever change.
- */
-enum class CloudModel(
-    val id: String,
-    val displayName: String,
-    val shortDesc: String,
-    val free: Boolean,
-) {
-    GLM_4_7_FLASH(
-        "glm-4.7-flash",
-        "GLM-4.7-Flash",
-        "FREE tier — $0 per token, forever. Fast, 128K context. The default: a fresh key runs at no cost.",
-        true,
-    ),
-    GLM_5_3_FLASH(
-        "glm-5.3-flash",
-        "GLM-5.3-Flash",
-        "Current fast tier, paid per token (roughly a tenth of flagship rates).",
-        false,
-    ),
-    GLM_5_3(
-        "glm-5.3",
-        "GLM-5.3",
-        "Flagship — strongest reasoning, paid per token (published rate: $1.40/M in, $4.40/M out).",
-        false,
-    ),
-    GLM_4_6(
-        "glm-4.6",
-        "GLM-4.6",
-        "Vorv's original cloud engine, paid per token. Kept for compatibility.",
-        false,
-    );
-
-    companion object {
-        fun fromId(id: String?): CloudModel = entries.firstOrNull { it.id == id } ?: GLM_4_7_FLASH
-    }
-}
-
-/**
- * LLM contract. Vorv uses a Z.ai GLM model (selected in Setup, free tier by
- * default) with native function calling in cloud mode, and Qwen2.5-Coder via
- * Qualcomm GenieX on the Hexagon NPU in local mode. Both implement this same
- * interface so the cognitive kernel does not change.
+ * LLM contract. Vorv uses the provider and model chosen in Setup (with native
+ * function calling) in cloud mode, and OmniCoder-9B via Qualcomm GenieX on the
+ * Hexagon NPU in local mode. Both implement this same interface so the
+ * cognitive kernel does not change.
  */
 interface Llm {
     /** Returns either a final answer or a tool call request. */
@@ -138,12 +93,12 @@ class LlmHttpException(val code: Int, private val bodyText: String) :
 }
 
 /**
- * Cloud LLM via Z.ai. Native OpenAI-style function calling.
- * Throws if apiKey is blank — caller must check first.
+ * Cloud LLM for any provider that speaks the OpenAI chat format. Native
+ * function calling. Throws if apiKey is blank — caller must check first.
  *
- * v0.7.0: the model is a first-class choice ([CloudModel]), defaulting to the
- * FREE glm-4.7-flash tier — previously glm-4.6 was hardcoded and the user
- * had no way to change it or avoid paying.
+ * The address and the model id have no defaults (0.9.30): a blank id must
+ * never build a request for "", so [BrainTarget] resolves them and this class
+ * refuses a blank one outright.
  *
  * v0.6.0 hardening (audit findings M-2, M-3, M-4):
  *  - retry backoff uses non-blocking delay(), not Thread.sleep
@@ -154,13 +109,19 @@ class LlmHttpException(val code: Int, private val bodyText: String) :
  */
 class CloudLlm(
     private val apiKey: String,
-    private val baseUrl: String = "https://api.z.ai/api/paas/v4",
-    val modelName: String = CloudModel.GLM_4_7_FLASH.id,
+    private val baseUrl: String,
+    val modelName: String,
     client: OkHttpClient? = null,
     private val maxAttempts: Int = MAX_ATTEMPTS,
     private val backoffMs: Long = 1_500L,
     private val provider: host.vorv.llm.provider.Provider? = null,
 ) : Llm {
+
+    init {
+        require(modelName.isNotBlank()) {
+            "This provider needs a model name — Setup → Refresh list, then pick one."
+        }
+    }
     private val model: String get() = modelName
     override val label = "$model (cloud)"
 
@@ -431,8 +392,8 @@ class CloudLlm(
          * Cost: ~8 output tokens. On the free default model, $0. On the paid
          * flagship, ~4 thousandths of a cent.
          */
-        suspend fun probe(apiKey: String, model: String): Result<String> =
-            probeAt(apiKey, "https://api.z.ai/api/paas/v4", model)
+        suspend fun probe(apiKey: String, baseUrl: String, model: String): Result<String> =
+            probeAt(apiKey, baseUrl, model)
 
         /** Same one-call proof, against any address that speaks this format. */
         suspend fun probeAt(
@@ -516,20 +477,26 @@ class CloudLlm(
 
 /**
  * Picks the reasoning engine:
- *  - "local"  → llama.cpp on-device via GenieX (requires the model downloaded once, ~1.8–4.4 GB)
- *  - "cloud"  → the selected [CloudModel] on Z.ai (free tier by default; requires a Z.ai API key)
- * If the requested engine isn't available, throws with a REAL, actionable error — never a stub.
+ *  - "cloud"  → the provider and model chosen in Setup (address and model from
+ *               [host.vorv.llm.provider.BrainTarget], a blank address meaning
+ *               the owner's default)
+ *  - anything else → llama.cpp on-device via GenieX (the model must be
+ *               downloaded once, ~5.31 GB)
+ * If the requested engine isn't available, throws with a REAL, actionable
+ * error — never a stub.
  */
 object LlmRouter {
-    fun pick(mode: String, apiKey: String, local: LocalLlm?, cloudModel: CloudModel = CloudModel.GLM_4_7_FLASH): Llm = when (mode) {
+    fun pick(mode: String, apiKey: String, local: LocalLlm?, baseUrl: String, model: String): Llm = when (mode) {
         "cloud" -> {
-            require(apiKey.isNotBlank()) { "Cloud mode needs a Z.ai API key — add one in Setup." }
-            // The chosen model first, then the others this account can reach:
-            // one overloaded model must not end the task.
-            CloudChainLlm(apiKey, listOf(cloudModel) + CloudModel.entries.filter { it != cloudModel }.sortedByDescending { it.free })
+            require(apiKey.isNotBlank()) { "Cloud mode needs a provider key — add one in Setup." }
+            val target = host.vorv.llm.provider.BrainTarget.resolve(baseUrl, model)
+            host.vorv.llm.provider.BrainTarget.refusal(baseUrl, model)?.let {
+                throw IllegalStateException(it)
+            }
+            CloudLlm(apiKey, target.baseUrl, target.modelId)
         }
         else -> {
-            requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap a model → Download (one time, ~1.8–4.4 GB depending on choice)." }
+            requireNotNull(local) { "Local mode selected but the model isn't downloaded yet. Open Setup → tap the model → Download (one time, ~5.31 GB)." }
             local
         }
     }

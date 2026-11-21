@@ -43,7 +43,9 @@ internal object CrashEvents {
             null
         }
         val now = System.currentTimeMillis()
-        if (handledAt != null && now - handledAt <= windowMs) return false
+        // Strictly inside the window: a window of 0 means "claim every death",
+        // and two claims in the same millisecond must not swallow the second.
+        if (handledAt != null && now - handledAt < windowMs) return false
         try {
             file.parentFile?.mkdirs()
             file.writeText("$now\nsource=$source\n")

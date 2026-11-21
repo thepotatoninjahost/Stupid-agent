@@ -68,14 +68,14 @@ class ModelCatalogTest {
     fun `reads the openai models shape`() {
         val body = """
             {"object":"list","data":[
-              {"id":"glm-4.7","context_length":200000,"pricing":{"prompt":"0.0001"}},
-              {"id":"glm-4.7-flash"},
-              {"id":"glm-4.6"}
+              {"id":"bloom-7b","context_length":200000,"pricing":{"prompt":"0.0001"}},
+              {"id":"acorn-1b"},
+              {"id":"cedar-3b"}
             ]}
         """.trimIndent()
         val ids = catalog.parse(body).map { it.id }
         // Sorted by id: the chips are easier to scan, and order is not the API's.
-        assertEquals(listOf("glm-4.6", "glm-4.7", "glm-4.7-flash"), ids)
+        assertEquals(listOf("acorn-1b", "bloom-7b", "cedar-3b"), ids)
     }
 
     @Test
@@ -90,16 +90,16 @@ class ModelCatalogTest {
 
     @Test
     fun `a mistyped model finds the real one`() {
-        val entries = listOf("glm-4.7", "glm-4.7-flash", "qwen3-coder-480b", "deepseek-chat")
+        val entries = listOf("coder-large", "coder-small", "qwen3-coder-480b", "deepseek-chat")
             .map { ModelCatalog.Entry(it) }
-        assertEquals("glm-4.7-flash", catalog.closest("glm-4.7-flsh", entries).first())
+        assertEquals("coder-large", catalog.closest("coder-larg", entries).first())
         assertEquals("qwen3-coder-480b", catalog.closest("qwen3-coder", entries).first())
         assertEquals("deepseek-chat", catalog.closest("deepseak-chat", entries).first())
     }
 
     @Test
     fun `nothing similar returns nothing rather than a wrong guess`() {
-        val entries = listOf(ModelCatalog.Entry("glm-4.7"))
+        val entries = listOf(ModelCatalog.Entry("coder-large"))
         assertTrue(catalog.closest("totally-unrelated-xyz", entries).isEmpty())
     }
 

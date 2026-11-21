@@ -111,7 +111,7 @@ class ModelCatalog(
         return entries.map { e ->
             val hay = e.id.lowercase().replace(":", " ").replace("-", " ").replace("_", " ").replace("/", " ")
             val score = needle.count { hay.contains(it) }
-            // Equal word hits are common ("glm 4.7" also matches "glm 4.7 flash");
+            // Equal word hits are common ("model 4.7" also matches "model 4.7 flash");
             // the closer the length, the more likely it is what was meant.
             Triple(e.id, score, -kotlin.math.abs(hay.length - typedLength))
         }.filter { it.second > 0 }
