@@ -94,4 +94,61 @@ class SelfFixToolTest {
         assertFalse("no ellipsis anywhere", msg.contains("…"))
         assertFalse("no take() leftovers", msg.contains("take("))
     }
+
+    /**
+     * C-2: an unverified proposal must not read as "verified", and a verified
+     * one must not be the only text that exists.
+     */
+    @Test
+    fun `approval message states verification honestly`() {
+        fun msg(verified: Boolean) = tool.approvalMessage(
+            host.vorv.healer.PatchProposal(
+                patchId = "fix-002",
+                targetClass = "host.vorv.tools.NotifyTool",
+                description = "Guard the title against empty strings.",
+                sha256 = "b".repeat(64),
+                signature = "sig",
+                surfaceVerified = verified,
+                attempts = 1,
+            )
+        )
+        val verified = msg(true)
+        val unverified = msg(false)
+        assertTrue(verified.contains("Verified: full public API kept"))
+        assertTrue(verified.contains("replaces the original at the next app start"))
+        assertTrue(unverified.contains("Verified: NOT verified"))
+        assertFalse(
+            "unverified text must not promise replacement",
+            unverified.contains("replaces the original"),
+        )
+        assertTrue(unverified.contains("may not replace the running class"))
+    }
+
+    /** C-2: the success message the model reads must match what happened. */
+    @Test
+    fun `success text only claims VERIFIED when the check ran`() {
+        val verified = tool.formatResult(
+            host.vorv.healer.HealResult(
+                true, patchId = "fix-003", targetClass = "host.vorv.tools.NotifyTool",
+                surfaceVerified = true,
+            ),
+            t0 = 0L, modelLabel = "OmniCoder-9B",
+        )
+        assertTrue(verified.output.contains("VERIFIED (complete public API kept)"))
+        assertTrue(verified.output.contains("The patch class is the one that will load."))
+
+        val unverified = tool.formatResult(
+            host.vorv.healer.HealResult(
+                true, patchId = "fix-004", targetClass = "host.vorv.tools.NotifyTool",
+                surfaceVerified = false,
+            ),
+            t0 = 0L, modelLabel = "OmniCoder-9B",
+        )
+        assertFalse(
+            "unverified success text must never say VERIFIED: ${unverified.output}",
+            unverified.output.contains("VERIFIED"),
+        )
+        assertTrue(unverified.output.contains("the public-API check did not run"))
+        assertFalse(unverified.output.contains("The patch class is the one that will load."))
+    }
 }

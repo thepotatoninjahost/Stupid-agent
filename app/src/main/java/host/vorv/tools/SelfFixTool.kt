@@ -249,24 +249,32 @@ class SelfFixTool(
         appendLine()
         appendLine(p.description)
         appendLine()
-        appendLine("APPROVE = the patched class replaces the original at the next app " +
-            "start. DENY = everything is rolled back now. If the app crashes in this " +
+        appendLine("APPROVE = " + if (p.surfaceVerified) {
+            "the patched class replaces the original at the next app start. "
+        } else {
+            "the patch is stored. It may not replace the running class — " +
+                "the completeness check did not run. "
+        } + "DENY = everything is rolled back now. If the app crashes in this " +
             "class after the patch, it is rolled back automatically.")
     }
 
-    private fun formatResult(
+    internal fun formatResult(
         result: HealResult,
         t0: Long,
         modelLabel: String,
     ): ToolResult {
         return if (result.success) {
+            val verifiedText = if (result.surfaceVerified) {
+                "compiled on device, VERIFIED (complete public API kept), signed and APPROVED"
+            } else {
+                "compiled on device, signed and APPROVED (the public-API check did not run)"
+            }
             ToolResult(
                 ok = true,
                 output = "Self-fix SUCCEEDED. Patch ${result.patchId} for " +
                     "${result.targetClass} was generated with $modelLabel, " +
-                    "compiled on device, VERIFIED (complete public API kept), signed, " +
-                    "and APPROVED by the user. It becomes active at the NEXT APP " +
-                    "START — tell the user to restart Vorv to apply it.",
+                    "$verifiedText by the user. Restart Vorv to load it." +
+                    if (result.surfaceVerified) " The patch class is the one that will load." else "",
                 durationMs = elapsed(t0),
             )
         } else {

@@ -28,7 +28,7 @@ import android.util.Log
  *    dispatch, and the healer refuses to generate one.
  *
  * THREAD SAFETY: registration happens once at boot (before any dispatch);
- * dispatch afterwards is read-only over a CopyOnWriteArrayList.
+ * dispatch afterwards is read-only over a concurrent map of per-class lists.
  */
 object PatchRegistry {
 
@@ -64,13 +64,30 @@ object PatchRegistry {
         "host.vorv.healer.HealingAgent" to host.vorv.healer.HealerApi::class.java,
     )
 
-    /** Patch classloaders registered at boot by HotPatcher. */
-    private val patchLoaders = java.util.concurrent.CopyOnWriteArrayList<ClassLoader>()
+    /**
+     * Patch classloaders registered at boot by HotPatcher, keyed by the FQCN
+     * each loader was registered for. Per-class registration is what stops a
+     * patch for one class from masking a patch for another: a loader that
+     * does not carry the requested class must not win the dispatch.
+     */
+    private val loadersByClass =
+        java.util.concurrent.ConcurrentHashMap<String, MutableList<ClassLoader>>()
 
     /** Called by HotPatcher after a patch dex passes every verification gate. */
-    fun registerLoader(loader: ClassLoader) {
-        patchLoaders.add(loader)
-        Log.i(TAG, "Patch loader registered (${patchLoaders.size} active)")
+    fun registerLoader(loader: ClassLoader, classes: Collection<String>) {
+        var registered = 0
+        for (fqcn in classes) {
+            if (!isPatchableClass(fqcn)) {
+                Log.w(TAG, "ignoring non-patchable class $fqcn in patch loader")
+                continue
+            }
+            loadersByClass.computeIfAbsent(fqcn) {
+                java.util.concurrent.CopyOnWriteArrayList()
+            }.add(loader)
+            registered++
+        }
+        Log.i(TAG, "Patch loader registered for $registered class(es) " +
+            "(${loadersByClass.size} classes active)")
     }
 
     /** Whether [fqcn] is in the honest patchable surface. */
@@ -90,13 +107,20 @@ object PatchRegistry {
      */
     fun <T : Any> create(iface: Class<T>, fqcn: String, vararg args: Any?): T? {
         if (!isPatchableClass(fqcn)) return null
-        for (loader in patchLoaders) {
+        for (loader in loadersByClass[fqcn].orEmpty()) {
             val patched: Class<*> = try {
                 loader.loadClass(fqcn)
             } catch (e: ClassNotFoundException) {
                 continue
             } catch (e: Exception) {
                 Log.w(TAG, "Patch load failed for $fqcn: ${e.message}")
+                continue
+            }
+            // A loader that has no class for this FQCN hands back the app's
+            // own class. Constructing it would "apply" a patch for a different
+            // class and would let two patches never both run (review C-1).
+            if (patched.classLoader === iface.classLoader) {
+                Log.w(TAG, "loader returned the app's own $fqcn — refusing to dispatch it as a patch")
                 continue
             }
             if (!iface.isAssignableFrom(patched)) {
@@ -137,6 +161,6 @@ object PatchRegistry {
 
     /** Test hook: clear registered loaders. */
     fun resetForTest() {
-        patchLoaders.clear()
+        loadersByClass.clear()
     }
 }

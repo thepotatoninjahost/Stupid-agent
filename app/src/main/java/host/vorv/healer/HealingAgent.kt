@@ -264,6 +264,11 @@ class HealingAgent(
         }
 
         // ---- 4. sign (C-2) ----
+        // Honest verification state: a patch counts as surface-verified only
+        // when the completeness diff ran AND it compared a different runtime
+        // class. Missing verification must never read as "verified".
+        val verification = compiled.verification
+        val surfaceVerified = verification?.ok == true && verification.shadowsOriginal
         val sha256 = HotPatcher.sha256Hex(compiled.dexBytes!!)
         val signature = PatchKeys.sign(context, compiled.dexBytes!!)
             ?: return HealResult(false, targetClass = targetClass,
@@ -280,7 +285,7 @@ class HealingAgent(
             description = "Self-generated patch for: ${problem.take(200)}",
             sha256 = sha256,
             signature = signature,
-            surfaceVerified = true,
+            surfaceVerified = surfaceVerified,
             attempts = attempts,
         )
         val approved = runCatching { onConsent(proposal) }.getOrDefault(false)
@@ -309,7 +314,10 @@ class HealingAgent(
         }
 
         Log.i(TAG, "patch $patchId registered for $targetClass (applies at next boot)")
-        return HealResult(true, patchId = patchId, targetClass = targetClass, attempts = attempts)
+        return HealResult(
+            true, patchId = patchId, targetClass = targetClass, attempts = attempts,
+            surfaceVerified = surfaceVerified,
+        )
     }
 
     // ================================================================
@@ -414,14 +422,14 @@ class HealingAgent(
                 patchDex = verifierDex,
                 originalClass = original,
                 appClasspath = listOfNotNull(appClassesJar),
+                optimizedDir = File(context.codeCacheDir, "patchverify"),
             )
         } finally {
             runCatching { verifierDex.delete() }
         }
-        if (!verification.ok) {
-            return compiled.copy(verification = verification)
-        }
-        return compiled
+        // A successful candidate must carry the Verification that admitted
+        // it; surfaceVerified is derived from it (review C-2).
+        return compiled.copy(verification = verification)
     }
 
     /**

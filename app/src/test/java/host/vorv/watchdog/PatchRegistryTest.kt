@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -11,6 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import androidx.test.core.app.ApplicationProvider
 import android.content.Context
+import host.vorv.testutil.JavacFixture
 
 /**
  * PatchRegistry dispatch tests (v0.6.8 patch-dispatch fix).
@@ -105,18 +107,125 @@ class PatchRegistryTest {
     }
 
     @Test
-    fun `registered loaders are used and reset works`() {
+    fun `shadowsPatch matches the class and its nested classes only`() {
+        val shadowed = setOf("host.vorv.tools.NotifyTool")
+        assertTrue(shadowsPatch("host.vorv.tools.NotifyTool", shadowed))
+        assertTrue(shadowsPatch("host.vorv.tools.NotifyTool\$Companion", shadowed))
+        assertFalse(shadowsPatch("host.vorv.tools.NotifyToolOther", shadowed))
+        assertFalse(shadowsPatch("host.vorv.tools.ShellTool", shadowed))
+    }
+
+    @Test
+    fun `a parent-first loader returns the app class and a shadowing loader the patch`() {
+        val parent = JavacFixture.compile(
+            "probe.Same",
+            """
+            package probe;
+            public class Same { public static String who() { return "parent"; } }
+            """.trimIndent(),
+        )
+        val child = JavacFixture.compile(
+            "probe.Same",
+            """
+            package probe;
+            public class Same { public static String who() { return "child"; } }
+            """.trimIndent(),
+        )
+        val parentLoader = java.net.URLClassLoader(parent.urls, javaClass.classLoader)
+        val plainChild = java.net.URLClassLoader(child.urls, parentLoader)
+        assertEquals(
+            "parent-first delegation must hand back the app's class",
+            "parent",
+            plainChild.loadClass("probe.Same").getMethod("who").invoke(null),
+        )
+
+        val shadowing = UrlShadowLoader(child.urls, parentLoader, setOf("probe.Same"))
+        val patched = shadowing.loadClass("probe.Same")
+        assertEquals(
+            "the shadowing loader must hand back the patch's class",
+            "child",
+            patched.getMethod("who").invoke(null),
+        )
+        assertTrue(
+            "and it must be a different runtime class",
+            patched !== parentLoader.loadClass("probe.Same"),
+        )
+    }
+
+    /**
+     * C-1 pinned end to end: a patch dex for host.vorv.tools.NotifyTool is
+     * dispatched ONLY when the loader really shadows that class. Registering
+     * the app's own loader must never count as "a patch ran".
+     */
+    @Test
+    fun `a loader registered for the class dispatches its patch`() {
         PatchRegistry.resetForTest()
-        PatchRegistry.registerLoader(javaClass.classLoader)
-        // javaClass.classLoader can load NotifyTool and it implements Tool,
-        // so dispatch must now succeed with the ORIGINAL class itself.
+        val compiled = JavacFixture.compile("host.vorv.tools.NotifyTool", NOTIFY_PATCH_SOURCE)
+        val loader = UrlShadowLoader(
+            compiled.urls, javaClass.classLoader, setOf("host.vorv.tools.NotifyTool"),
+        )
+        PatchRegistry.registerLoader(loader, listOf("host.vorv.tools.NotifyTool"))
+
         val tool = PatchRegistry.create(
             host.vorv.tools.Tool::class.java,
             "host.vorv.tools.NotifyTool",
             context,
         )
-        assertNotNull(tool)
-        assertEquals("notify", tool!!.name)
+        assertNotNull("the registered patch must be dispatched", tool)
+        assertEquals("notify-patched", tool!!.name)
+        assertSame("the patched class, not the app's", loader, tool.javaClass.classLoader)
         PatchRegistry.resetForTest()
+    }
+
+    @Test
+    fun `a loader that does not shadow the class is refused`() {
+        PatchRegistry.resetForTest()
+        PatchRegistry.registerLoader(javaClass.classLoader, listOf("host.vorv.tools.NotifyTool"))
+        val tool = PatchRegistry.create(
+            host.vorv.tools.Tool::class.java,
+            "host.vorv.tools.NotifyTool",
+            context,
+        )
+        assertNull("the app's own class is not a patch — must not be dispatched", tool)
+        PatchRegistry.resetForTest()
+    }
+
+    @Test
+    fun `a loader is not consulted for a class it was not registered for`() {
+        PatchRegistry.resetForTest()
+        val compiled = JavacFixture.compile("host.vorv.tools.NotifyTool", NOTIFY_PATCH_SOURCE)
+        val loader = UrlShadowLoader(
+            compiled.urls, javaClass.classLoader, setOf("host.vorv.tools.NotifyTool"),
+        )
+        PatchRegistry.registerLoader(loader, listOf("host.vorv.tools.ShellTool"))
+        val tool = PatchRegistry.create(
+            host.vorv.tools.Tool::class.java,
+            "host.vorv.tools.NotifyTool",
+            context,
+        )
+        assertNull(tool)
+        PatchRegistry.resetForTest()
+    }
+
+    private companion object {
+        val NOTIFY_PATCH_SOURCE = """
+            package host.vorv.tools;
+            import com.google.gson.JsonObject;
+            import kotlin.coroutines.Continuation;
+
+            public class NotifyTool implements Tool {
+                public NotifyTool(Object ignored) {}
+                @Override public String getName() { return "notify-patched"; }
+                @Override public String getDescription() { return "patched fixture"; }
+                @Override public JsonObject schema() { return new JsonObject(); }
+                @Override public long getTimeoutMs() { return 70000L; }
+                @Override public int getMaxCallsPerTask() { return 10; }
+                @Override public Object run(
+                    JsonObject input, ToolContext ctx,
+                    Continuation<? super ToolResult> continuation) {
+                    return null;
+                }
+            }
+        """.trimIndent()
     }
 }

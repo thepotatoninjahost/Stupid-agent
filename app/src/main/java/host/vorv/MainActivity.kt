@@ -583,7 +583,15 @@ class MainActivity : ComponentActivity() {
             appendLine()
             appendLine(p.description)
             appendLine()
-            append("APPROVE = the patched class replaces the original at the next app start. ")
+            append("APPROVE = ")
+            append(
+                if (p.surfaceVerified) {
+                    "the patched class replaces the original at the next app start. "
+                } else {
+                    "the patch is stored. It may not replace the running class — " +
+                        "the completeness check did not run. "
+                },
+            )
             append("DENY = nothing changes. A crash in the patched class within 72h rolls it back automatically.")
         }
     }

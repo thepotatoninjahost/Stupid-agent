@@ -1,7 +1,7 @@
 package host.vorv.healer
 
 import android.util.Log
-import dalvik.system.PathClassLoader
+import host.vorv.watchdog.PatchDexLoader
 import java.io.File
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
@@ -45,6 +45,8 @@ object PatchVerifier {
         val missingMethods: List<String>,
         val missingFields: List<String>,
         val problems: List<String>,
+        /** True when the loaded class is really the patch's, not the running original. */
+        val shadowsOriginal: Boolean = false,
     ) {
         fun asFeedback(): String = buildString {
             if (ok) return@buildString
@@ -70,14 +72,48 @@ object PatchVerifier {
      * Verify [patchDex] against [originalClass]. The patch class must be the
      * same FQCN as [originalClass].
      *
-     * @param appClasspath the app's own classes (jar/dex dirs) so the patch
-     *   can link against the types it references — the healer classpath
-     *   extracted from the APK (audit H-4: implemented, not stubbed).
+     * The dex is loaded through [PatchDexLoader], which returns the PATCH's
+     * class for that FQCN instead of the running app's. A parent-first loader
+     * silently returned the original class, so every patch "passed" while
+     * nothing had been checked (review C-1).
+     *
+     * @param appClasspath kept for call-site compatibility; the patch links
+     *   against the app classes through [originalClass]'s own class loader.
+     * @param optimizedDir writable scratch directory for the dex loader.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun verify(
         patchDex: File,
         originalClass: Class<*>,
         appClasspath: List<File>,
+        optimizedDir: File,
+    ): Verification {
+        if (!optimizedDir.exists() && !optimizedDir.mkdirs()) {
+            return Verification(false, emptyList(), emptyList(), emptyList(),
+                listOf("verifier scratch directory could not be created: ${optimizedDir.absolutePath}"))
+        }
+        val loader = try {
+            PatchDexLoader(
+                patchDex.absolutePath,
+                optimizedDir.absolutePath,
+                originalClass.classLoader ?: PatchVerifier::class.java.classLoader,
+                setOf(originalClass.name),
+            )
+        } catch (e: Exception) {
+            return Verification(false, emptyList(), emptyList(), emptyList(),
+                listOf("patch dex could not be loaded: ${e.message}"))
+        }
+        return verifyWithLoader(loader, originalClass)
+    }
+
+    /**
+     * The comparison itself, against a loader the caller built. Split out so
+     * tests can supply a JVM [java.net.URLClassLoader] and exercise the exact
+     * production logic (review M-3).
+     */
+    fun verifyWithLoader(
+        loader: ClassLoader,
+        originalClass: Class<*>,
     ): Verification {
         val fqcn = originalClass.name
         val missingCtors = mutableListOf<String>()
@@ -85,23 +121,23 @@ object PatchVerifier {
         val missingFields = mutableListOf<String>()
         val problems = mutableListOf<String>()
 
-        // --- isolated loader: patch dex FIRST, app classes on the parent ---
-        val loader = try {
-            PathClassLoader(
-                patchDex.absolutePath,
-                appClasspath.joinToString(":") { it.absolutePath },
-                originalClass.classLoader,
-            )
-        } catch (e: Exception) {
-            return Verification(false, emptyList(), emptyList(), emptyList(),
-                listOf("patch dex could not be loaded: ${e.message}"))
-        }
-
         val patched: Class<*> = try {
             loader.loadClass(fqcn)
-        } catch (e: Exception) {
+        } catch (e: ClassNotFoundException) {
             return Verification(false, emptyList(), emptyList(), emptyList(),
-                listOf("patch dex does not contain $fqcn: ${e.message}"))
+                listOf("patch dex does not contain $fqcn"), shadowsOriginal = false)
+        } catch (e: LinkageError) {
+            return Verification(false, emptyList(), emptyList(), emptyList(),
+                listOf("patch dex does not contain $fqcn (${e.message})"), shadowsOriginal = false)
+        }
+
+        // The patch dex must have been used. A loader that returns the
+        // running class proves the opposite, and the completeness diff below
+        // would compare the original with itself and always pass.
+        val shadows = patched !== originalClass &&
+            patched.classLoader !== originalClass.classLoader
+        if (!shadows) {
+            problems.add("the loaded class is the running original — the patch dex was not used")
         }
 
         // 5. concrete + instantiable
@@ -158,14 +194,17 @@ object PatchVerifier {
             }
         }
 
-        val ok = missingCtors.isEmpty() && missingMethods.isEmpty() &&
+        val ok = shadows && missingCtors.isEmpty() && missingMethods.isEmpty() &&
             missingFields.isEmpty() && problems.isEmpty()
         if (!ok) {
             Log.w(TAG, "Patch for $fqcn INCOMPLETE: " +
                 "+${missingCtors.size} ctors, +${missingMethods.size} methods, " +
                 "+${missingFields.size} fields, +${problems.size} problems")
         }
-        return Verification(ok, missingCtors, missingMethods, missingFields, problems)
+        return Verification(
+            ok, missingCtors, missingMethods, missingFields, problems,
+            shadowsOriginal = shadows,
+        )
     }
 
     // ------------------------------------------------------------------

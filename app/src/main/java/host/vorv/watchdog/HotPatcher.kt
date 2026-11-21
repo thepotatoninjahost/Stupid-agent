@@ -2,7 +2,6 @@ package host.vorv.watchdog
 
 import android.content.Context
 import android.util.Log
-import dalvik.system.DexClassLoader
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -137,28 +136,49 @@ object HotPatcher {
                         return@forEach
                     }
 
-                    // All gates passed — load and register.
+                    // All gates passed — load and register. The loader must
+                    // SHADOW the declared classes: a parent-first loader hands
+                    // back the running app's class and the patch would never
+                    // run (review C-1).
                     val odexDir = File(context.codeCacheDir, "hotpatch_odex").apply { mkdirs() }
-                    val loader = DexClassLoader(
+                    val loader = PatchDexLoader(
                         dexFile.absolutePath,
                         odexDir.absolutePath,
-                        null,
                         context.classLoader,
+                        classNames.toSet(),
                     )
                     // Gate 6: the patch class must really implement its dispatch
-                    // interface before the loader is trusted.
+                    // interface AND be a different runtime class from the
+                    // original before the loader is trusted.
+                    var gateFailure: String? = null
                     val dispatchable = classNames.any { fqcn ->
                         val base = PatchRegistry.dispatchBaseFor(fqcn) ?: return@any false
-                        runCatching {
-                            base.isAssignableFrom(loader.loadClass(fqcn))
-                        }.getOrDefault(false)
+                        val loaded = runCatching { loader.loadClass(fqcn) }.getOrNull()
+                        if (loaded == null) {
+                            gateFailure = "patch class $fqcn could not be loaded from the dex"
+                            return@any false
+                        }
+                        if (!base.isAssignableFrom(loaded)) {
+                            gateFailure = "patch class does not implement its dispatch interface"
+                            return@any false
+                        }
+                        if (loaded.classLoader === base.classLoader) {
+                            gateFailure =
+                                "patch dex does not shadow the running class — refusing to register"
+                            return@any false
+                        }
+                        true
                     }
                     if (!dispatchable) {
-                        quarantine(context, dexFile, "patch class does not implement its dispatch interface")
+                        quarantine(
+                            context,
+                            dexFile,
+                            gateFailure ?: "patch class does not implement its dispatch interface",
+                        )
                         return@forEach
                     }
 
-                    PatchRegistry.registerLoader(loader)
+                    PatchRegistry.registerLoader(loader, classNames)
                     recordFirstApply(context, patchId)
                     applied.add(patchId)
                     Log.i(TAG, "Applied patch: $patchId (classes=$classNames)")

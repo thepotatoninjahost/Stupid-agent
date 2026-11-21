@@ -76,6 +76,8 @@ data class HealResult(
     val error: String? = null,
     val attempts: Int = 0,
     val userApproved: Boolean = true,
+    /** True only when the completeness diff ran against a different runtime class. */
+    val surfaceVerified: Boolean = false,
 )
 
 data class DiagnosticBundle(
