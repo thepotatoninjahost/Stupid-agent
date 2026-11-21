@@ -11,6 +11,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import host.vorv.web.GuardedWebViewClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -87,7 +88,9 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
     }
 
     /** The single guarded client — installed once, never replaced. */
-    private val guardClient = GuardWebViewClient()
+    private val guardClient: GuardedWebViewClient by lazy {
+        GuardedWebViewClient(::checkAllowed, ::noteBlocked, proxyClient)
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val webViewRef = AtomicReference<WebView?>(null)
@@ -117,62 +120,26 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
      */
     @Volatile private var lastBlockReason: String? = null
 
-    private inner class GuardWebViewClient : WebViewClient() {
-
-        override fun shouldOverrideUrlLoading(
-            view: WebView?,
-            request: WebResourceRequest?,
-        ): Boolean {
-            request?.url ?: return false
-            return !checkAllowed(request.url)
+    /** True when allowed; records the reason when blocked. */
+    internal fun checkAllowed(url: android.net.Uri): Boolean {
+        val scheme = url.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https" && scheme != null) {
+            lastBlockReason = "navigation to non-http(s) URL blocked: $url"
+            return false
         }
-
-        override fun shouldInterceptRequest(
-            view: WebView?,
-            request: WebResourceRequest?,
-        ): WebResourceResponse? {
-            val url = request?.url ?: return null
-            if (!checkAllowed(url)) {
-                // A blocked sub-resource (iframe/fetch/XHR): serve an honest
-                // empty 403 instead of letting the WebView fetch it.
-                return WebResourceResponse("text/plain", "utf-8", 403, "Blocked by Vorv",
-                    java.util.Collections.emptyMap(),
-                    java.io.ByteArrayInputStream("blocked by network guard".toByteArray()))
-            }
-            // M-1: proxy through the DNS-pinned client so the connection uses
-            // EXACTLY the addresses that were checked.
-            return try {
-                val req = okhttp3.Request.Builder().url(url.toString()).build()
-                val resp = proxyClient.newCall(req).execute()
-                val contentType = resp.header("Content-Type") ?: "application/octet-stream"
-                val (mime, charset) = contentType.split(";", limit = 2)
-                    .let { it[0].trim() to it.getOrNull(1)?.trim()?.removePrefix("charset=") }
-                val headers = mutableMapOf<String, String>()
-                for ((k, v) in resp.headers) headers[k] = v
-                val body = resp.body?.byteStream()
-                    ?: java.io.ByteArrayInputStream(ByteArray(0))
-                WebResourceResponse(mime, charset, resp.code, resp.message, headers, body)
-            } catch (e: Exception) {
-                null // network failure: let the WebView surface its own error
-            }
+        val host = url.host ?: ""
+        return try {
+            NetworkGuard.checkHostAllowed(host)
+            true
+        } catch (e: java.net.UnknownHostException) {
+            lastBlockReason = e.message ?: "host blocked: $host"
+            false
         }
+    }
 
-        /** True when allowed; records the reason when blocked. */
-        private fun checkAllowed(url: android.net.Uri): Boolean {
-            val scheme = url.scheme?.lowercase()
-            if (scheme != "http" && scheme != "https" && scheme != null) {
-                lastBlockReason = "navigation to non-http(s) URL blocked: $url"
-                return false
-            }
-            val host = url.host ?: ""
-            return try {
-                NetworkGuard.checkHostAllowed(host)
-                true
-            } catch (e: java.net.UnknownHostException) {
-                lastBlockReason = e.message ?: "host blocked: $host"
-                false
-            }
-        }
+    /** Fallback when a request is refused without a reason of its own. */
+    private fun noteBlocked(url: String) {
+        if (lastBlockReason == null) lastBlockReason = "request blocked: $url"
     }
 
     /** Lazily create the WebView on the MAIN thread — WebViews must never be touched off-main. */
@@ -190,7 +157,7 @@ class BrowserAutomateTool(private val appContext: Context) : Tool {
             settings.allowUniversalAccessFromFileURLs = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             // ---- H-3: the guarded client — every navigation checked ----
-            webViewClient = this@BrowserAutomateTool.guardClient
+            webViewClient = guardClient
         }
         webViewRef.set(wv)
         return wv

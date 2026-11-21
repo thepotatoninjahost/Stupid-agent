@@ -4,18 +4,23 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import host.vorv.tools.NetworkGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Collections
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
@@ -33,6 +38,22 @@ import kotlin.coroutines.resume
  * JVM to build the APK or accessibility privileges to puppet its screens.
  */
 class WebAppHarness(private val context: Context) {
+
+    /**
+     * The client the guarded WebView fetches through: DNS through
+     * [NetworkGuard.PublicDns] (so the connection uses the vetted address) and
+     * no redirect following (a redirect is a new host and must be re-checked,
+     * not followed blindly).
+     */
+    private val guardedClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .dns(NetworkGuard.PublicDns)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
 
     data class Result(val verdict: WebVerdict, val screenshot: File?, val url: String)
 
@@ -75,19 +96,28 @@ class WebAppHarness(private val context: Context) {
         projectDir: File,
         screenshot: Boolean,
     ): Result = withContext(Dispatchers.Main) {
-        val errors = mutableListOf<String>()
+        // onBlocked runs on a WebView IO thread, never the main thread.
+        val errors: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val loaded = AtomicBoolean(false)
         val view = createWebView(errors)
+        val base = Uri.parse(server.baseUrl)
         try {
             val pageLoaded = suspendCancellableCoroutine { cont ->
-                view.webViewClient = object : WebViewClient() {
+                // H-3: the harness now guards sub-resources too. The origin
+                // rule is the ONLY thing that may pass: PublicDns refuses the
+                // loopback origin, so a same-origin fetch fails and returns
+                // null, which lets the WebView fetch its own app itself.
+                view.webViewClient = object : GuardedWebViewClient(
+                    allow = { target -> LocalAppOrigin.allows(target, base) },
+                    onBlocked = { blocked -> errors += "blocked by Vorv network guard: $blocked" },
+                    client = guardedClient,
+                ) {
                     override fun onPageFinished(v: WebView?, u: String?) {
                         if (loaded.compareAndSet(false, true)) cont.resume(true)
                     }
 
                     override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                        // The app being tested stays on its own loopback origin;
-                        // it may not navigate the harness anywhere else.
+                        // Unchanged: navigation stays inside the app's origin.
                         val target = r?.url?.toString() ?: return true
                         return !target.startsWith(server.baseUrl)
                     }
@@ -207,5 +237,22 @@ class WebAppHarness(private val context: Context) {
                 bitmap.recycle()
             }
         }
+    }
+}
+
+/**
+ * H-3: which requests the harness lets through. This is an ORIGIN test, never a
+ * string prefix: `http://127.0.0.1:<port>@evil.example/x` starts with
+ * `http://127.0.0.1:<port>` but its host is `evil.example`.
+ *
+ * Non-http(s) URLs are allowed because a page under test legitimately uses
+ * `data:`, `blob:` and `about:` sub-resources; the harness only constrains the
+ * network, and this is its decision, not the guarded client's.
+ */
+internal object LocalAppOrigin {
+    fun allows(url: Uri, base: Uri): Boolean {
+        val scheme = url.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return true
+        return url.host == base.host && url.port == base.port
     }
 }
