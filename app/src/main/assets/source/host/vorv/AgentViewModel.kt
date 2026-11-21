@@ -876,7 +876,11 @@ class AgentViewModel(
             val pid = prefs.cloudProviderId.first()
                 .let(::normalizeProviderId)
             val key = secrets.keyFor(pid)
-            if (model.isBlank()) {
+            // A blank name means the selected provider's own default (the
+            // large Qwen3 Coder on OpenRouter); only a provider with none
+            // left blank still needs the owner to name a model.
+            val modelId = host.vorv.llm.provider.BrainTarget.modelFor(model, pid)
+            if (modelId.isBlank()) {
                 _state.update {
                     it.copy(keyTestResult = "✓ Address saved. No model name yet — type one or tap Refresh list.")
                 }
@@ -892,14 +896,14 @@ class AgentViewModel(
             val probe = CloudLlm.probeAt(
                 key,
                 host.vorv.llm.provider.BrainTarget.baseFor(baseUrl, pid),
-                host.vorv.llm.provider.BrainTarget.modelFor(model, pid),
+                modelId,
             )
             _state.update {
                 it.copy(
                     keyTesting = false,
                     keyTestResult = probe.fold(
-                        onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
-                        onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
+                        onSuccess = { text -> "✓ $modelId replied “${text.take(40)}” — works with your key." },
+                        onFailure = { e -> "✗ $modelId: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
@@ -1496,11 +1500,7 @@ class AgentViewModel(
                 val chosenMode = prefs.llmMode.first()
                 // 0.9.18 — the key belongs to the SELECTED provider.
                 val providerId = prefs.cloudProviderId.first()
-                    .let { raw ->
-                        if (host.vorv.llm.provider.ProviderRegistry.byId(raw) == null) {
-                            host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID
-                        } else raw
-                    }
+                    .let(::normalizeProviderId)
                 val key = secrets.keyFor(providerId)
                 val choice = ModelChoice.fromId(prefs.localModelId.first())
                 // No cloud key but an on-phone coder in storage: the coder answers,
