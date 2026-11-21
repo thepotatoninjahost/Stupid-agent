@@ -183,7 +183,9 @@ class LinuxSystem(private val context: Context) : GuestShell {
         writeGuestHosts()
         // Fail closed: a guest command with no egress guard is the hole this
         // fixes, so if the proxy cannot start the command does not run.
-        val proxyPort = runCatching { egressProxy.ensureStarted() }.getOrElse {
+        val proxyPort = try {
+            egressProxy.ensureStarted()
+        } catch (e: Exception) {
             return@withContext Shell(
                 -1,
                 "vorv: the guest egress guard could not start, so the command was not run (H-2).",
@@ -383,11 +385,11 @@ class LinuxSystem(private val context: Context) : GuestShell {
 
         /** H-2: writes the guest's /etc/hosts (see [GUEST_HOSTS]). */
         internal fun writeGuestHosts(rootfs: File) {
-            runCatching {
+            try {
                 File(rootfs, "etc").mkdirs()
                 File(rootfs, "etc/hosts").writeText(GUEST_HOSTS)
-            }.onFailure {
-                Log.w("VorvLinux", "could not write the guest hosts blocklist: ${it.message}")
+            } catch (e: java.io.IOException) {
+                Log.w("VorvLinux", "could not write the guest hosts blocklist: ${e.message}")
             }
         }
 

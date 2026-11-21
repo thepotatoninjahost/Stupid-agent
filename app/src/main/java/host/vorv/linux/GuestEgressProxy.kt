@@ -55,14 +55,18 @@ internal class GuestEgressProxy(
     /** Closes the listener. In-flight connections finish on their own threads. */
     @Synchronized
     fun stop() {
-        runCatching { server?.close() }
+        closeQuietly(server)
         server = null
         boundPort = 0
     }
 
     private fun acceptLoop(socket: ServerSocket) {
         while (!socket.isClosed) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: return
+            val client = try {
+                socket.accept()
+            } catch (e: java.io.IOException) {
+                return // the listener was closed under us: nothing left to serve
+            }
             Thread({ handle(client) }, "vorv-guest-egress-conn").apply { isDaemon = true }.start()
         }
     }
@@ -113,7 +117,11 @@ internal class GuestEgressProxy(
     // ------------------------------------------------------------ absolute-form
 
     private fun relay(client: Socket, input: InputStream, head: String, method: String, target: String) {
-        val uri = runCatching { URI(target) }.getOrNull()
+        val uri = try {
+            URI(target)
+        } catch (e: java.net.URISyntaxException) {
+            null
+        }
         val host = uri?.host
         if (uri == null || host.isNullOrBlank()) {
             respond(client.getOutputStream(), 400, "Bad Request", "absolute-form request has no host")
@@ -124,11 +132,16 @@ internal class GuestEgressProxy(
         val path = (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") +
             (uri.rawQuery?.let { "?$it" } ?: "")
         val headers = head.substringAfter("\r\n")
-        runCatching {
+        try {
             val out = upstream.getOutputStream()
             out.write("$method $path HTTP/1.1\r\n".toByteArray())
             out.write(headers.toByteArray(Charsets.ISO_8859_1))
             out.flush()
+        } catch (e: java.io.IOException) {
+            // The upstream hung up before the request was written; the client
+            // sees the closed connection instead of a hang.
+            closeQuietly(upstream)
+            return
         }
         pump(client, input, upstream)
     }
@@ -140,19 +153,21 @@ internal class GuestEgressProxy(
     private fun connectChecked(host: String, port: Int, client: Socket): Socket? {
         // ONE resolution, and the connection uses the address that was vetted:
         // resolving again would reopen the DNS-rebinding window.
-        val address = runCatching { resolve(host).first() }.getOrElse { error ->
+        val address = try {
+            resolve(host).first()
+        } catch (error: Exception) {
             respond(
                 client.getOutputStream(), 403, "Forbidden",
                 error.message ?: "Vorv network guard: '$host' could not be resolved",
             )
             return null
         }
-        val upstream = runCatching {
+        val upstream = try {
             Socket().apply {
                 connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MS)
                 soTimeout = 0
             }
-        }.getOrElse { error ->
+        } catch (error: java.io.IOException) {
             respond(
                 client.getOutputStream(), 502, "Bad Gateway",
                 "the guest egress guard could not reach $host:$port (${error.message ?: "connection failed"})",
@@ -166,16 +181,16 @@ internal class GuestEgressProxy(
 
     private fun pump(client: Socket, clientIn: InputStream, upstream: Socket) {
         val up = Thread({
-            runCatching { clientIn.copyTo(upstream.getOutputStream()) }
-            runCatching { upstream.shutdownOutput() }
+            copyQuietly(clientIn, upstream)
+            halfCloseQuietly(upstream)
         }, "vorv-guest-egress-up").apply { isDaemon = true }
         up.start()
-        runCatching { upstream.getInputStream().copyTo(client.getOutputStream()) }
+        copyQuietly(upstream.getInputStream(), client)
         // Close the upstream first: the client half of the pump is blocked in a
         // read that only this close can end, and joining on it would stall the
         // connection thread until the timeout.
-        runCatching { upstream.close() }
-        runCatching { client.shutdownOutput() }
+        closeQuietly(upstream)
+        halfCloseQuietly(client)
         up.join(2_000)
     }
 
@@ -202,7 +217,7 @@ internal class GuestEgressProxy(
 
     private fun respond(out: OutputStream, code: Int, reason: String, body: String) {
         val bytes = body.toByteArray()
-        runCatching {
+        try {
             out.write(
                 ("HTTP/1.1 $code $reason\r\n" +
                     "Content-Type: text/plain; charset=utf-8\r\n" +
@@ -211,6 +226,8 @@ internal class GuestEgressProxy(
             )
             out.write(bytes)
             out.flush()
+        } catch (e: java.io.IOException) {
+            // The guest already hung up; there is nobody left to tell.
         }
     }
 
@@ -231,6 +248,33 @@ internal class GuestEgressProxy(
         val port = portText.toIntOrNull() ?: return null
         if (port !in 1..65535) return null
         return host to port
+    }
+
+    // ---- best-effort plumbing: the other side is going away regardless ----
+
+    /** Ends the transfer; a socket that is already closed throws here and nowhere else. */
+    private fun copyQuietly(from: InputStream, to: Socket) {
+        try {
+            from.copyTo(to.getOutputStream())
+        } catch (e: java.io.IOException) {
+            // One side closed mid-transfer: that ends the connection, by design.
+        }
+    }
+
+    private fun halfCloseQuietly(socket: Socket) {
+        try {
+            socket.shutdownOutput()
+        } catch (e: java.io.IOException) {
+            // Already closed.
+        }
+    }
+
+    private fun closeQuietly(closeable: java.io.Closeable?) {
+        try {
+            closeable?.close()
+        } catch (e: java.io.IOException) {
+            // Already closed.
+        }
     }
 
     private companion object {

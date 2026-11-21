@@ -48,6 +48,23 @@ Whatever the distribution can install, the agent can install: `apk add gcc
 musl-dev`, `apk add python3 py3-pip`, `apk add openjdk17`, `apk add git`. That
 is the difference between "the app has some tools" and "the app has a computer".
 
+### Network: one guarded way out
+
+The guest's network goes through an egress proxy that Vorv starts on loopback and
+hands to every guest command (`http_proxy`, `https_proxy`, `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`). The proxy resolves a host once through
+`NetworkGuard`, refuses private, loopback, link-local and cloud-metadata
+addresses with a 403 that names the reason, and connects to exactly the address
+it vetted (so a second DNS answer cannot redirect the connection). Its
+`/etc/hosts` maps `metadata.google.internal`, `metadata.goog` and `instance-data`
+to `0.0.0.0`, because `proot` shares the phone's network stack and loopback
+could otherwise reach phone services.
+
+Covered: proxy-aware tools — `apt`, `git`, `pip`, `curl`, `wget`. Not covered:
+raw sockets, UDP, and anything that ignores proxy variables. This is an HTTP
+proxy, not a kernel firewall; state that limit when you report what the guest
+can reach.
+
 ## What was verified, and how
 
 * The Alpine 3.20.0 aarch64 root filesystem was downloaded from

@@ -39,7 +39,10 @@ class ShellTool(
             "call this tool for anything involving the shell, compiling, installing software, or " +
             "running commands on this device. Never claim you have no shell without calling this " +
             "first; if something is missing it returns an honest error naming the fix. The user's " +
-            "workspace folder is visible at " + GUEST_WORKSPACE + "."
+            "workspace folder is visible at " + GUEST_WORKSPACE + ". The internet is reachable only " +
+            "through Vorv's guarded egress proxy: proxy-aware tools such as apt, git and curl work, " +
+            "but private, loopback and cloud-metadata addresses are refused with a 403 naming the " +
+            "reason, and raw sockets, UDP and tools that ignore proxy settings are not covered."
 
     override val timeoutMs: Long get() = 300_000L
     override val maxCallsPerTask: Int get() = 10
