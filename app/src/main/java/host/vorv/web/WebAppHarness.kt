@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +83,26 @@ class WebAppHarness(private val context: Context) {
         try {
             val pageLoaded = suspendCancellableCoroutine { cont ->
                 view.webViewClient = object : WebViewClient() {
+                    /**
+                     * The page is model-authored code, so "only loopback" cannot be
+                     * left to the settings above: `fetch('https://…')` is a
+                     * subresource request, not a navigation, and the settings do
+                     * not stop it. Anything outside this server's origin is
+                     * refused here, before a socket is opened.
+                     */
+                    override fun shouldInterceptRequest(
+                        v: WebView?,
+                        r: WebResourceRequest?,
+                    ): WebResourceResponse? {
+                        val target = r?.url?.toString() ?: return blockedRequest("no url")
+                        return when {
+                            target.startsWith(server.baseUrl) -> null
+                            target.startsWith("data:") || target.startsWith("blob:") ||
+                                target.startsWith("about:") -> null
+                            else -> blockedRequest(target)
+                        }
+                    }
+
                     override fun onPageFinished(v: WebView?, u: String?) {
                         if (loaded.compareAndSet(false, true)) cont.resume(true)
                     }
@@ -145,13 +167,15 @@ class WebAppHarness(private val context: Context) {
         }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(errors: MutableList<String>): WebView = WebView(context).apply {
+    private fun createWebView(errors: MutableList<String>): WebView =
+        WebView(context).apply {
         setBackgroundColor(android.graphics.Color.WHITE)
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            // Only the loopback origin is reachable: no file://, no content://,
-            // and no network the project itself did not ask for.
+            // File and content origins are closed here; the network is closed by
+            // the WebViewClient below (shouldInterceptRequest), because these
+            // settings do not cover fetch() from page code.
             allowFileAccess = false
             allowContentAccess = false
             allowFileAccessFromFileURLs = false
@@ -208,4 +232,20 @@ class WebAppHarness(private val context: Context) {
             }
         }
     }
+
+    /**
+     * A refused subresource. The body names the target so a failed test says
+     * what the page tried to reach instead of "net::ERR_FAILED".
+     */
+    private fun blockedRequest(target: String): WebResourceResponse = WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        403,
+        "Blocked",
+        mapOf("X-Vorv-Blocked" to "1"),
+        ByteArrayInputStream(
+            "vorv harness: blocked request to $target — only the tested app's own origin is reachable"
+                .toByteArray(),
+        ),
+    )
 }

@@ -116,7 +116,12 @@ object PatchRegistry {
             return try {
                 construct(patched, args)
             } catch (e: Throwable) {
+                // Finding 24: construction failure is the same disease as a failed
+                // load — a patch built against another app version. Without the
+                // drop, every dispatch of $fqcn retried it and logged again, while
+                // HotPatcher still listed it as applied.
                 Log.e(TAG, "Patch construction failed for $fqcn: ${e.message}", e)
+                dropLoader(loader, e)
                 null
             }
         }
@@ -135,16 +140,13 @@ object PatchRegistry {
         val candidate = ctors.filter { it.parameterCount == args.size }.firstOrNull()
             ?: ctors.filter { it.parameterCount >= args.size }.minByOrNull { it.parameterCount }
             ?: return null
-        return try {
-            val expanded: Array<Any?> = arrayOfNulls(candidate.parameterCount)
-            System.arraycopy(args, 0, expanded, 0, minOf(args.size, candidate.parameterCount))
-            candidate.newInstance(*expanded) as? T
-        } catch (e: Throwable) {
-            // Same reason as create(): a wrong-shaped or unlinkable patch
-            // throws an Error from the constructor, and it must not escape.
-            Log.e(TAG, "Patch newInstance failed (${e.javaClass.simpleName}): ${e.message}", e)
-            null
-        }
+        val expanded: Array<Any?> = arrayOfNulls(candidate.parameterCount)
+        System.arraycopy(args, 0, expanded, 0, minOf(args.size, candidate.parameterCount))
+        // Finding 24: deliberately not caught here. A constructor that throws
+        // (wrong shape, or an Error from a patch built against another app
+        // version) is handled one level up, where the loader can be dropped so
+        // it is not retried on every dispatch of this class.
+        return candidate.newInstance(*expanded) as? T
     }
 
     /**

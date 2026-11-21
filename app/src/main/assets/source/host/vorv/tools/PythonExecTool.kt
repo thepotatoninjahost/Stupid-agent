@@ -21,6 +21,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   3. Import whitelist — pure-computation stdlib only (math, json, re,
  *      datetime, statistics, ...)
  *   4. Time budget via a trace watchdog
+ *   5. The real builtins module is disarmed (import/eval/exec/compile/open)
+ *      for the duration of each run, so a builtin function's `__self__`
+ *      cannot walk back to the modules layers 1-3 keep away (finding 17)
  *
  * HONEST capability statement (the v0.5.x description falsely claimed
  * "cannot access files outside the agent's workspace" and that the requests

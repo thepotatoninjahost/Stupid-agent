@@ -154,6 +154,42 @@ class PatchRegistryTest {
         PatchRegistry.resetForTest()
     }
 
+    /**
+     * Finding 24 (code review, 2026-11-20): a patch whose *constructor* throws
+     * was caught and thrown away silently, and the loader stayed registered, so
+     * every dispatch retried it and logged again while the manifest still said
+     * "applied". It must be dropped like an unlinkable one.
+     */
+    private class ExplodingCtorPatch : host.vorv.tools.Tool {
+        init {
+            throw IllegalStateException("patch built against another version")
+        }
+
+        override val name = "shell"
+        override val description = "never constructible"
+        override fun schema() = com.google.gson.JsonObject()
+        override suspend fun run(
+            input: com.google.gson.JsonObject,
+            ctx: host.vorv.tools.ToolContext,
+        ) = host.vorv.tools.ToolResult(ok = true, output = "", durationMs = 0)
+    }
+
+    @Test
+    fun `a patch whose constructor throws is contained and dropped`() {
+        PatchRegistry.resetForTest()
+        val loader = object : ClassLoader(null) {
+            override fun loadClass(name: String, resolve: Boolean): Class<*> =
+                if (name == "host.vorv.tools.ShellTool") ExplodingCtorPatch::class.java
+                else super.loadClass(name, resolve)
+        }
+        PatchRegistry.registerLoader(loader)
+        val created = PatchRegistry.create(host.vorv.tools.Tool::class.java, "host.vorv.tools.ShellTool")
+        assertNull("a throwing constructor must fall back to the original", created)
+        assertEquals("the bad loader must not be retried", 0, PatchRegistry.activeLoadersForTest())
+        assertNull(PatchRegistry.create(host.vorv.tools.Tool::class.java, "host.vorv.tools.ShellTool"))
+        PatchRegistry.resetForTest()
+    }
+
     @Test
     fun `a good patch still wins over the original`() {
         PatchRegistry.resetForTest()

@@ -130,7 +130,15 @@ def main():
                 raise SystemExit("layer hash mismatch: %s != %s" % (got, layer["digest"]))
             with tarfile.open(fileobj=io.BytesIO(blob), mode="r:*") as tar:
                 for member in tar.getmembers():
-                    name = member.name.lstrip("./")
+                    name = member.name
+                    while name.startswith("./"):
+                        name = name[2:]
+                    # Finding 29: lstrip("./") strips characters, not a prefix, and
+                    # a layer is untrusted input even when its digest is pinned.
+                    # Refuse anything that would escape the root on unpack instead
+                    # of copying the name through.
+                    if name.startswith("/") or ".." in name.split("/"):
+                        raise SystemExit("layer member escapes the rootfs: %r" % member.name)
                     if not name or name in ("dev", "proc", "sys") or name.startswith(SKIP_PREFIXES):
                         continue
                     if member.isfile():
