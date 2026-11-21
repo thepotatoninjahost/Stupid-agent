@@ -69,6 +69,18 @@ class WatchdogService : Service() {
 
         private const val RESTART_DELAY_MS = 1500L
 
+        /**
+         * M-7: binder death can reach this process before onTaskRemoved does,
+         * so a death is given this long to reveal that it was a user close.
+         * Well below [RESTART_DELAY_MS], so nothing is delayed by it.
+         */
+        private const val USER_CLOSE_SETTLE_MS = 750L
+
+        /** M-7: the channel the "tap to reopen" notification uses. */
+        internal const val CRASH_CHANNEL_ID = "vorv_watchdog_crash"
+
+        private const val CRASH_NOTIFICATION_ID = 0x5A17
+
         /** Cadence for the next heartbeat: fast in the foreground, backed off otherwise. */
         internal fun heartbeatIntervalMs(foreground: Boolean): Long =
             if (foreground) HEARTBEAT_INTERVAL_MS else HEARTBEAT_BACKGROUND_INTERVAL_MS
@@ -151,6 +163,11 @@ class WatchdogService : Service() {
             File(context.filesDir, "watchdog/heartbeat.txt")
 
         fun writeHeartbeat(context: Context, step: String, cadenceMs: Long = HEARTBEAT_INTERVAL_MS) {
+            // M-7: a heartbeat is proof the main process is alive, so a stale
+            // "the user closed it" marker can never outlive it. This runs in
+            // the MAIN process on purpose — clearing it from the watchdog's
+            // onCreate would turn a fresh user close back into a crash.
+            UserCloseMarker.clear(context)
             runCatching {
                 // M6: sweep the pre-M6 external heartbeat if one still exists
                 // from an older install — on EVERY write, stateless.
@@ -293,7 +310,33 @@ class WatchdogService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    /**
+     * M-7: swiping the task away is the one signal that means the user closed
+     * the app. `stopWithTask` is false by default, so without stopSelf() the
+     * watchdog would keep running and relaunch on the next stale heartbeat —
+     * exactly the bug this fixes.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        UserCloseMarker.mark(this)
+        Log.i(TAG, "task removed by the user — recording a user close, not a crash")
+        stopSelf()
+    }
+
     private fun onMainProcessDied(method: String) {
+        // M-7: give onTaskRemoved a moment to arrive first, then believe the
+        // user-close marker over the death signal. This guard also covers the
+        // stale-heartbeat caller, so neither path can relaunch a closed app.
+        try { Thread.sleep(USER_CLOSE_SETTLE_MS) } catch (_: InterruptedException) {}
+        if (UserCloseMarker.isSet(this)) {
+            Log.i(TAG, "main process closed by the user — not a crash (detection=$method)")
+            return
+        }
+        if (!CrashEvents.claim(this, method)) {
+            Log.i(TAG, "death already handled inside the window (detection=$method) — reporting once")
+            return
+        }
+
         val ts = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(Date())
         Log.e(TAG, "Crash handling started (detection=$method) at $ts")
 
@@ -359,8 +402,22 @@ class WatchdogService : Service() {
             Log.e(TAG, "Relaunch circuit breaker tripped ($MAX_RELAUNCHES crashes in " +
                 "${RELAUNCH_WINDOW_MS / 60_000} min) — NOT relaunching; the user must open " +
                 "the app manually. Diagnostics are on disk.")
+            appendToCrashFile(
+                crashFile,
+                "Relaunch declined: circuit breaker tripped ($MAX_RELAUNCHES crashes in " +
+                    "${RELAUNCH_WINDOW_MS / 60_000} min). Open the app manually.",
+            )
             return
         }
+
+        // M-7: a background service startActivity is usually refused on
+        // Android 10+, so the owner gets a tappable notification even when the
+        // relaunch is not delivered.
+        notifyStoppedUnexpectedly()
+        appendToCrashFile(
+            crashFile,
+            "Relaunch attempted from a background service; Android may refuse it.",
+        )
 
         Log.i(TAG, "Relaunching main activity (clean restart)")
         try {
@@ -404,14 +461,55 @@ class WatchdogService : Service() {
         // The heartbeat's owner must be gone (or unidentifiable) AND the
         // main process must not be running.
         if (!isMainProcessRunning()) {
-            val markerFile = File(getExternalFilesDir(null), "watchdog/.crash_handled_$heartbeatTs")
-            if (markerFile.exists()) return
-            markerFile.writeText("handled")
             if (heartbeatPid != null && heartbeatPid == Process.myPid()) {
                 // Our own poisoned heartbeat from an old buggy boot — ignore.
                 return
             }
+            // M-7: the single crash claim lives inside onMainProcessDied, so
+            // the binder death and this stale heartbeat report one death once.
             onMainProcessDied("stale heartbeat (ts=$heartbeatTs, pid=$heartbeatPid)")
+        }
+    }
+
+    private fun appendToCrashFile(file: File, line: String) {
+        try {
+            file.appendText("$line\n")
+        } catch (e: Exception) {
+            Log.w(TAG, "could not append to the crash file: ${e.message}")
+        }
+    }
+
+    /** M-7: "Vorv stopped unexpectedly — tap to reopen", posted before the relaunch attempt. */
+    private fun notifyStoppedUnexpectedly() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CRASH_CHANNEL_ID,
+                    "Crash recovery",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply { description = "Tells you Vorv stopped and offers to reopen it" },
+            )
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            val pending = launchIntent?.let {
+                android.app.PendingIntent.getActivity(
+                    this,
+                    0,
+                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+            }
+            val notification = NotificationCompat.Builder(this, CRASH_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle("Vorv stopped unexpectedly")
+                .setContentText("Tap to reopen")
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .apply { if (pending != null) setContentIntent(pending) }
+                .build()
+            nm.notify(CRASH_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not post the crash notification: ${e.message}")
         }
     }
 
