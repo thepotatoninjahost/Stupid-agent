@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import host.vorv.AgentViewModel
@@ -259,16 +260,25 @@ private fun BottomNav(current: String, onChange: (String) -> Unit, modifier: Mod
         color = Background,
     ) {
         Row(
-            modifier = Modifier.padding(8.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp).fillMaxWidth(),
         ) {
             items.forEach { (key, label) ->
                 val selected = current == key
-                TextButton(onClick = { onChange(key) }) {
+                // Seven tabs have to share the width: give each an equal slice and keep
+                // its label on one line. Fixed-width buttons overflowed and wrapped the
+                // last label one letter per line against the screen edge.
+                TextButton(
+                    onClick = { onChange(key) },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp),
+                ) {
                     Text(
                         label,
                         color = if (selected) Primary else OnSurfaceVariant,
                         fontSize = 11.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        textAlign = TextAlign.Center,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                     )
                 }

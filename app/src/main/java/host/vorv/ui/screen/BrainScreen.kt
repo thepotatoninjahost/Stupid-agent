@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -64,7 +66,12 @@ fun BrainScreen(
             Text(view?.headline ?: "Reading the brain…", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Three buttons do not fit on a phone width; without the scroll they were
+            // squeezed and "Refresh" broke in half.
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Button(
                     onClick = onTrainNow,
                     enabled = !state.brainBusy && state.ledgerRows > 0,
