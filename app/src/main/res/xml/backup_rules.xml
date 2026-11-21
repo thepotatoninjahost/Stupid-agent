@@ -19,6 +19,12 @@
     <exclude domain="database" path="vorv.db-wal" />
     <exclude domain="database" path="vorv.db-shm" />
     <exclude domain="sharedpref" path="vorv_secrets.xml" />
+    <!-- H-6 (code review, 2026-11): signed patches and the software signing
+         key never leave the phone; a restored key would sign patches that
+         another install would then apply. -->
+    <exclude domain="file" path="hotpatch" />
+    <exclude domain="file" path="hotpatch_quarantine" />
+    <exclude domain="file" path="patchkeys" />
     <exclude domain="external" path="crash_logs" />
     <exclude domain="external" path="watchdog" />
     <exclude domain="external" path="healer" />

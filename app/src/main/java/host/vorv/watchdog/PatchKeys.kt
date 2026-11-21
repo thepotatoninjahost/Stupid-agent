@@ -174,11 +174,14 @@ object PatchKeys {
 
     private fun trySoftwareKeys(context: Context): Boolean {
         return runCatching {
-            val dir = File(context.filesDir, FALLBACK_DIR)
+            // H-6: the fallback signing key must not be restorable onto
+            // another device, so it lives in noBackupFilesDir, not filesDir.
+            val dir = File(context.noBackupFilesDir, FALLBACK_DIR)
             dir.mkdirs()
-            // filesDir is app-private (0700) on Android — the key material
-            // never leaves it. (Explicit setReadable(false, false) calls
-            // would strip the OWNER's permissions too and break the store.)
+            migrateLegacyFallback(context, dir)
+            // noBackupFilesDir is app-private (0700) on Android — the key
+            // material never leaves the phone. (Explicit setReadable(false,
+            // false) calls would strip the OWNER's permissions too.)
             val privFile = File(dir, FALLBACK_PRIV)
             val pubFile = File(dir, FALLBACK_PUB)
 
@@ -206,6 +209,44 @@ object PatchKeys {
         }.onFailure {
             Log.e(TAG, "Software key backend failed: ${it.message}", it)
         }.getOrDefault(false)
+    }
+
+    /**
+     * H-6: moves a key the old build wrote to filesDir (and therefore into
+     * cloud backup) into [dir]. Both paths are under /data/user/0/<pkg>/.
+     *
+     * The key is parsed before anything is deleted and the moved copy is
+     * parsed again before the old files go, so a failure can only ever leave
+     * the key where it was — never lose the key that signed installed patches.
+     */
+    internal fun migrateLegacyFallback(context: Context, dir: File) {
+        try {
+            val newPriv = File(dir, FALLBACK_PRIV)
+            val newPub = File(dir, FALLBACK_PUB)
+            if (newPriv.exists() && newPub.exists()) return
+            val oldDir = File(context.filesDir, FALLBACK_DIR)
+            val oldPriv = File(oldDir, FALLBACK_PRIV)
+            val oldPub = File(oldDir, FALLBACK_PUB)
+            if (!oldPriv.exists() || !oldPub.exists()) return
+
+            val alg = if (softwareAlgorithm == "Ed25519") "Ed25519" else "EC"
+            val kf = KeyFactory.getInstance(alg)
+            val privBytes = oldPriv.readBytes()
+            val pubBytes = oldPub.readBytes()
+            kf.generatePrivate(PKCS8EncodedKeySpec(privBytes))
+            kf.generatePublic(X509EncodedKeySpec(pubBytes))
+
+            newPriv.writeBytes(privBytes)
+            newPub.writeBytes(pubBytes)
+            kf.generatePrivate(PKCS8EncodedKeySpec(newPriv.readBytes()))
+            kf.generatePublic(X509EncodedKeySpec(newPub.readBytes()))
+
+            oldPriv.delete()
+            oldPub.delete()
+            Log.i(TAG, "moved the software patch key out of backup")
+        } catch (e: Exception) {
+            Log.w(TAG, "could not move the software patch key out of backup: ${e.message}")
+        }
     }
 
     private fun privateKey(context: Context, alg: String): PrivateKey? {
