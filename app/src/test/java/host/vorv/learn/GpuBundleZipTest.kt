@@ -57,6 +57,28 @@ class GpuBundleZipTest {
     }
 
     @Test
+    fun m2_an_oversized_manifest_is_refused_and_nothing_is_written() {
+        val file = zip(
+            mapOf(
+                "vorv/manifest.json" to ByteArray(2 * 1024 * 1024) { 'a'.code.toByte() },
+                "vorv/model.gguf" to payload,
+            )
+        )
+        val out = File(tmp.newFolder(), "model.gguf")
+        val result = GpuBundleZip.read(file, out) as GpuBundleZip.Result.Failed
+        assertTrue(result.message, result.message.contains("oversized or unreadable manifest"))
+        assertTrue("no model may be left behind", !out.exists())
+    }
+
+    @Test
+    fun m2_an_oversized_archive_is_refused_in_words() {
+        val file = tmp.newFile("huge.zip")
+        java.io.RandomAccessFile(file, "rw").use { it.setLength(13L * 1024 * 1024 * 1024) }
+        val result = GpuBundleZip.read(file, File(tmp.newFolder(), "m.gguf")) as GpuBundleZip.Result.Failed
+        assertTrue(result.message, result.message.contains("the largest bundle Vorv imports is 12 GB"))
+    }
+
+    @Test
     fun a_zip_without_a_manifest_is_refused_in_words() {
         val file = zip(mapOf("vorv/model.gguf" to payload))
         val result = GpuBundleZip.read(file, File(tmp.newFolder(), "m.gguf")) as GpuBundleZip.Result.Failed
