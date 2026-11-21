@@ -148,7 +148,7 @@ data class AgentState(
     val localModelReady: Boolean = false,
     val downloadingModel: Boolean = false,
     val downloadProgress: Int = 0,
-    val selectedModelId: String = "qwen7b",
+    val selectedModelId: String = "omnicoder9b",
     val downloadedModelIds: Set<String> = emptySet(),
     val workspaceUri: String = "",
     /** 0.9.18 — which provider the cloud brain uses ("" = the Z.ai preset). */
@@ -616,6 +616,15 @@ class AgentViewModel(
             // One-shot cleanup of orphaned files from prior versions. Safe to
             // call every boot — only deletes files matching the LEGACY list.
             ModelManager.cleanupLegacyModelsDir(appContext)
+            // Owner decision (2026-11): the Qwen 7B/3B weights are deleted from
+            // devices that still hold them, before anything can pull again.
+            ModelManager.cleanupRemovedModels(appContext)
+            // A prefs value from an older build ("qwen7b"/"qwen3b") is not a
+            // model this build has; normalise it once instead of carrying aliases.
+            val stored = prefs.localModelId.first()
+            if (ModelChoice.entries.none { it.id == stored }) {
+                prefs.setLocalModelId(ModelChoice.OMNICODER9B.id)
+            }
             val downloaded = mutableListOf<ModelChoice>()
             for (m in ModelChoice.entries) {
                 if (ModelManager.isDownloaded(m)) downloaded.add(m)
@@ -1459,11 +1468,11 @@ class AgentViewModel(
             val why = resolved.reason ?: "no brain is configured yet"
             val hint = if (s.llmMode == "local") {
                 "I cannot answer: $why\n\nOpen Setup → download the on-phone coder " +
-                    "(4.4 GB for the 7B, one time), or add a cloud key there. Then I work."
+                    "(5.31 GB for OmniCoder-9B, one time), or add a cloud key there. Then I work."
             } else {
                 "I cannot answer: $why\n\nTwo ways to give me a brain:\n\n" +
                     "1. Setup → your provider key → Save & Test (a real reply is required before it counts).\n" +
-                    "2. Setup → download the on-phone coder (~4.4 GB, one time) — offline, no key.\n\n" +
+                    "2. Setup → download the on-phone coder (~5.31 GB, one time) — offline, no key.\n\n" +
                     "Setup → Brain health lists every piece and what is wrong with it."
             }
             val echo = ChatMessage(role = "user", content = trimmed)

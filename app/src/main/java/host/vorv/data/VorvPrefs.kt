@@ -55,8 +55,12 @@ class VorvPrefs(private val context: Context) {
      */
     val cloudCustomModel: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_CUSTOM_MODEL] ?: "" }
 
-    /** "qwen7b" | "qwen3b" — which local model to use when llmMode = "local". */
-    val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "qwen7b" }
+    /**
+     * Which local model to use when llmMode = "local". Only "omnicoder9b"
+     * exists in this build; an id from an older build is mapped to it by
+     * ModelChoice.fromId and rewritten once by the boot scan.
+     */
+    val localModelId: Flow<String> = context.vorvPrefs.data.map { it[LOCAL_MODEL_ID] ?: "omnicoder9b" }
 
     /** 0.9.18 — which cloud provider is selected ("" = the Z.ai preset). */
     val cloudProviderId: Flow<String> = context.vorvPrefs.data.map { it[CLOUD_PROVIDER_ID] ?: "" }

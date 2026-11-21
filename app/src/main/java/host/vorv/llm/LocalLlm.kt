@@ -21,11 +21,9 @@ import com.geniex.sdk.bean.SamplerConfig
  *   as automatic fallbacks.
  * - Loads standard GGUF files at runtime via the llama_cpp plugin.
  *
- * MODELS:
- * - Default: Qwen2.5-Coder-7B-Instruct Q4_0, 4,444,121,888 bytes (4.44 GB)
- *   from bartowski/Qwen2.5-Coder-7B-Instruct-GGUF.
- * - Fallback: Qwen2.5-Coder-3B-Instruct Q4_0, 1,828,486,400 bytes (1.83 GB)
- *   from bartowski/Qwen2.5-Coder-3B-Instruct-GGUF.
+ * MODEL:
+ * - OmniCoder-9B Q4_0, 5,313,356,096 bytes (5.31 GB), from
+ *   Tesslate/OmniCoder-9B-GGUF. It is the only on-device model.
  *
  * COMPUTE: compute_unit=NPU via ComputeUnitValue.NPU.value.
  *
@@ -36,7 +34,7 @@ import com.geniex.sdk.bean.SamplerConfig
 class LocalLlm(
     private val appContext: Context,
     private val modelChoice: ModelChoice,
-    private val displayLabel: String = "Qwen2.5-Coder-7B-Instruct (NPU, offline)",
+    private val displayLabel: String = "OmniCoder-9B (NPU, offline)",
 ) : Llm {
 
     @Volatile private var cpuFallback = false

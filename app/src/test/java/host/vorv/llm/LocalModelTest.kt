@@ -51,12 +51,12 @@ class LocalModelTest {
     fun `a stored id maps back to itself and an unknown id is not silently accepted`() {
         ModelChoice.entries.forEach { assertEquals(it, ModelChoice.fromId(it.id)) }
         // Unknown ids fall back to the documented default rather than a null engine.
-        assertEquals(ModelChoice.QWEN_7B, ModelChoice.fromId("not-a-model"))
+        assertEquals(ModelChoice.OMNICODER9B, ModelChoice.fromId("not-a-model"))
     }
 
     @Test
-    fun `the repair ladder prefers the 7B and names the 3B when it is the only one`() {
-        assertTrue(ModelManager.repairLabel(ModelChoice.QWEN_3B, "fix").contains("7B not downloaded"))
-        assertTrue(!ModelManager.repairLabel(ModelChoice.QWEN_7B, "fix").contains("not downloaded"))
+    fun `there is exactly one on-device model and it is Q4_0`() {
+        assertEquals(1, ModelChoice.entries.size)
+        assertEquals("Q4_0", ModelChoice.entries.single().precision)
     }
 }

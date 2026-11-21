@@ -7,7 +7,7 @@ import com.google.gson.JsonParser
  * Parses raw local-LLM output into either a tool-call request or a final
  * answer (audit finding H-6: extracted from LocalLlm so it is unit-testable).
  *
- * Qwen2.5-Coder's chat template emits OpenAI-style tool calls as:
+ * The on-device model's chat template emits OpenAI-style tool calls as:
  *   <tool>{"name": "...", "arguments": {...}}</tool>
  *
  * Fallback plain format (system-prompt-driven):
@@ -55,7 +55,7 @@ object ToolCallParser {
         }
 
         // 2.5. Markdown-fenced or bare-JSON tool call.
-        //      Qwen2.5-Coder via GenieX sometimes emits tool calls as:
+        //      The on-device model via GenieX sometimes emits tool calls as:
         //        ```json
         //        {"name": "js_exec", "arguments": {"code": "..."}}
         //        ```
@@ -194,7 +194,7 @@ object ToolCallParser {
     /**
      * Parses tool calls emitted as markdown-fenced JSON or bare JSON.
      *
-     * Observed from Qwen2.5-Coder via GenieX (on-device, S25):
+     * Observed from the on-device model via GenieX:
      *   - Single fenced object:  ```json\n{"name":...,"arguments":{...}}\n```
      *   - Fenced array:           ```json\n[{...},{...}]\n```
      *   - Double-fenced (rare):   ```json\n```json\n{...}\n```\n```

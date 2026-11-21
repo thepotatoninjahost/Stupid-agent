@@ -32,7 +32,7 @@ class BrainChoiceResolveTest {
         keyReadError = keyError,
         lastProbe = probe,
         lastExchange = exchange,
-        localModelId = "qwen7b",
+        localModelId = "omnicoder9b",
         localModelName = "Qwen2.5-Coder-7B-Instruct",
         localDownloaded = local,
     )
