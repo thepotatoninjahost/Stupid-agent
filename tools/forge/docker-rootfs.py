@@ -139,7 +139,11 @@ def main():
                     # of copying the name through.
                     if name.startswith("/") or ".." in name.split("/"):
                         raise SystemExit("layer member escapes the rootfs: %r" % member.name)
-                    if not name or name in ("dev", "proc", "sys") or name.startswith(SKIP_PREFIXES):
+                    # "." is the image's own root entry; the layer always
+                    # carries one and it must not be copied, or the packed
+                    # filesystem stops matching the shipped fingerprint.
+                    if not name or name == "." or name in ("dev", "proc", "sys") \
+                            or name.startswith(SKIP_PREFIXES):
                         continue
                     if member.isfile():
                         out.addfile(member, tar.extractfile(member))
