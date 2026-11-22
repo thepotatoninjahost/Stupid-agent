@@ -1,3 +1,17 @@
+# The forge's inventory is generated, and actually verified (2026-11-22)
+
+`ToolchainManifest` (parse + sha256 verification) had no production caller, and
+`ForgeProbe`'s "Inventory" gate only asked whether `files/forge/toolchain.manifest`
+existed — a file no build ever produced. So the gate could never pass and the
+inventory the docs promise was never checked: "build an app on the phone" was
+dead on arrival, reported as "toolchain.manifest missing".
+
+The build now writes `assets/forge/toolchain.manifest` from the payload in the
+tree (`:app:syncToolchainManifest`, 23 files: name, sha256, size), and the gate
+parses it and verifies every entry against the provisioned files, naming the
+first problems when they do not match. The result is cached per payload stamp,
+because hashing ~250 MB on every readiness check would be a stall.
+
 # Provider answers stay out of cloud backup (2026-11-22)
 
 Brain health keeps the last provider URL and up to 600 characters of its raw
