@@ -38,7 +38,7 @@ import java.io.File
  *  - persistence goes through [KernelEventSink], so the kernel is
  *    unit-testable without Room (H-6)
  *
- * v0.6.9 (audit M-2) — history compaction: the local engine's nCtx is 4096
+ * v0.6.9 (audit M-2) — history compaction: the local engine's nCtx is 8192
  * with 2048 output tokens reserved; conversations that grow every iteration
  * used to overflow it opaquely. The kernel now estimates the prompt size
  * per iteration (chars/4 ≈ tokens) against llm.contextTokenBudget and, when
@@ -245,7 +245,7 @@ class CognitiveKernel(
                 val resp = try {
                     // M-2: compact history to the engine's honest budget right
                     // before every call — growth without bound used to overflow
-                    // the 4096-token context opaquely.
+                    // the context opaquely.
                     compactHistoryIfNeeded(messages, llm.contextTokenBudget)
                     llm.step(messages, toolSpecs)
                 } catch (e: CancellationException) {

@@ -16,7 +16,7 @@ package host.vorv.kernel
  * Constraints: KernelApi.run's signature is FROZEN (SessionGrants — a
  * signature change would crash every previously-approved patch), so history
  * rides INSIDE the prompt string. Budgets are honest per engine: the local
- * engine's nCtx is 4096 with 2048 output reserved — a fat history would
+ * engine's nCtx is 8192 with 2048 output reserved — a fat history would
  * blow the input budget, so local gets a small window and heavy per-message
  * truncation; cloud gets a wider one. Long-term memory stays in
  * memory_recall — this is short-term continuity only.

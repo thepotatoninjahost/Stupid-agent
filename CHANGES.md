@@ -1,3 +1,25 @@
+# The local window is 8192, and the reply fits what is left (2026-11-22)
+
+"Run a self diagnostics" (three words) came back as `LLM error: GenieX stream
+failed: LLM generate failed: Input prompt too long`.
+
+- **Cause:** two numbers disagreed. The engine was told the window is 4096, and
+  every generation asked for 2048 of it — but the prompt is not three words: it
+  is the 2.7 KB system prompt plus the 2.3 KB tool roster, and the chat template
+  renders the tool schemas on top of that. The prompt alone could exceed what was
+  left, so the three-word message was the last straw, not the cause.
+- **New:** `N_CTX` is 8192 (prompt budget 5896) so the standing prompt and the
+  reply both fit. The reply allowance is computed from the room left, not fixed
+  at 2048, so a long tool schema cannot silently push the request past the
+  window. If the prompt leaves no room at all, the error names both numbers
+  instead of forwarding the engine's one-liner.
+- **Load order:** NPU at 8192, then CPU at 8192, then NPU at 4096, then CPU at
+  4096. A smaller window is stated in the header label ("— 4096-token window")
+  rather than passed off as the full one.
+- **Unverified:** the 8192 window on the S25's Hexagon NPU is not proven here; it
+  needs the next APK on the phone. If the NPU refuses it, the label will say
+  "CPU fallback" — honest, but slower.
+
 # A 200 with an empty answer is not "model retired" (2026-11-22)
 
 The owner's key test on `qwen/qwen3-coder` said "HTTP 200 but the reply carried
