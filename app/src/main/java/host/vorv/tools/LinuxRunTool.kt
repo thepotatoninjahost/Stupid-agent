@@ -78,7 +78,10 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
             }
 
             val shell = guest.run(command, budget, emptyList(), "/root")
-            if (!shell.timedOut) SessionGrants.markShellVerified()
+            // "Verified" means the technical gate let a command through and it
+            // ran. A provision failure returns ok=false with timedOut=false, and
+            // marking that verified would open the gate on nothing.
+            if (shell.ok) SessionGrants.markShellVerified()
             val header = when {
                 shell.ok -> "exit 0"
                 shell.timedOut -> "TIMEOUT — stopped after ${budget}ms"

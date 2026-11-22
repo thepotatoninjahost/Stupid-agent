@@ -128,6 +128,9 @@ class ShellTool(
             )
         }
 
+        // Only a command that actually ran proves the shell works; a non-zero
+        // exit still proves it ran, so the gate opens on exit codes but not on
+        // "could not start".
         SessionGrants.markShellVerified()
         val out = capWithMarker(shell.output.trimEnd(), MAX_OUTPUT_CHARS)
         ToolResult(
