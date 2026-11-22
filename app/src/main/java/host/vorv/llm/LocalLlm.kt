@@ -39,6 +39,9 @@ class LocalLlm(
 
     @Volatile private var cpuFallback = false
 
+    /** Window the engine actually got. A smaller one is said out loud. */
+    @Volatile private var loadedCtx = N_CTX
+
     /** Set when a trained generation was the first choice and would not load. */
     @Volatile private var championFailure: String? = null
 
@@ -53,10 +56,11 @@ class LocalLlm(
         get() {
             val silicon = if (cpuFallback) " (CPU fallback)" else ""
             val failed = championFailure
+            val window = if (loadedCtx < N_CTX) " — $loadedCtx-token window" else ""
             return when {
                 failed != null -> "$displayLabel$silicon — trained generation did not load ($failed)"
-                servingGeneration > 0 -> "your trained model, generation $servingGeneration$silicon"
-                else -> "$displayLabel$silicon"
+                servingGeneration > 0 -> "your trained model, generation $servingGeneration$silicon$window"
+                else -> "$displayLabel$silicon$window"
             }
         }
 
@@ -75,14 +79,40 @@ class LocalLlm(
     val modelId: String get() = modelChoice.id
 
     companion object {
-        /** Context the engine allocates. */
-        const val N_CTX = 4096
+        /**
+         * Context the engine allocates.
+         *
+         * 4096 was too small for this agent: the system prompt alone is ~2.7 KB
+         * and the tool roster ~2.3 KB, and the chat template renders the tool
+         * SCHEMAS on top of that — so "input prompt too long" could fire on a
+         * three-word message. 8192 gives the prompt room AND keeps the 2048
+         * output reserve.
+         */
+        const val N_CTX = 8192
+        /** Window tried when the NPU cannot allocate [N_CTX]. */
+        const val FALLBACK_N_CTX = 4096
         /** Output reserve: file_write payloads need 2048 (audit M-1). */
         const val MAX_OUTPUT_TOKENS = 2048
         /** Chat template + BOS/EOS overhead measured on a 2-message prompt. */
         const val TEMPLATE_MARGIN = 248
         /** Prompt tokens the kernel may use: the rest of the window. */
         const val CONTEXT_BUDGET = N_CTX - MAX_OUTPUT_TOKENS - TEMPLATE_MARGIN
+        /** Below this much room left for a reply, the prompt itself is the problem. */
+        const val MIN_OUTPUT_TOKENS = 256
+        /** The kernel's own heuristic (CognitiveKernel: chars/4 ≈ tokens). */
+        const val CHARS_PER_TOKEN = 4.0
+        /** Tokens kept clear so the estimate can never be exactly at the edge. */
+        const val PROMPT_SAFETY = 64
+
+        /**
+         * Output allowance that fits the rest of the window, or null when the
+         * prompt leaves no usable room. Pure, so the arithmetic is pinned by a
+         * unit test instead of only discovered on a phone.
+         */
+        fun replyTokensFor(promptTokens: Int, ctx: Int): Int? {
+            val room = ctx - promptTokens - PROMPT_SAFETY
+            return if (room < MIN_OUTPUT_TOKENS) null else minOf(MAX_OUTPUT_TOKENS, room)
+        }
     }
 
     @Volatile private var llmWrapper: LlmWrapper? = null
@@ -154,29 +184,58 @@ class LocalLlm(
 
     /** One build attempt with an explicit model file, NPU then CPU. */
     private suspend fun buildEngine(modelPath: String, tokenizerPath: String?): Result<LlmWrapper> {
-        fun input(unit: String?) = LlmCreateInput(
+        fun input(unit: String?, ctx: Int) = LlmCreateInput(
             model_path = modelPath,
             tokenizer_path = tokenizerPath ?: "",
-            config = ModelConfig(nCtx = N_CTX, nThreads = 4, nGpuLayers = 0),
+            config = ModelConfig(nCtx = ctx, nThreads = 4, nGpuLayers = 0),
             runtime_id = "llama_cpp",
             compute_unit = unit,
         )
-        val npu = LlmWrapper.builder().llmCreateInput(input(ComputeUnitValue.NPU.value)).build()
-        if (npu.isSuccess) return npu
-        val npuError = npu.exceptionOrNull()
-        Log.w("Vorv/LocalLlm", "NPU build failed (${npuError?.message}); retrying on CPU", npuError)
-        val cpu = LlmWrapper.builder().llmCreateInput(input(ComputeUnitValue.CPU.value)).build()
-        return if (cpu.isSuccess) {
-            cpuFallback = true
-            cpu
-        } else {
-            cpuFallback = false
-            Result.failure(
-                IllegalStateException(
-                    "NPU: ${npuError?.message}; CPU: ${cpu.exceptionOrNull()?.message}",
-                ),
-            )
+        suspend fun attempt(unit: String?, ctx: Int): Result<LlmWrapper> =
+            LlmWrapper.builder().llmCreateInput(input(unit, ctx)).build()
+
+        // Full window first; only if BOTH units refuse it does the smaller
+        // window come back — and then the label says so, because a 4096-token
+        // engine that pretends to be 8192 is how "prompt too long" surprises
+        // the owner again.
+        val npu = attempt(ComputeUnitValue.NPU.value, N_CTX)
+        if (npu.isSuccess) {
+            loadedCtx = N_CTX
+            return npu
         }
+        val npuError = npu.exceptionOrNull()
+        Log.w("Vorv/LocalLlm", "NPU build at $N_CTX failed (${npuError?.message}); retrying on CPU", npuError)
+        val cpu = attempt(ComputeUnitValue.CPU.value, N_CTX)
+        if (cpu.isSuccess) {
+            cpuFallback = true
+            loadedCtx = N_CTX
+            return cpu
+        }
+        val cpuError = cpu.exceptionOrNull()
+        Log.w("Vorv/LocalLlm", "CPU build at $N_CTX failed (${cpuError?.message}); retrying at $FALLBACK_N_CTX", cpuError)
+
+        val npuSmall = attempt(ComputeUnitValue.NPU.value, FALLBACK_N_CTX)
+        if (npuSmall.isSuccess) {
+            cpuFallback = false
+            loadedCtx = FALLBACK_N_CTX
+            Log.w("Vorv/LocalLlm", "running at $FALLBACK_N_CTX tokens of context; the long prompt may not fit")
+            return npuSmall
+        }
+        val cpuSmall = attempt(ComputeUnitValue.CPU.value, FALLBACK_N_CTX)
+        if (cpuSmall.isSuccess) {
+            cpuFallback = true
+            loadedCtx = FALLBACK_N_CTX
+            Log.w("Vorv/LocalLlm", "running on CPU at $FALLBACK_N_CTX tokens of context")
+            return cpuSmall
+        }
+        cpuFallback = false
+        return Result.failure(
+            IllegalStateException(
+                "NPU: ${npuError?.message}; CPU: ${cpuError?.message}; " +
+                    "also failed at $FALLBACK_N_CTX (NPU: ${npuSmall.exceptionOrNull()?.message}; " +
+                    "CPU: ${cpuSmall.exceptionOrNull()?.message})",
+            ),
+        )
     }
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
@@ -210,10 +269,24 @@ class LocalLlm(
             error("GenieX applyChatTemplate failed: ${it.message}")
         }
 
+        // The window is finite and the prompt is not small: the system prompt
+        // with the tool schemas can be a few thousand tokens before the user
+        // has typed anything. Reserve the reply inside what is LEFT, instead of
+        // asking for 2048 on top of a prompt that already exceeds the window —
+        // that mismatch is what GenieX reported as "Input prompt too long" for
+        // a three-word message.
+        val promptTokens = estimateTokens(template.formattedText)
+        val replyTokens = replyTokensFor(promptTokens, loadedCtx)
+            ?: throw IllegalStateException(
+                "The prompt is about $promptTokens tokens and this model's window is $loadedCtx, " +
+                    "so there is no room to answer (needs at least $MIN_OUTPUT_TOKENS). " +
+                    "Start a new chat to drop the history, or free memory so the full $N_CTX-token window loads.",
+            )
+
         val generationConfig = GenerationConfig().apply {
             // 2048, not 768: long file_write payloads were getting truncated
             // mid-JSON (audit finding M-1), producing unparseable tool calls.
-            maxTokens = 2048
+            maxTokens = replyTokens
             samplerConfig = SamplerConfig().apply {
                 temperature = 0.2f
                 topP = 0.9f
@@ -248,6 +321,9 @@ class LocalLlm(
         // hijacked into a phantom tool call.
         return ToolCallParser.parse(sb.toString().trim(), tools.map { it.name }.toSet())
     }
+
+    private fun estimateTokens(text: String): Int =
+        kotlin.math.ceil(text.length / CHARS_PER_TOKEN).toInt()
 
     private fun buildToolsJson(tools: List<Llm.ToolSpec>): String {
         val arr = com.google.gson.JsonArray()

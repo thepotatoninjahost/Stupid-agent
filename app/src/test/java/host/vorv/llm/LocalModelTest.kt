@@ -13,7 +13,10 @@ class LocalModelTest {
         assertTrue(
             LocalLlm.CONTEXT_BUDGET + LocalLlm.MAX_OUTPUT_TOKENS <= LocalLlm.N_CTX,
         )
-        assertEquals(1800, LocalLlm.CONTEXT_BUDGET)
+        // 8192 window − 2048 output − 248 template margin. Pinned because the
+        // 4096 window this replaced is exactly what produced "Input prompt too
+        // long" on a three-word message (system prompt + tool schemas).
+        assertEquals(5896, LocalLlm.CONTEXT_BUDGET)
     }
 
     @Test
