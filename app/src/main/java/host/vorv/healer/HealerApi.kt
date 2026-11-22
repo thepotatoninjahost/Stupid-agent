@@ -56,6 +56,13 @@ data class HealRequest(
     val diagnostics: String = "",
     val targetClass: String? = null,
     val patchIdPrefix: String = "heal",
+    /**
+     * The classes an approved plan covers. Null = no plan (legacy callers).
+     * When set, a repair that would change any other class is refused BEFORE
+     * the model writes code: the owner approved these steps, so the heal is
+     * not allowed to widen them.
+     */
+    val allowedTargets: Set<String>? = null,
 )
 
 /** Proposal shown to the user for APPROVE/DENY before anything applies. */

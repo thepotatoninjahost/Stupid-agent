@@ -56,7 +56,15 @@ class SelfFixToolTest {
     @Test
     fun `no workspace is an honest actionable error`() = runBlocking {
         val r = tool.run(
-            JsonObject().apply { addProperty("problem", "NotifyTool crashes when the title is empty") },
+            JsonObject().apply {
+                addProperty("problem", "NotifyTool crashes when the title is empty")
+                add("steps", com.google.gson.JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("target_class", "host.vorv.tools.NotifyTool")
+                        addProperty("change", "Guard the title against empty strings.")
+                    })
+                })
+            },
             ctx(confirm = { true }, workspaceUri = null),
         )
         assertFalse(r.ok)
@@ -67,88 +75,72 @@ class SelfFixToolTest {
     fun `schema requires the problem field`() {
         val schema = tool.schema()
         assertTrue(schema.get("required").asJsonArray.toString().contains("problem"))
+        assertTrue(schema.toString().contains("steps"))
         assertTrue(schema.toString().contains("target_class"))
     }
 
-    /**
-     * v0.6.11 (audit N-I4): the approval dialog shows the FULL 64-char
-     * SHA-256 — never a truncated prefix with an ellipsis. The user
-     * approves exactly what they see, and they see all of it.
-     */
     @Test
-    fun `approval message shows the full SHA-256 and never truncates`() {
-        val sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        val msg = tool.approvalMessage(
-            host.vorv.healer.PatchProposal(
-                patchId = "fix-001",
-                targetClass = "host.vorv.tools.NotifyTool",
-                description = "Guard the title against empty strings.",
-                sha256 = sha,
-                signature = "sig",
-                surfaceVerified = true,
-                attempts = 1,
-            )
+    fun `a fix with no named class is refused as no plan`() = runBlocking {
+        val r = tool.run(
+            JsonObject().apply { addProperty("problem", "NotifyTool crashes when the title is empty") },
+            ctx(confirm = { true }, workspaceUri = "content://tree/primary::Vorv"),
         )
-        assertTrue("the full 64-char hash must appear", msg.contains(sha))
-        assertTrue("must be labeled SHA-256", msg.contains("SHA-256"))
-        assertFalse("no ellipsis anywhere", msg.contains("…"))
-        assertFalse("no take() leftovers", msg.contains("take("))
+        assertFalse(r.ok)
+        assertTrue(r.error!!.contains("No plan"))
+        assertFalse("nothing may be generated from an unnamed plan", r.output.contains("APPROVED"))
     }
 
-    /**
-     * C-2: an unverified proposal must not read as "verified", and a verified
-     * one must not be the only text that exists.
-     */
     @Test
-    fun `approval message states verification honestly`() {
-        fun msg(verified: Boolean) = tool.approvalMessage(
-            host.vorv.healer.PatchProposal(
-                patchId = "fix-002",
-                targetClass = "host.vorv.tools.NotifyTool",
-                description = "Guard the title against empty strings.",
-                sha256 = "b".repeat(64),
-                signature = "sig",
-                surfaceVerified = verified,
-                attempts = 1,
-            )
-        )
-        val verified = msg(true)
-        val unverified = msg(false)
-        assertTrue(verified.contains("Verified: full public API kept"))
-        assertTrue(verified.contains("replaces the original at the next app start"))
-        assertTrue(unverified.contains("Verified: NOT verified"))
-        assertFalse(
-            "unverified text must not promise replacement",
-            unverified.contains("replaces the original"),
-        )
-        assertTrue(unverified.contains("may not replace the running class"))
+    fun `a plan naming a class outside the dispatch surface is refused`() {
+        val input = JsonObject().apply {
+            addProperty("problem", "The launcher icon is the wrong shade of yellow")
+            add("steps", com.google.gson.JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("target_class", "host.vorv.ui.screen.HomeScreen")
+                    addProperty("change", "Use the other yellow.")
+                })
+            })
+        }
+        val (steps, error) = tool.parseSteps(input, "The launcher icon is the wrong shade of yellow")
+        assertTrue(steps == null)
+        assertTrue(error!!.contains("cannot be patched"))
     }
 
-    /** C-2: the success message the model reads must match what happened. */
     @Test
-    fun `success text only claims VERIFIED when the check ran`() {
-        val verified = tool.formatResult(
-            host.vorv.healer.HealResult(
-                true, patchId = "fix-003", targetClass = "host.vorv.tools.NotifyTool",
-                surfaceVerified = true,
-            ),
-            t0 = 0L, modelLabel = "OmniCoder-9B",
-        )
-        assertTrue(verified.output.contains("VERIFIED (complete public API kept)"))
-        assertTrue(verified.output.contains("The patch class is the one that will load."))
+    fun `a plan step has to say what changes`() {
+        val input = JsonObject().apply {
+            addProperty("problem", "NotifyTool crashes when the title is empty")
+            add("steps", com.google.gson.JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("target_class", "host.vorv.tools.NotifyTool")
+                    addProperty("change", "fix")
+                })
+            })
+        }
+        val (steps, error) = tool.parseSteps(input, "NotifyTool crashes when the title is empty")
+        assertTrue(steps == null)
+        assertTrue(error!!.contains("does not say what changes"))
+    }
 
-        val unverified = tool.formatResult(
-            host.vorv.healer.HealResult(
-                true, patchId = "fix-004", targetClass = "host.vorv.tools.NotifyTool",
-                surfaceVerified = false,
-            ),
-            t0 = 0L, modelLabel = "OmniCoder-9B",
-        )
-        assertFalse(
-            "unverified success text must never say VERIFIED: ${unverified.output}",
-            unverified.output.contains("VERIFIED"),
-        )
-        assertTrue(unverified.output.contains("the public-API check did not run"))
-        assertFalse(unverified.output.contains("The patch class is the one that will load."))
+    @Test
+    fun `a valid plan keeps every step and its text`() {
+        val input = JsonObject().apply {
+            addProperty("problem", "NotifyTool crashes when the title is empty")
+            add("steps", com.google.gson.JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("target_class", "host.vorv.tools.NotifyTool")
+                    addProperty("change", "Guard the title against empty strings.")
+                })
+                add(JsonObject().apply {
+                    addProperty("target_class", "host.vorv.tools.ScheduleTool")
+                    addProperty("change", "Keep entries whose time is midnight.")
+                })
+            })
+        }
+        val (steps, error) = tool.parseSteps(input, "NotifyTool crashes when the title is empty")
+        assertTrue(error == null)
+        assertTrue(steps!!.size == 2)
+        assertTrue(steps[0].change == "Guard the title against empty strings.")
+        assertTrue(steps[1].targetClass == "host.vorv.tools.ScheduleTool")
     }
 }

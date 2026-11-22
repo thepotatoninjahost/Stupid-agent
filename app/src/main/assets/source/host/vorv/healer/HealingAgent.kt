@@ -192,6 +192,17 @@ class HealingAgent(
                     "target_class was given. Name one of the dispatchable classes explicitly.")
         }
 
+        // The owner approved a PLAN, not a direction of travel: a repair that
+        // would touch a class outside it is refused here, before any model
+        // time is spent and before anything is signed.
+        val plan = request.allowedTargets
+        if (plan != null && targetClass !in plan) {
+            return HealResult(false, error =
+                "not in the approved plan: the plan covers ${plan.sorted().joinToString()}, " +
+                    "and this repair would change $targetClass. Nothing was changed and the " +
+                    "plan was not widened.")
+        }
+
         // ---- 2. source for the target (multi-class files handled) ----
         val sourceFile = findSourceFileFor(targetClass)
         val buggySource = sourceFile?.let { readAsset(it) }

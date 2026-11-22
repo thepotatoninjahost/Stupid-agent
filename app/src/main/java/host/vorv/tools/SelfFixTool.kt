@@ -5,11 +5,13 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import host.vorv.VorvApplication
 import host.vorv.data.VorvPrefs
+import host.vorv.healer.FixPlan
+import host.vorv.healer.FixStep
 import host.vorv.healer.HealRequest
 import host.vorv.healer.HealerApi
-import host.vorv.healer.HealResult
 import host.vorv.healer.HealingAgent
-import host.vorv.healer.PatchProposal
+import host.vorv.healer.PlanStore
+import host.vorv.healer.consentText
 import host.vorv.llm.LocalLlm
 import host.vorv.llm.ModelManager
 import host.vorv.watchdog.PatchRegistry
@@ -64,14 +66,15 @@ class SelfFixTool(
         "Fix or modify Vorv's OWN code. Use it for ANY problem with Vorv itself: a crash, " +
             "an error, a tool misbehaving, or any change the user asks for (" +
             "e.g. 'make notify use a different sound', 'fix the bug where schedule " +
-            "loses entries'). The fix is generated with the on-device coder model, " +
-            "compiled on device, verified to keep the complete public API of the class, " +
-            "cryptographically signed, and shown to the user for approval BEFORE it is " +
-            "applied; it becomes active at the next app start, and is rolled back " +
-            "automatically if the app crashes in the patched class. Requires: a coder " +
+            "loses entries'). Name the steps: which classes change and what changes in " +
+            "each. The user approves the PLAN once (one dialog listing every step), then " +
+            "each step is written by the on-device coder model, compiled on device, " +
+            "verified to keep the complete public API of the class, and signed. Nothing " +
+            "outside the plan is touched — a repair for another class is refused, not " +
+            "added. Approved patches become active at the next app start and are rolled " +
+            "back automatically if the app crashes in the patched class. Requires: a coder " +
             "model downloaded (OmniCoder-9B writes the repairs) and the app's own " +
-            "compiler (tools/forge/fetch-runtime.sh). No workspace folder and no other " +
-            "app are needed."
+            "compiler (tools/forge/fetch-runtime.sh)."
 
     /** Model load + 3 attempts (LLM + on-device compile) + verification — 15 min,
      * matching the healer's TOTAL_HEAL_BUDGET_MS and the local task timeout. */
@@ -89,13 +92,34 @@ class SelfFixTool(
                     "error, crash, misbehavior, or desired modification, described " +
                     "precisely (what happens, what should happen instead).")
             })
+            add("steps", JsonObject().apply {
+                addProperty("type", "array")
+                addProperty("description", "The plan, one entry per class that will change " +
+                    "(at most 3). Each step runs exactly as written; the user approves this " +
+                    "list once and nothing outside it is touched.")
+                add("items", JsonObject().apply {
+                    addProperty("type", "object")
+                    add("properties", JsonObject().apply {
+                        add("target_class", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("description", "Fully-qualified class, e.g. " +
+                                "host.vorv.tools.NotifyTool. Only the dispatchable classes can " +
+                                "be patched (the agent tools, host.vorv.kernel.CognitiveKernel, " +
+                                "host.vorv.healer.HealingAgent).")
+                        })
+                        add("change", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("description", "What changes in that class, in one " +
+                                "precise sentence. This is what the user approves.")
+                        })
+                    })
+                    add("required", JsonArray().apply { add("target_class"); add("change") })
+                })
+            })
             add("target_class", JsonObject().apply {
                 addProperty("type", "string")
-                addProperty("description", "Optional fully-qualified class to patch, e.g. " +
-                    "host.vorv.tools.ShellTool. Only the 19 dispatchable classes can be " +
-                    "patched (the agent tools, host.vorv.kernel.CognitiveKernel, " +
-                    "host.vorv.healer.HealingAgent). If omitted, the healer infers the " +
-                    "target from the problem.")
+                addProperty("description", "Shortcut for a one-step plan: the single class to " +
+                    "patch. Ignored when 'steps' is given.")
             })
             add("diagnostics", JsonObject().apply {
                 addProperty("type", "string")
@@ -123,8 +147,15 @@ class SelfFixTool(
                     "change (at least a full sentence).",
             )
         }
-        val targetClass = input.get("target_class")?.takeIf { !it.isJsonNull }?.asString?.trim()
-            ?.takeIf { it.isNotBlank() }
+        // The plan: the classes that will change and what changes in each.
+        // The owner approves this list ONCE; the run below executes it and
+        // refuses any repair outside it.
+        val parsed = parseSteps(input, problem)
+        val planError = parsed.second
+        if (planError != null) {
+            return ToolResult(ok = false, output = "", durationMs = elapsed(t0), error = planError)
+        }
+        val steps = parsed.first.orEmpty()
         val diagnostics = input.get("diagnostics")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
             .take(4000)
 
@@ -209,17 +240,82 @@ class SelfFixTool(
                 appContext, llm,
             ) ?: HealingAgent(appContext, llm)
 
-            val result = healer.modify(
-                HealRequest(
-                    problem = problem,
-                    diagnostics = diagnostics,
-                    targetClass = targetClass,
-                    patchIdPrefix = "fix",
-                ),
-                workspaceUri,
-            ) { proposal -> confirm(approvalMessage(proposal)) }
+            val plan = FixPlan(
+                id = PlanStore.newId(),
+                title = input.get("title")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                    ?.takeIf { it.isNotBlank() } ?: problem.lineSequence().first().take(90),
+                problem = problem,
+                steps = steps,
+            )
+            // Fail closed: a plan that cannot be written down cannot be
+            // approved or audited, so nothing runs.
+            if (PlanStore.save(appContext, plan) == null) {
+                return ToolResult(
+                    ok = false, output = "", durationMs = elapsed(t0),
+                    error = "could not write the plan to storage — nothing was run " +
+                        "(no approval was recorded, so no patch may exist).",
+                )
+            }
 
-            formatResult(result, t0, llm.label)
+            // ONE question, about the whole plan.
+            if (!confirm(planMessage(plan))) {
+                PlanStore.decide(appContext, plan.id, approved = false, note = "owner denied the plan")
+                return ToolResult(
+                    ok = false, output = "", durationMs = elapsed(t0),
+                    error = "The user DENIED the plan ${plan.id} — nothing was generated, " +
+                        "nothing was changed. Do not retry these same steps: either drop the " +
+                        "idea or propose a different plan.",
+                )
+            }
+            PlanStore.decide(appContext, plan.id, approved = true)
+
+            val lines = StringBuilder()
+            lines.appendLine("Plan ${plan.id} APPROVED by the user — executing its ${plan.steps.size} step(s).")
+            var ran = 0
+            var stopped = false
+            for (step in plan.steps) {
+                val result = healer.modify(
+                    HealRequest(
+                        problem = problem + "\n\nApproved plan step ${step.index} of " +
+                            "${plan.steps.size}: ${step.change}",
+                        diagnostics = diagnostics,
+                        targetClass = step.targetClass,
+                        patchIdPrefix = "plan",
+                        allowedTargets = plan.targetClasses,
+                    ),
+                    workspaceUri,
+                ) { true }
+                ran++
+                if (result.success) {
+                    PlanStore.recordStep(appContext, plan.id, step.index, "patched", result.patchId, null)
+                    val how = if (result.surfaceVerified) {
+                        "public API kept, signed"
+                    } else {
+                        "signed; the public-API check did not run"
+                    }
+                    lines.appendLine("• step ${step.index} ${step.targetClass} — patched as ${result.patchId} ($how)")
+                } else {
+                    PlanStore.recordStep(appContext, plan.id, step.index, "failed", null, result.error)
+                    lines.appendLine(
+                        "• step ${step.index} ${step.targetClass} — FAILED: ${result.error ?: "unknown"}",
+                    )
+                    stopped = true
+                    break
+                }
+            }
+            val notRun = plan.steps.drop(ran)
+            if (notRun.isNotEmpty()) {
+                lines.appendLine("Not run: " + notRun.joinToString { "step ${it.index} ${it.targetClass}" } +
+                    " — the plan stops at its first failure (nothing is improvised).")
+            }
+            val ok = !stopped
+            ToolResult(
+                ok = ok, output = lines.toString().trimEnd(), durationMs = elapsed(t0),
+                error = if (stopped) {
+                    "step ${plan.steps[ran - 1].index} of plan ${plan.id} failed — later steps did " +
+                        "not run. Report exactly what the plan lines say; do not claim the rest."
+                } else null,
+            )
         } finally {
             // Owned engines are released; a REUSED resident engine belongs
             // to ModelRepository and must survive this call.
@@ -231,59 +327,62 @@ class SelfFixTool(
 
     private fun elapsed(t0: Long): Long = System.currentTimeMillis() - t0
 
-    /** The consent dialog text for a patch proposal (audit C-2; N-I4: the
-     *  full 64-char SHA-256 is shown, never a truncated prefix). */
-    internal fun approvalMessage(p: PatchProposal): String = buildString {
-        appendLine("Vorv wants to apply a SELF-FIX patch:")
-        appendLine("• Class: ${p.targetClass}")
-        appendLine("• Patch: ${p.patchId}")
-        appendLine("• SHA-256: ${p.sha256}")
-        appendLine("• Verified: ${if (p.surfaceVerified) "full public API kept" else "NOT verified"}")
-        appendLine("• Attempts: ${p.attempts}")
-        appendLine()
-        appendLine(p.description)
-        appendLine()
-        appendLine("APPROVE = " + if (p.surfaceVerified) {
-            "the patched class replaces the original at the next app start. "
+    /** The plan, as the owner sees it in the ONE consent dialog. */
+    internal fun planMessage(plan: FixPlan): String = plan.consentText()
+
+    /**
+     * Turns the tool input into the plan's steps, or into the sentence that
+     * says why it is not a usable plan. A plan with no class is refused —
+     * "fix it" is not a plan the owner can approve.
+     */
+    internal fun parseSteps(input: JsonObject, problem: String): Pair<List<FixStep>?, String?> {
+        val classes = mutableListOf<FixStep>()
+        val steps = input.get("steps")?.takeIf { it.isJsonArray }?.asJsonArray
+        if (steps != null && steps.size() > 0) {
+            for ((i, el) in steps.withIndex()) {
+                if (!el.isJsonObject) {
+                    return null to "step ${i + 1} is not an object with target_class and change"
+                }
+                val o = el.asJsonObject
+                val cls = o.get("target_class")?.takeIf { !it.isJsonNull }?.asString?.trim().orEmpty()
+                val change = o.get("change")?.takeIf { !it.isJsonNull }?.asString?.trim().orEmpty()
+                if (cls.isBlank()) return null to "step ${i + 1} names no target_class"
+                if (change.length < 8) {
+                    return null to "step ${i + 1} does not say what changes — the owner " +
+                        "approves the change, so it has to be written down"
+                }
+                classes += FixStep(index = classes.size + 1, targetClass = cls, change = change)
+            }
         } else {
-            "the patch is stored. It may not replace the running class — " +
-                "the completeness check did not run. "
-        } + "DENY = everything is rolled back now. If the app crashes in this " +
-            "class after the patch, it is rolled back automatically.")
+            val single = input.get("target_class")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                .orEmpty()
+            if (single.isBlank()) {
+                return null to "No plan: name the class(es) that change in 'steps' " +
+                    "(target_class + change per step). A fix with no named class cannot be " +
+                    "approved, and the healer is not allowed to choose one for you."
+            }
+            classes += FixStep(index = 1, targetClass = single, change = problem.take(400))
+        }
+        if (classes.size > MAX_PLAN_STEPS) {
+            return null to "A plan may have at most $MAX_PLAN_STEPS steps (each one can take " +
+                "minutes on the phone). Split the work into separate plans."
+        }
+        val unknown = classes.map { it.targetClass }.filterNot { PatchRegistry.isPatchableClass(it) }
+        if (unknown.isNotEmpty()) {
+            return null to "${unknown.joinToString()} cannot be patched: only the " +
+                "${PatchRegistry.DISPATCH_BASES.size} dispatchable classes can (the agent " +
+                "tools, host.vorv.kernel.CognitiveKernel, host.vorv.healer.HealingAgent)."
+        }
+        val duplicated = classes.groupBy { it.targetClass }.filterValues { it.size > 1 }.keys
+        if (duplicated.isNotEmpty()) {
+            return null to "${duplicated.joinToString()} appears in more than one step — " +
+                "one step per class, with all the changes for that class in it."
+        }
+        return classes to null
     }
 
-    internal fun formatResult(
-        result: HealResult,
-        t0: Long,
-        modelLabel: String,
-    ): ToolResult {
-        return if (result.success) {
-            val verifiedText = if (result.surfaceVerified) {
-                "compiled on device, VERIFIED (complete public API kept), signed and APPROVED"
-            } else {
-                "compiled on device, signed and APPROVED (the public-API check did not run)"
-            }
-            ToolResult(
-                ok = true,
-                output = "Self-fix SUCCEEDED. Patch ${result.patchId} for " +
-                    "${result.targetClass} was generated with $modelLabel, " +
-                    "$verifiedText by the user. Restart Vorv to load it." +
-                    if (result.surfaceVerified) " The patch class is the one that will load." else "",
-                durationMs = elapsed(t0),
-            )
-        } else {
-            val denied = result.error == "user denied the patch"
-            ToolResult(
-                ok = false, output = "", durationMs = elapsed(t0),
-                error = if (denied) {
-                    "The user DENIED the patch — it was rolled back completely. " +
-                        "Nothing was changed. Do not claim the fix was applied."
-                } else {
-                    "Self-fix did not produce an applicable patch " +
-                        "(attempts: ${result.attempts}). ${result.error ?: ""} " +
-                        "Report this honestly to the user."
-                },
-            )
-        }
+    private companion object {
+        /** Each step is a full model+compile+verify cycle; the phone is the cost. */
+        const val MAX_PLAN_STEPS = 3
     }
 }

@@ -33,7 +33,7 @@ class ProviderChainLlm(
 
     /**
      * One place a request can go. [label] is what the header shows, so it names
-     * both the provider and the model: "OpenRouter · qwen/qwen3-coder".
+     * both the provider and the model: "OpenRouter · qwen/qwen3-coder-next".
      */
     data class Route(
         val providerId: String,

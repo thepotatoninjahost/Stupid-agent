@@ -1,3 +1,29 @@
+# You approve the plan once, and it does exactly the plan (2026-11-22)
+
+Self-repair used to ask you to approve each patch after the code already
+existed. Now the agent writes a plan first: the class it will change, and
+what it will change in it, for up to three classes. You see that plan once,
+with no code written yet, and you approve or deny it. Approving covers every
+step; there is no second question per patch. What happens then is fixed:
+
+- the on-device coder writes each class in the plan, in order;
+- Vorv's own compiler builds each one, and the result is checked to keep the
+  complete public API before it is signed;
+- a repair for a class that is NOT in the plan is refused by the healer
+  before any code is written: the plan is never widened;
+- a step that fails stops the plan. Later steps do not run, and the answer
+  says exactly that instead of claiming success;
+- denying the plan generates nothing. The plan is kept in `plans/` marked
+  `denied`, next to the reason, so the denial is readable later;
+- crash repair works the same way: the crash names the class, so the plan is
+  one step, and a crash in a class that a patch could never load into is
+  reported as unrepairable instead of producing a patch that cannot run.
+
+The approval text no longer shows a SHA-256, because there is no patch at
+that point yet; the hash is recorded when the patch is signed and checked
+again when it loads. `ConsentPromptTest` pins the whole text, and
+`PlanStoreTest` pins that a denied plan stays readable.
+
 # The forge's inventory is generated, and actually verified (2026-11-22)
 
 `ToolchainManifest` (parse + sha256 verification) had no production caller, and

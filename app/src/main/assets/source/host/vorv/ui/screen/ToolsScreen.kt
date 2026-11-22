@@ -42,7 +42,7 @@ fun ToolsScreen(state: AgentState) {
         "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
         "schedule_cancel" to "Cancel pending reminders by title or all",
         "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
-        "self_fix" to "Fix or modify Vorv's own code: strongest on-device model writes the complete patched class, compiled by Vorv's own compiler, verified complete, signed, APPROVED by you, rolled back automatically if it crashes",
+        "self_fix" to "Fix or modify Vorv's own code: Vorv writes a plan naming each class it will change, you approve that plan ONCE, then the on-device coder writes each class, Vorv's own compiler builds it, the public API is checked, it is signed, and a crash rolls it back. Nothing outside the plan is touched; a step that fails stops the plan",
     )
     val engines = listOf(
         "local_llm" to if (state.localModelReady) {

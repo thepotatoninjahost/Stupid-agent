@@ -54,11 +54,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.geniex.sdk.GenieXSdk
-import host.vorv.healer.CrashInfo
 import host.vorv.healer.CrashParser
+import host.vorv.healer.FixPlan
+import host.vorv.healer.FixStep
+import host.vorv.healer.HealRequest
+import host.vorv.healer.PlanStore
+import host.vorv.healer.consentText
 import host.vorv.healer.HealerApi
 import host.vorv.healer.HealingAgent
-import host.vorv.healer.PatchProposal
 import host.vorv.llm.ModelManager
 import host.vorv.ui.VorvApp
 import host.vorv.ui.theme.VorvTheme
@@ -330,7 +333,7 @@ class MainActivity : ComponentActivity() {
                                 attemptSelfRepair(
                                     crashText = crashLogText ?: "",
                                     bootTrace = previousTrace ?: "",
-                                    onConsent = { proposal -> requestPatchConsent(proposal) },
+                                    onPlanConsent = { plan -> requestPlanConsent(plan) },
                                     onDone = { ok, message, canRestart ->
                                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                                     },
@@ -362,30 +365,32 @@ class MainActivity : ComponentActivity() {
     // ================================================================
 
     /**
-     * The consent dialog for a patch proposal (audit C-2). The deferred is
-     * local — the dialog answers it; nothing needs a field (audit N-L3,
-     * VRA-2026-1103: the old patchConsent field was assigned but never read).
+     * The ONE consent dialog: the plan, not each patch.
      *
-     * N-I4: the body SCROLLS and the text is SELECTABLE, so the complete
-     * message is readable and independently checkable (copy the SHA-256,
-     * verify it yourself) at ANY length — length is never a reason to cut
-     * anything.
+     * The owner's rule (2026-11): "I sign off on the plan, and then it does
+     * what the plan says" — so this dialog is the only question the repair
+     * asks. It shows every class the plan will change and what changes in
+     * each, and it appears BEFORE any code is generated (so there is no
+     * SHA-256 to show yet; the hash is recorded when the patch is signed and
+     * checked again at load).
+     *
+     * The body SCROLLS and the text is SELECTABLE (audit N-I4) at any length.
      */
-    private suspend fun requestPatchConsent(proposal: PatchProposal): Boolean {
+    private suspend fun requestPlanConsent(plan: FixPlan): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         runOnUiThread {
             val pad = (16 * resources.displayMetrics.density).toInt()
             val body = android.widget.TextView(this).apply {
-                text = buildPatchConsentMessage(proposal)
+                text = plan.consentText()
                 textSize = 13f
                 setTextIsSelectable(true)
                 setPadding(pad, pad, pad, pad)
             }
             val scroll = android.widget.ScrollView(this).apply { addView(body) }
             android.app.AlertDialog.Builder(this)
-                .setTitle("Apply self-repair patch?")
+                .setTitle("Approve this repair plan?")
                 .setView(scroll)
-                .setPositiveButton("Approve") { _, _ -> deferred.complete(true) }
+                .setPositiveButton("Approve plan") { _, _ -> deferred.complete(true) }
                 .setNegativeButton("Deny") { _, _ -> deferred.complete(false) }
                 .setOnCancelListener { deferred.complete(false) }
                 .show()
@@ -461,16 +466,16 @@ class MainActivity : ComponentActivity() {
 
     /**
      * SELF-REPAIR (audits C-2, H-4, M-8; strongest model per v0.6.9):
-     * generate a fix with the on-device LLM, compile it with the app's own
-     * compiler, verify completeness, sign it, and — via
-     * [onConsent] — put the APPROVE/DENY decision in the user's hands
-     * before anything is registered. Runs in the MAIN process only; the
-     * watchdog stays LLM-free (M-8).
+     * a crash repair is a ONE-STEP PLAN. The plan names the crashed class
+     * before any code exists, [onPlanConsent] puts that plan in the user's
+     * hands ONCE, and the heal then runs with the plan's class as its only
+     * permitted target. Runs in the MAIN process only; the watchdog stays
+     * LLM-free (M-8).
      */
     private fun attemptSelfRepair(
         crashText: String,
         bootTrace: String,
-        onConsent: suspend (PatchProposal) -> Boolean,
+        onPlanConsent: suspend (FixPlan) -> Boolean,
         onDone: (ok: Boolean, message: String, canRestart: Boolean) -> Unit,
     ): Job {
         val app = application as VorvApplication
@@ -505,6 +510,53 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
+                // The plan: which class changes, decided BEFORE any code is
+                // written. A patch can only ever load into one of the
+                // dispatchable classes, so a crash anywhere else is not
+                // repairable at all — say that instead of generating a patch
+                // that could never run.
+                val crashed = CrashParser.extractCrashedClass(crashText)
+                if (crashed == null) {
+                    onDone(false, "The crash log does not name a class, so there is no class " +
+                        "a patch could be written for. Nothing was changed.", false)
+                    return@launch
+                }
+                if (!PatchRegistry.isPatchableClass(crashed)) {
+                    onDone(false, "The crash is in $crashed, which is not one of the " +
+                        "${PatchRegistry.DISPATCH_BASES.size} classes a patch can load into " +
+                        "(the agent tools, host.vorv.kernel.CognitiveKernel, " +
+                        "host.vorv.healer.HealingAgent). A patch there would compile but never " +
+                        "run, so none was written. Nothing was changed.", false)
+                    return@launch
+                }
+                val plan = FixPlan(
+                    id = PlanStore.newId(),
+                    title = "Repair the crash in ${crashed.substringAfterLast('.')}",
+                    problem = "Vorv crashed in $crashed. Stack trace:\n" + crashText.take(1200),
+                    steps = listOf(
+                        FixStep(
+                            index = 1,
+                            targetClass = crashed,
+                            change = "Fix the bug that made $crashed crash, keeping its " +
+                                "complete public API.",
+                        ),
+                    ),
+                )
+                if (PlanStore.save(applicationContext, plan) == null) {
+                    onDone(false, "Could not write the plan to storage — nothing was run.", false)
+                    return@launch
+                }
+                if (!onPlanConsent(plan)) {
+                    PlanStore.decide(
+                        applicationContext, plan.id, approved = false,
+                        note = "owner denied the plan",
+                    )
+                    onDone(false, "You DENIED plan ${plan.id} — nothing was generated and " +
+                        "nothing was changed.", false)
+                    return@launch
+                }
+                PlanStore.decide(applicationContext, plan.id, approved = true)
+
                 // M-3 (code review, 2026-11): engine acquisition through the
                 // repository — single H-4 ledger, and REUSE of the resident
                 // engine when it already is the strongest repair model (no
@@ -518,15 +570,32 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
                 val result = try {
-                    val crash = CrashInfo(
-                        stackTrace = crashText,
-                        bootTrace = bootTrace,
-                        crashedClass = CrashParser.extractCrashedClass(crashText),
-                    )
-                    healAgent(repairLlm).heal(crash, workspaceUri, onConsent)
+                    // The plan is approved, so no per-patch question is asked;
+                    // allowedTargets is what keeps the heal inside the plan.
+                    healAgent(repairLlm).modify(
+                        HealRequest(
+                            problem = "Vorv crashed. Fix the bug that caused this crash.\n" +
+                                "Stack trace:\n" + crashText.take(20_000) +
+                                (if (bootTrace.isNotBlank()) {
+                                    "\nBoot breadcrumbs before the crash:\n" +
+                                        bootTrace.take(20_000)
+                                } else {
+                                    ""
+                                }),
+                            diagnostics = crashText.take(20_000),
+                            targetClass = crashed,
+                            patchIdPrefix = "heal",
+                            allowedTargets = plan.targetClasses,
+                        ),
+                        workspaceUri,
+                    ) { true }
                 } finally {
                     if (handle.owned) repairLlm.release()
                 }
+                PlanStore.recordStep(
+                    applicationContext, plan.id, 1,
+                    if (result.success) "patched" else "failed", result.patchId, result.error,
+                )
 
                 if (result.success) {
                     // Say only what the healer actually reported. The runtime
@@ -548,15 +617,11 @@ class MainActivity : ComponentActivity() {
                         true,
                     )
                 } else {
-                    val denied = !result.userApproved && result.error == "user denied the patch"
                     onDone(
                         false,
-                        if (denied) {
-                            "You DENIED the patch — nothing was changed."
-                        } else {
+                        "Plan ${plan.id} stopped at step 1 — no patch was applied. " +
                             "Self-repair did not produce an applicable patch " +
-                                "(attempts: ${result.attempts}): ${result.error ?: "unknown error"}"
-                        },
+                            "(attempts: ${result.attempts}): ${result.error ?: "unknown error"}",
                         false,
                     )
                 }
@@ -573,33 +638,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "Vorv/MainActivity"
-
-        /**
-         * The crash-repair patch consent text (audit C-2; VRA-2026-1103
-         * N-I4 follow-up: the COMPLETE 64-char SHA-256 and the COMPLETE
-         * description are shown — never a 16-char prefix, never a 400-char
-         * cap, no ellipsis). Pinned by ConsentPromptTest.
-         */
-        internal fun buildPatchConsentMessage(p: PatchProposal): String = buildString {
-            appendLine("Vorv wants to apply a self-repair patch:")
-            appendLine("• Class: ${p.targetClass}")
-            appendLine("• Patch: ${p.patchId}")
-            appendLine("• SHA-256: ${p.sha256}")
-            appendLine("• Verified: ${if (p.surfaceVerified) "full public API kept" else "NOT verified"}")
-            appendLine()
-            appendLine(p.description)
-            appendLine()
-            append("APPROVE = ")
-            append(
-                if (p.surfaceVerified) {
-                    "the patched class replaces the original at the next app start. "
-                } else {
-                    "the patch is stored. It may not replace the running class — " +
-                        "the completeness check did not run. "
-                },
-            )
-            append("DENY = nothing changes. A crash in the patched class within 72h rolls it back automatically.")
-        }
     }
 }
 
