@@ -1,5 +1,6 @@
 package host.vorv.llm
 
+import com.geniex.sdk.bean.ComputeUnitValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -45,5 +46,28 @@ class LocalLlmBudgetTest {
             LocalLlm.MAX_OUTPUT_TOKENS,
             LocalLlm.replyTokensFor(promptTokens, LocalLlm.N_CTX),
         )
+    }
+}
+
+/**
+ * GenieX's ModelConfig documents nGpuLayers = -1 as "all layers" and 0 as
+ * "none", and its JNI forces 0 for CPU. A build that asked for the NPU with
+ * 0 offloaded nothing, so it was really a CPU engine.
+ */
+class LocalLlmLayersTest {
+
+    @Test
+    fun `the NPU gets every layer`() {
+        assertEquals(-1, LocalLlm.gpuLayersFor(ComputeUnitValue.NPU.value))
+    }
+
+    @Test
+    fun `the GPU gets every layer`() {
+        assertEquals(-1, LocalLlm.gpuLayersFor(ComputeUnitValue.GPU.value))
+    }
+
+    @Test
+    fun `the CPU build offloads nothing`() {
+        assertEquals(0, LocalLlm.gpuLayersFor(ComputeUnitValue.CPU.value))
     }
 }

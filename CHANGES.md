@@ -1,3 +1,17 @@
+# The on-phone model actually runs on the phone (2026-11-21)
+
+The local engine asked GenieX for the NPU but passed `nGpuLayers = 0`, which
+Qualcomm's own ModelConfig documents as "offload no layers". So the build that
+called itself NPU was running on the CPU: slow enough to look broken, and never
+using the Hexagon. NPU and GPU builds now pass `-1` (all layers); only the CPU
+build passes 0, and GenieX forces 0 there anyway.
+
+An empty generation is no longer a blank answer. If the engine returns no text,
+the chat says so with the facts it has: model file, compute unit, window, prompt
+tokens, reply allowance, stream chunks, and the engine's own generated-token
+count, stop reason and tokens per second. The same line is stored as the brain's
+last runtime error, so the Brain screen shows it too.
+
 # You approve the plan once, and it does exactly the plan (2026-11-22)
 
 Self-repair used to ask you to approve each patch after the code already

@@ -116,6 +116,15 @@ class LocalLlm(
             val room = ctx - promptTokens - PROMPT_SAFETY
             return if (room < MIN_OUTPUT_TOKENS) null else minOf(MAX_OUTPUT_TOKENS, room)
         }
+
+        /**
+         * Layers to offload for a compute unit. GenieX's ModelConfig documents
+         * -1 as "all layers" and 0 as "none"; its JNI forces 0 for CPU. Asking
+         * for the NPU while passing 0 offloaded nothing, so the build that
+         * called itself "NPU" was really running on the CPU.
+         */
+        fun gpuLayersFor(unit: String?): Int =
+            if (unit == ComputeUnitValue.CPU.value) 0 else -1
     }
 
     @Volatile private var llmWrapper: LlmWrapper? = null
@@ -190,7 +199,7 @@ class LocalLlm(
         fun input(unit: String?, ctx: Int) = LlmCreateInput(
             model_path = modelPath,
             tokenizer_path = tokenizerPath ?: "",
-            config = ModelConfig(nCtx = ctx, nThreads = 4, nGpuLayers = 0),
+            config = ModelConfig(nCtx = ctx, nThreads = 4, nGpuLayers = gpuLayersFor(unit)),
             runtime_id = "llama_cpp",
             compute_unit = unit,
         )
@@ -315,13 +324,17 @@ class LocalLlm(
         val sb = StringBuilder()
         var profile: com.geniex.sdk.bean.ProfilingData? = null
         var streamError: Throwable? = null
+        var chunks = 0
 
         wrapper.generateStreamFlow(
             prompt = template.formattedText,
             config = generationConfig,
         ).collect { result ->
             when (result) {
-                is LlmStreamResult.Token -> sb.append(result.text)
+                is LlmStreamResult.Token -> {
+                    chunks++
+                    sb.append(result.text)
+                }
                 is LlmStreamResult.Completed -> profile = result.profile
                 is LlmStreamResult.Error -> streamError = result.throwable
             }
@@ -331,23 +344,40 @@ class LocalLlm(
         // a prompt can fit are put next to them. Never a guessed cause: this
         // text is what the chat bubble shows.
         streamError?.let { cause ->
-            throw IllegalStateException(
-                "the on-device model (${java.io.File(loadedModelPath).name}, " +
-                    "${if (cpuFallback) "CPU" else "NPU"}, window $loadedCtx) could not take " +
-                    "~$promptTokens prompt tokens with a $replyTokens-token reply allowance. " +
-                    "GenieX said: ${cause.message}",
-                cause,
-            )
+            val message = "the on-device model (${java.io.File(loadedModelPath).name}, " +
+                "${if (cpuFallback) "CPU" else "NPU"}, window $loadedCtx) could not take " +
+                "~$promptTokens prompt tokens with a $replyTokens-token reply allowance. " +
+                "GenieX said: ${cause.message}"
+            BrainState.update { it.copy(lastRuntimeError = message) }
+            throw IllegalStateException(message, cause)
         }
 
         profile?.let { p ->
             onTelemetry?.invoke(p.decodingSpeed, p.decodeTimeMs)
         }
 
+        // An empty generation is a fact, not an answer. Say what the engine did
+        // instead of showing a blank bubble or inventing a cause.
+        val text = sb.toString().trim()
+        if (text.isEmpty()) {
+            val report = profile?.let { p ->
+                "the engine reports ${p.generatedTokens} generated tokens, stop reason " +
+                    "\"${p.stopReason}\" at %.1f tokens/s".format(p.decodingSpeed)
+            } ?: "the engine sent no completion report"
+            val message = "the on-device model (${java.io.File(loadedModelPath).name}, " +
+                "${if (cpuFallback) "CPU" else "NPU"}, window $loadedCtx) produced no text: " +
+                "prompt ~$promptTokens tokens, reply allowance $replyTokens, $chunks stream chunks, " +
+                "$report. Nothing was put in the bubble because nothing was generated."
+            BrainState.update { it.copy(lastRuntimeError = message) }
+            throw IllegalStateException(message)
+        }
+
+        BrainState.update { it.copy(lastRuntimeError = null) }
+
         // H1b: the parser needs the real tool roster so JSON DATA carrying a
         // "name" key on the bare/prose path is treated as an answer, not
         // hijacked into a phantom tool call.
-        return ToolCallParser.parse(sb.toString().trim(), tools.map { it.name }.toSet())
+        return ToolCallParser.parse(text, tools.map { it.name }.toSet())
     }
 
     private fun estimateTokens(text: String): Int =
