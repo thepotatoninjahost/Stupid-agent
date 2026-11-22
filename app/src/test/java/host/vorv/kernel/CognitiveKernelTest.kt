@@ -105,6 +105,33 @@ class CognitiveKernelTest {
         assertTrue(sink.episodes.last().second.contains("uncited"))
     }
 
+    /** An engine failure is shown in the engine's own words, never a guessed cause. */
+    private class ThrowingLlm(private val message: String) : Llm {
+        override val label = "on-device"
+        override suspend fun step(
+            messages: List<Llm.Message>,
+            tools: List<Llm.ToolSpec>,
+        ): Llm.LlmResponse = throw IllegalStateException(message)
+    }
+
+    @Test
+    fun `an engine error is reported verbatim, not translated into a guess`() = runTest {
+        val sink = FakeSink()
+        val result = kernel(sink, emptyList())
+            .run("t1", "q", ThrowingLlm("GenieX said: Input prompt too long"), null)
+
+        assertFalse(result.ok)
+        assertTrue(
+            "the engine's words must survive to the chat bubble: ${result.answer}",
+            result.answer.contains("Input prompt too long"),
+        )
+        assertFalse(
+            "no invented cause: ${result.answer}",
+            result.answer.contains("task is too large"),
+        )
+        assertTrue(result.answer.contains("iteration 1"))
+    }
+
     @Test
     fun `answer with inline citation is not flagged uncited`() = runTest {
         val sink = FakeSink()

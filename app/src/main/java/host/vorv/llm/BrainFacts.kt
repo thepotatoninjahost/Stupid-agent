@@ -31,6 +31,13 @@ data class BrainFacts(
     val localEngineError: String? = null,
     val localComputeUnit: String? = null,
     val lastRuntimeError: String? = null,
+    /** The file the local engine actually loaded (not what the menu thinks). */
+    val localModelFile: String = "",
+    /** The window the engine was actually built with, and the last prompt size. */
+    val localWindowTokens: Int = 0,
+    val lastPromptTokens: Int = 0,
+    /** "0.9.30+abc1234" — which build produced these facts. */
+    val buildLabel: String = "",
     val abis: List<String> = emptyList(),
     val freeStorageBytes: Long = -1,
 ) {

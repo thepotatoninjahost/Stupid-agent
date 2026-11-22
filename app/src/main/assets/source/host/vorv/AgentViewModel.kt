@@ -2140,6 +2140,7 @@ class AgentViewModel(
             baseUrl = host.vorv.llm.provider.BrainTarget.baseFor(s.cloudBaseUrl, providerId),
             modelId = host.vorv.llm.provider.BrainTarget.resolveFor(s.cloudBaseUrl, s.cloudCustomModel, providerId).modelId,
             keyPresent = s.hasApiKey,
+            buildLabel = "v${host.vorv.BuildConfig.VERSION_NAME}+${host.vorv.BuildConfig.GIT_SHA}",
             localModelId = choice.id,
             localModelName = choice.displayName.substringBefore("(").trim(),
             localDownloaded = s.localModelReady,

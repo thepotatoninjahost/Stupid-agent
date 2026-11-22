@@ -19,6 +19,10 @@ class BrainDoctorTest {
         bytes: Long = 4_444_000_000L,
         expected: Long = 4_444_121_888L,
         engineError: String? = null,
+        buildLabel: String = "v0.9.30+abc1234",
+        localModelFile: String = "",
+        localWindowTokens: Int = 0,
+        lastPromptTokens: Int = 0,
     ) = BrainFacts(
         llmMode = "cloud",
         providerId = "z.ai",
@@ -35,6 +39,10 @@ class BrainDoctorTest {
         localBytes = bytes,
         localExpectedBytes = expected,
         localEngineError = engineError,
+        buildLabel = buildLabel,
+        localModelFile = localModelFile,
+        localWindowTokens = localWindowTokens,
+        lastPromptTokens = lastPromptTokens,
         freeStorageBytes = 50_000_000_000L,
         abis = listOf("arm64-v8a"),
     )
@@ -106,6 +114,26 @@ class BrainDoctorTest {
         )
         assertTrue(checks.none { it.state == State.FAIL })
         assertTrue(BrainDoctor.report(facts()).startsWith("Vorv brain health"))
+    }
+
+    @Test
+    fun `the build names itself, and a prompt with no room to answer is a failure`() {
+        val healthy = BrainDoctor.diagnose(facts(buildLabel = "v0.9.30+abc1234"))
+        assertTrue(healthy.any { it.name == "build" && it.detail.contains("v0.9.30+abc1234") })
+
+        val nameless = BrainDoctor.diagnose(facts(buildLabel = ""))
+        assertTrue(nameless.any { it.name == "build" && it.state == State.WARN })
+
+        val tight = BrainDoctor.diagnose(
+            facts(localModelFile = "omnicoder-9b-q4_0.gguf", localWindowTokens = 8192, lastPromptTokens = 8100),
+        )
+        assertTrue(tight.any { it.name == "prompt fits" && it.state == State.FAIL })
+
+        val roomy = BrainDoctor.diagnose(
+            facts(localModelFile = "omnicoder-9b-q4_0.gguf", localWindowTokens = 8192, lastPromptTokens = 2400),
+        )
+        assertTrue(roomy.any { it.name == "prompt fits" && it.state == State.OK })
+        assertTrue(roomy.any { it.name == "model file" && it.detail == "omnicoder-9b-q4_0.gguf" })
     }
 
     @Test

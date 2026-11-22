@@ -1,3 +1,28 @@
+# The app names its build, and never invents a cause (2026-11-22)
+
+Three lies are gone:
+
+- **A guessed cause.** The kernel rewrote any engine error containing "context"
+  or "token" into "context window exhausted … the task is too large for the
+  local engine". The owner's message was three words, so that sentence was
+  false. Now the engine's own words are kept verbatim and only measured facts
+  are added around them (iteration, prompt budget, engine label). New test:
+  CognitiveKernelTest "an engine error is reported verbatim, not translated
+  into a guess".
+- **An unnamed build.** versionName is 0.9.30 and BuildConfig.GIT_SHA carries
+  the commit, so "Vorv brain health" and the app can state exactly which code
+  is running. Bumping the version is what lets a screenshot tell a fix from
+  the build before it — 0.9.29 was used by every APK so far.
+- **An unmeasured prompt.** The local engine now publishes the file it
+  actually loaded, the window it was built with, and the size of the last
+  prompt. Brain health shows "prompt fits: ~2400 of 8192 tokens used (NPU)"
+  and fails loudly when the prompt leaves no room, instead of the SDK's bare
+  "Input prompt too long".
+
+The local engine error also names the model file, the compute unit, the
+window, the prompt size and the reply allowance, so the next report is
+evidence rather than a guess.
+
 # The local window is 8192, and the reply fits what is left (2026-11-22)
 
 "Run a self diagnostics" (three words) came back as `LLM error: GenieX stream

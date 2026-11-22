@@ -42,6 +42,9 @@ class LocalLlm(
     /** Window the engine actually got. A smaller one is said out loud. */
     @Volatile private var loadedCtx = N_CTX
 
+    /** The file the engine was actually built from (trained generation or base). */
+    @Volatile private var loadedModelPath = ""
+
     /** Set when a trained generation was the first choice and would not load. */
     @Volatile private var championFailure: String? = null
 
@@ -191,8 +194,21 @@ class LocalLlm(
             runtime_id = "llama_cpp",
             compute_unit = unit,
         )
-        suspend fun attempt(unit: String?, ctx: Int): Result<LlmWrapper> =
-            LlmWrapper.builder().llmCreateInput(input(unit, ctx)).build()
+        suspend fun attempt(unit: String?, ctx: Int): Result<LlmWrapper> {
+            val built = LlmWrapper.builder().llmCreateInput(input(unit, ctx)).build()
+            built.onSuccess {
+                loadedModelPath = modelPath
+                // The app states what it loaded, not what the menu hoped for.
+                host.vorv.llm.BrainState.update {
+                    it.copy(
+                        localModelFile = java.io.File(modelPath).name,
+                        localWindowTokens = ctx,
+                        localComputeUnit = if (unit == ComputeUnitValue.NPU.value) "NPU" else "CPU",
+                    )
+                }
+            }
+            return built
+        }
 
         // Full window first; only if BOTH units refuse it does the smaller
         // window come back — and then the label says so, because a 4096-token
@@ -276,6 +292,7 @@ class LocalLlm(
         // that mismatch is what GenieX reported as "Input prompt too long" for
         // a three-word message.
         val promptTokens = estimateTokens(template.formattedText)
+        host.vorv.llm.BrainState.update { it.copy(lastPromptTokens = promptTokens) }
         val replyTokens = replyTokensFor(promptTokens, loadedCtx)
             ?: throw IllegalStateException(
                 "The prompt is about $promptTokens tokens and this model's window is $loadedCtx, " +
@@ -310,7 +327,18 @@ class LocalLlm(
             }
         }
 
-        streamError?.let { error("GenieX stream failed: ${it.message}") }
+        // The engine's own words are kept, and the numbers that decide whether
+        // a prompt can fit are put next to them. Never a guessed cause: this
+        // text is what the chat bubble shows.
+        streamError?.let { cause ->
+            throw IllegalStateException(
+                "the on-device model (${java.io.File(loadedModelPath).name}, " +
+                    "${if (cpuFallback) "CPU" else "NPU"}, window $loadedCtx) could not take " +
+                    "~$promptTokens prompt tokens with a $replyTokens-token reply allowance. " +
+                    "GenieX said: ${cause.message}",
+                cause,
+            )
+        }
 
         profile?.let { p ->
             onTelemetry?.invoke(p.decodingSpeed, p.decodeTimeMs)

@@ -40,6 +40,18 @@ object BrainDoctor {
         addAll(cloudChecks(f))
         addAll(localChecks(f))
         add(generalCheck(f))
+        add(buildCheck(f))
+    }
+
+    /**
+     * The build names itself. Without this a screenshot cannot tell a fix from
+     * the build before it, and every report becomes a guess about which code
+     * is running.
+     */
+    private fun buildCheck(f: BrainFacts): Check = if (f.buildLabel.isBlank()) {
+        Check("build", State.WARN, "this build does not report its version", "reinstall from a fresh build")
+    } else {
+        Check("build", State.OK, f.buildLabel)
     }
 
     private fun cloudChecks(f: BrainFacts): List<Check> = buildList {
@@ -192,6 +204,28 @@ object BrainDoctor {
             add(Check("on-phone coder", State.OK, "$name ${mb(f.localBytes)} on disk"))
         }
 
+        if (f.localModelFile.isNotBlank()) {
+            val room = f.localWindowTokens - f.lastPromptTokens
+            add(
+                if (f.localWindowTokens > 0 && f.lastPromptTokens > 0 && room < 256) {
+                    Check(
+                        "prompt fits",
+                        State.FAIL,
+                        "the last prompt was ~${f.lastPromptTokens} tokens and the window is " +
+                            "${f.localWindowTokens} — there is no room to answer",
+                        "start a new chat; if it repeats, the tool list is the cause, not your message",
+                    )
+                } else {
+                    Check(
+                        "prompt fits",
+                        State.OK,
+                        "~${f.lastPromptTokens} of ${f.localWindowTokens} tokens used" +
+                            (if (f.localComputeUnit.isNullOrBlank()) "" else " (${f.localComputeUnit})"),
+                    )
+                },
+            )
+            add(Check("model file", State.OK, f.localModelFile))
+        }
         f.localInitError?.let {
             add(Check("model engine", State.FAIL, "the model engine did not start: ${it.take(200)}", "reopen the app; if it repeats, re-download"))
         }

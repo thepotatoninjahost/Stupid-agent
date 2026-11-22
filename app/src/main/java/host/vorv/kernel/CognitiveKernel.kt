@@ -178,6 +178,10 @@ class CognitiveKernel(
         var iterations = 0
         var toolCallCount = 0
         var lastError: String? = null
+        // What the chat shows: the engine's own words plus the measured facts.
+        // Kept apart from [lastError] so logs and TaskResult.error stay the raw
+        // message a caller can match on.
+        var lastErrorDetail: String? = null
         var nudgesUsed = 0
         val rateCounts = HashMap<String, Int>()
 
@@ -255,15 +259,20 @@ class CognitiveKernel(
                     // Preserve the REAL cause — previously this fell through to
                     // the "reached max iterations" summary, mis-reporting an LLM
                     // failure as a stuck loop (caught by CognitiveKernelTest).
-                    val honest = if (e.message?.contains("context", ignoreCase = true) == true ||
-                        e.message?.contains("token", ignoreCase = true) == true) {
-                        "context window exhausted at iteration $iterations " +
-                            "(budget ${llm.contextTokenBudget} tokens — history was compacted; " +
-                            "the task is too large for the local engine)"
-                    } else {
-                        e.message ?: e.javaClass.simpleName
-                    }
-                    lastError = honest
+                    //
+                    // And do not translate it. This used to rewrite any message
+                    // containing "context" or "token" into "context window
+                    // exhausted … the task is too large for the local engine" —
+                    // a cause nobody verified. The owner's report was a three
+                    // word message, so that sentence was simply false. Now the
+                    // engine's own words are kept and only measured facts are
+                    // added around them.
+                    val engineSaid = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                    val honest = "iteration $iterations, prompt budget " +
+                        "${llm.contextTokenBudget} tokens after compaction, engine ${llm.label}: " +
+                        engineSaid
+                    lastError = engineSaid
+                    lastErrorDetail = honest
                     _trace.emit(TraceStep.Error("LLM call failed: $honest"))
                     break
                 }
@@ -569,7 +578,7 @@ class CognitiveKernel(
             // Loop exited without a final answer: either an LLM error (report it
             // honestly) or the iteration cap (report the stuck-loop summary).
             if (lastError != null) {
-                val answer = "LLM error: $lastError"
+                val answer = "LLM error: ${lastErrorDetail ?: lastError}"
                 _trace.emit(TraceStep.Done(answer, iterations))
                 eventSink.logEpisode("error", answer.take(200), "{\"iterations\":$iterations,\"taskId\":\"$taskId\"}")
                 return KernelApi.TaskResult(false, answer, iterations, toolCitations, toolCallCount, error = lastError)
