@@ -1,3 +1,20 @@
+# Self-fix can now actually run, and the Linux tools stop mislabeling (2026-11-22)
+
+- **A patch that was "applied" could never run.** `AgentViewModel` built all
+  24 tools directly, while `PatchRegistry` only dispatches classes that are
+  constructed through `PatchRegistry.create`. All 17 patchable tools are now
+  built through it (with the original as the fallback), so an approved patch
+  changes behaviour instead of sitting in a dex file. A new test fails the
+  build if any patchable tool is ever constructed directly again.
+- **The crash dialog no longer claims checks that have not run.** It said
+  "compiled, verified, signed and APPROVED" on `success` alone; it now says
+  what the healer reported and names the gates that run at the next start.
+- **A provisioning failure is not a timeout.** `LinuxSystem.run` returned
+  `timedOut = true` when the rootfs never unpacked, sending the owner to look
+  at slow commands. It now says "Linux was not provisioned: <reason>".
+- **`linux_run` stops calling stdout "stderr"** (the guest uses one pipe) and
+  caps long output with a visible marker.
+
 # The app names its build, and never invents a cause (2026-11-22)
 
 Three lies are gone:

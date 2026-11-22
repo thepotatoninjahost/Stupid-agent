@@ -85,9 +85,11 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
                 else -> "exit ${shell.exitCode}"
             }
             val output = shell.output.trim()
+            // Same honest cap the shell tool uses: a cut-off transcript says so.
+            val shown = capWithMarker(output, 12_000)
             ToolResult(
                 ok = shell.ok,
-                output = if (output.isEmpty()) "$header\n(no output)" else "$header\n$output",
+                output = if (shown.isEmpty()) "$header\n(no output)" else "$header\n$shown",
                 durationMs = System.currentTimeMillis() - started,
                 exitCode = if (shell.ok) 0 else shell.exitCode,
                 error = when {
@@ -95,7 +97,9 @@ class LinuxRunTool(private val guest: GuestShell) : Tool {
                     shell.timedOut -> "command exceeded its time limit"
                     else -> "command failed with exit ${shell.exitCode}"
                 },
-                stderr = if (shell.ok) "" else output.takeLast(600),
+                // The guest merges stderr into stdout (one pipe), so this is
+                // not stderr and must not be labelled as if it were.
+                stderr = "",
                 citation = Citation("exec", "linux_run", "ran inside Vorv's Linux system"),
             )
         }

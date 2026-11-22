@@ -25,6 +25,7 @@ import host.vorv.llm.Llm
 import host.vorv.llm.ModelChoice
 import host.vorv.llm.ModelManager
 import host.vorv.llm.ModelRepository
+import host.vorv.watchdog.PatchRegistry
 import host.vorv.tools.AppIntentTool
 import host.vorv.tools.BrainTool
 import host.vorv.tools.BrowserAutomateTool
@@ -239,31 +240,46 @@ class AgentViewModel(
     /** Vorv's own computer: one instance, shared by the shell and linux_run. */
     private val linuxSystem = host.vorv.linux.LinuxSystem(appContext)
 
-    private val tools = listOf(
-        MemoryWriteTool(db),
-        MemoryRecallTool(db),
+    /**
+     * Every patchable tool is built through [PatchRegistry] so an approved
+     * patch can actually run. Constructing these directly was why a "patch
+     * applied" notice was true on disk and false at runtime: the app kept
+     * using its own copy of the class. Non-patchable tools are constructed
+     * directly on purpose — the healer refuses to generate a patch for them.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : host.vorv.tools.Tool> patched(fqcn: String, vararg args: Any?, make: () -> T): T =
+        (PatchRegistry.create(host.vorv.tools.Tool::class.java, fqcn, *args) as T?) ?: make()
+
+    private val tools: List<host.vorv.tools.Tool> = listOf(
+        patched("host.vorv.tools.MemoryWriteTool", db) { MemoryWriteTool(db) },
+        patched("host.vorv.tools.MemoryRecallTool", db) { MemoryRecallTool(db) },
         MemoryWebTool(db.knowledgeGraphDao()),
-        JsExecTool(),
+        patched("host.vorv.tools.JsExecTool") { JsExecTool() },
         ComputerTool(appContext),
         WebTestTool(appContext),
         BuildAppTool(appContext),
         LinuxRunTool(linuxSystem),
         BrainTool(appContext),
         NativeTestTool(appContext),
-        FileReadTool(appContext),
-        FileWriteTool(appContext),
-        FileListTool(appContext),
-        CrashLogsTool(appContext),
-        PythonExecTool(appContext),
-        WebSearchTool(secrets),
-        WebFetchTool(),
-        AppIntentTool(appContext),
-        ShellTool(linuxSystem, appContext),
-        NotifyTool(appContext),
-        ScheduleTool(appContext, reminderRegistry),
-        ScheduleCancelTool(appContext, reminderRegistry),
-        BrowserAutomateTool(appContext),
-        SelfFixTool(appContext, prefs),
+        patched("host.vorv.tools.FileReadTool", appContext) { FileReadTool(appContext) },
+        patched("host.vorv.tools.FileWriteTool", appContext) { FileWriteTool(appContext) },
+        patched("host.vorv.tools.FileListTool", appContext) { FileListTool(appContext) },
+        patched("host.vorv.tools.CrashLogsTool", appContext) { CrashLogsTool(appContext) },
+        patched("host.vorv.tools.PythonExecTool", appContext) { PythonExecTool(appContext) },
+        patched("host.vorv.tools.WebSearchTool", secrets) { WebSearchTool(secrets) },
+        patched("host.vorv.tools.WebFetchTool") { WebFetchTool() },
+        patched("host.vorv.tools.AppIntentTool", appContext) { AppIntentTool(appContext) },
+        patched("host.vorv.tools.ShellTool", linuxSystem, appContext) { ShellTool(linuxSystem, appContext) },
+        patched("host.vorv.tools.NotifyTool", appContext) { NotifyTool(appContext) },
+        patched("host.vorv.tools.ScheduleTool", appContext, reminderRegistry) {
+            ScheduleTool(appContext, reminderRegistry)
+        },
+        patched("host.vorv.tools.ScheduleCancelTool", appContext, reminderRegistry) {
+            ScheduleCancelTool(appContext, reminderRegistry)
+        },
+        patched("host.vorv.tools.BrowserAutomateTool", appContext) { BrowserAutomateTool(appContext) },
+        patched("host.vorv.tools.SelfFixTool", appContext, prefs) { SelfFixTool(appContext, prefs) },
     )
 
     private val outputDir = File(appContext.cacheDir, "tool_outputs")

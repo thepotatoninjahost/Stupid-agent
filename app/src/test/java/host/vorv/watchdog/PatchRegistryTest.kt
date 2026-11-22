@@ -41,6 +41,20 @@ class PatchRegistryTest {
     }
 
     @Test
+    fun `every patchable tool is actually constructed through the registry`() {
+        // The audited bug: a patch was reported applied and could never run,
+        // because AgentViewModel built every tool with `Tool(appContext)`
+        // instead of `PatchRegistry.create`. A patch that cannot dispatch is
+        // a lie told to the owner, so this pins the construction sites.
+        val source = java.io.File("src/main/java/host/vorv/AgentViewModel.kt").readText()
+        val toolClasses = PatchRegistry.DISPATCH_BASES.keys.filter { it.startsWith("host.vorv.tools.") }
+        assertTrue("tool patch surface is suspiciously small", toolClasses.size >= 17)
+        val missing = toolClasses.filter { !source.contains("patched(\"$it\"") }
+        assertEquals("built directly, so a patch for these would never run: $missing",
+            emptyList<String>(), missing)
+    }
+
+    @Test
     fun `non-dispatch surface classes are refused`() {
         // Activities, Application, helpers — a patch for them can never run.
         assertFalse(PatchRegistry.isPatchableClass("host.vorv.MainActivity"))

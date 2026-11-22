@@ -529,13 +529,22 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (result.success) {
+                    // Say only what the healer actually reported. The runtime
+                    // gates (signature, hash, version, consent) run at the NEXT
+                    // start — claiming they had already passed was untrue.
+                    val surface = if (result.surfaceVerified) {
+                        "The patched class matched the original's public surface."
+                    } else {
+                        "The patched class was NOT compared with the original's public " +
+                            "surface — if it differs, the next start will refuse it and say why."
+                    }
                     onDone(
                         true,
                         "Patch ${result.patchId} for ${result.targetClass} was generated " +
-                            "with ${repairModel.displayName.substringBefore("(").trim()}, " +
-                            "compiled, verified, signed and APPROVED. It loads at the next " +
-                            "start (signature + hash + version + consent verified). " +
-                            "Restart to apply it.",
+                            "with ${repairModel.displayName.substringBefore("(").trim()} and " +
+                            "approved by you. $surface Signature, hash, version and consent are " +
+                            "checked at the next start; if any fails, the patch will not load " +
+                            "and the boot trace will name the reason. Restart to try it.",
                         true,
                     )
                 } else {

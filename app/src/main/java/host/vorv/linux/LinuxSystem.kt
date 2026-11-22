@@ -177,7 +177,12 @@ class LinuxSystem(private val context: Context) : GuestShell {
         binds: List<Pair<String, String>>,
         workDir: String,
     ): Shell = withContext(Dispatchers.IO) {
-        provision().onFailure { return@withContext Shell(-1, "", it.message ?: "not provisioned", true) }
+        // A provisioning failure is NOT a timeout. The flag is what the tools
+        // print, and calling it a timeout sent the owner looking at slow
+        // commands instead of at the rootfs that never unpacked.
+        provision().onFailure {
+            return@withContext Shell(-1, "", "Linux was not provisioned: ${it.message ?: "unknown error"}", false)
+        }
         // H-2: provisioning can delete and re-extract the rootfs, so the hosts
         // blocklist is (re)written after it and before anything runs.
         writeGuestHosts()
