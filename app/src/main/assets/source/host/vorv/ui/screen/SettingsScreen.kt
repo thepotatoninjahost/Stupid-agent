@@ -205,7 +205,9 @@ fun SettingsScreen(
                     "Local selected, but ${activeChoice.displayName.substringBefore("(").trim()} isn't downloaded yet."
                 state.hasApiKey -> "Active: " + activeModelSentence(state) + " with native function calling." +
                     if (state.autoFallback && state.localModelReady) " If the cloud fails mid-task, the offline engine finishes the job." else ""
-                else -> "Cloud selected, no key set. Add one below or download a local model."
+                // The model is named even before a key exists: "which cloud
+                // model am I on" must never be a question the screen dodges.
+                else -> "Cloud: " + activeModelSentence(state) + ". No key set yet — add one below, or download a local model."
             },
             color = OnSurfaceVariant,
             fontSize = 11.sp,
