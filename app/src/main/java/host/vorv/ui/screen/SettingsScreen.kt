@@ -712,7 +712,7 @@ private fun defaultModelName(state: host.vorv.AgentState): String =
 private fun defaultProviderLabel(state: host.vorv.AgentState): String =
     host.vorv.llm.provider.ProviderRegistry.orDefault(state.providerId).label
 
-/** "qwen/qwen3-coder on OpenRouter (the default)" or "<id> on <provider>". */
+/** "qwen/qwen3-coder-next on OpenRouter (the default)" or "<id> on <provider>". */
 private fun activeModelSentence(state: host.vorv.AgentState): String {
     val model = activeModelName(state)
     val provider = defaultProviderLabel(state)

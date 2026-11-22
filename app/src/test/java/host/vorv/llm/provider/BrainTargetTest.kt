@@ -21,7 +21,7 @@ class BrainTargetTest {
         val t = BrainTarget.resolve("", "")
         assertEquals(BrainTarget.DEFAULT_BASE, t.baseUrl)
         assertEquals(BrainTarget.DEFAULT_MODEL, t.modelId)
-        assertEquals("qwen/qwen3-coder", t.modelId)
+        assertEquals("qwen/qwen3-coder-next", t.modelId)
         assertNull(BrainTarget.refusal("", ""))
     }
 
@@ -34,10 +34,10 @@ class BrainTargetTest {
 
     @Test
     fun `another provider never receives a model id it was not given`() {
-        val t = BrainTarget.resolve("https://openrouter.ai/api/v1", "qwen/qwen3-coder")
+        val t = BrainTarget.resolve("https://openrouter.ai/api/v1", "qwen/qwen3-coder-next")
         assertEquals("https://openrouter.ai/api/v1", t.baseUrl)
-        assertEquals("qwen/qwen3-coder", t.modelId)
-        assertNull(BrainTarget.refusal("https://openrouter.ai/api/v1", "qwen/qwen3-coder"))
+        assertEquals("qwen/qwen3-coder-next", t.modelId)
+        assertNull(BrainTarget.refusal("https://openrouter.ai/api/v1", "qwen/qwen3-coder-next"))
     }
 
     @Test
@@ -45,7 +45,7 @@ class BrainTargetTest {
         assertNotNull(BrainTarget.refusal("https://openrouter.ai/api/v1", ""))
         assertTrue(BrainTarget.refusal("https://openrouter.ai/api/v1", "")!!.contains("Refresh list"))
         // H-5: a cleartext address is refused here too.
-        assertNotNull(BrainTarget.refusal("http://openrouter.ai/api/v1", "qwen/qwen3-coder"))
+        assertNotNull(BrainTarget.refusal("http://openrouter.ai/api/v1", "qwen/qwen3-coder-next"))
     }
     @Test
     fun `the selected provider supplies its own address and default model`() {
@@ -54,7 +54,7 @@ class BrainTargetTest {
         // sent that key to OpenRouter with a model it never chose.
         val t = BrainTarget.resolveFor("", "", ProviderRegistry.DEFAULT_ID)
         assertEquals("https://openrouter.ai/api/v1", t.baseUrl)
-        assertEquals("qwen/qwen3-coder", t.modelId)
+        assertEquals("qwen/qwen3-coder-next", t.modelId)
 
         assertEquals(
             "https://api.deepseek.com/v1",

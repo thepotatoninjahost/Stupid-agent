@@ -80,8 +80,12 @@ object ProviderRegistry {
             baseUrl = "https://openrouter.ai/api/v1",
             capability = Provider.Capability.CODE,
             modelsPath = "/models",
-            defaultModel = "qwen/qwen3-coder",
-            suggestions = listOf("qwen/qwen3-coder", "deepseek/deepseek-chat-v3.1"),
+            defaultModel = "qwen/qwen3-coder-next",
+            suggestions = listOf(
+                "qwen/qwen3-coder-next",
+                "qwen/qwen3-coder",
+                "qwen/qwen3.8-2.4t-a95b",
+            ),
             notes = "One key, many vendors. Model ids are vendor/model.",
         ),
         Provider(

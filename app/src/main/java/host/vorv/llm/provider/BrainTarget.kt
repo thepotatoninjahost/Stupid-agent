@@ -13,7 +13,7 @@ object BrainTarget {
 
     /** The default route a blank address resolves to: the owner's trainer model. */
     const val DEFAULT_BASE = "https://openrouter.ai/api/v1"
-    const val DEFAULT_MODEL = "qwen/qwen3-coder"
+    const val DEFAULT_MODEL = "qwen/qwen3-coder-next"
 
     data class Engine(val baseUrl: String, val modelId: String)
 
