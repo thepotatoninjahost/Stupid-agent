@@ -51,6 +51,7 @@ object HotPatcher {
     private const val TAG = "Vorv/HotPatcher"
     private const val PATCH_DIR = "hotpatch"
     private const val MANIFEST_FILE = "manifest.json"
+    private const val LOAD_LOG_FILE = "load_log.json"
     private const val APPROVED_FILE = "approved.json"
     private const val QUARANTINE_DIR = "hotpatch_quarantine"
 
@@ -180,6 +181,7 @@ object HotPatcher {
 
                     PatchRegistry.registerLoader(loader, classNames)
                     recordFirstApply(context, patchId)
+                    recordLoadOutcome(context, patchId, "applied", classNames.joinToString(","))
                     applied.add(patchId)
                     Log.i(TAG, "Applied patch: $patchId (classes=$classNames)")
                 }
@@ -378,9 +380,57 @@ object HotPatcher {
      */
     private fun quarantine(context: Context, dexFile: File, reason: String) {
         Log.e(TAG, "PATCH REFUSED — ${dexFile.name}: $reason")
+        // A boot-time refusal used to exist only in logcat, so neither the
+        // owner nor the agent could ever learn why a patch did not run.
+        recordLoadOutcome(context, dexFile.nameWithoutExtension, "refused", reason)
         runCatching {
             val qDir = File(context.filesDir, QUARANTINE_DIR).apply { mkdirs() }
             dexFile.renameTo(File(qDir, "${System.currentTimeMillis()}_${dexFile.name}"))
+        }
+    }
+
+    /**
+     * One line per patch, per boot: what happened and why. Kept in the patch
+     * directory and read back by the crash_logs tool, so "did my patch load?"
+     * is a question the app can answer about itself.
+     */
+    private fun recordLoadOutcome(context: Context, patchId: String, outcome: String, detail: String?) {
+        try {
+            val f = File(context.filesDir, "$PATCH_DIR/$LOAD_LOG_FILE")
+            val arr = JSONArray(f.takeIf { it.isFile }?.readText()?.ifBlank { "[]" } ?: "[]")
+            arr.put(
+                JSONObject()
+                    .put("at", System.currentTimeMillis())
+                    .put("patchId", patchId)
+                    .put("outcome", outcome)
+                    .put("detail", detail ?: "")
+                    .put("version", host.vorv.BuildConfig.VERSION_CODE),
+            )
+            val keep = JSONArray()
+            for (i in maxOf(0, arr.length() - 40) until arr.length()) keep.put(arr.getJSONObject(i))
+            f.writeText(keep.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "could not record patch outcome for $patchId: ${e.message}", e)
+        }
+    }
+
+    /** The recorded outcomes, newest last; empty when no patch was ever seen. */
+    fun loadLog(context: Context): List<String> {
+        return try {
+            val f = File(context.filesDir, "$PATCH_DIR/$LOAD_LOG_FILE")
+            val arr = JSONArray(if (f.isFile) f.readText().ifBlank { "[]" } else "[]")
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                val whenAt = fmt.format(java.util.Date(o.optLong("at")))
+                val detail = o.optString("detail")
+                "$whenAt  ${o.optString("patchId")}  ${o.optString("outcome")}" +
+                    (if (detail.isBlank()) "" else "  ($detail)") +
+                    "  [app ${o.optInt("version")}]"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "could not read the patch load log: ${e.message}", e)
+            emptyList()
         }
     }
 

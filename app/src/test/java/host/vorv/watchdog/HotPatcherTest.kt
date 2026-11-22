@@ -30,6 +30,28 @@ class HotPatcherTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
+    fun `a boot refusal is recorded where the app can read it back`() {
+        val dir = File(context.filesDir, "hotpatch").apply { mkdirs() }
+        val log = File(dir, "load_log.json")
+        log.writeText(
+            JSONArray()
+                .put(JSONObject().put("at", 1_700_000_000_000).put("patchId", "fix_one")
+                    .put("outcome", "applied").put("detail", "host.vorv.tools.ShellTool").put("version", 77))
+                .put(JSONObject().put("at", 1_700_000_100_000).put("patchId", "fix_two")
+                    .put("outcome", "refused").put("detail", "SHA-256 mismatch").put("version", 77))
+                .toString(),
+        )
+        val lines = HotPatcher.loadLog(context)
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].contains("fix_one") && lines[0].contains("applied"))
+        assertTrue(lines[1].contains("fix_two") && lines[1].contains("refused"))
+        assertTrue(lines[1].contains("SHA-256 mismatch"))
+
+        log.writeText("")
+        assertEquals(emptyList<String>(), HotPatcher.loadLog(context))
+    }
+
+    @Test
     fun `consent registry round-trips a real JSONArray`() {
         HotPatcher.markPendingApply(context, "fix_abc")
         HotPatcher.markPendingApply(context, "fix_def")

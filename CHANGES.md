@@ -1,3 +1,14 @@
+# A refused patch says why, and the agent can read it (2026-11-22)
+
+Every patch outcome is now written to `files/hotpatch/load_log.json`: applied
+patches with their classes, refused ones with the exact gate that refused them
+(missing manifest entry, no consent, version window, SHA-256 mismatch,
+signature failure, no dispatchable class, dex does not shadow). Before this the
+reason existed only in logcat, so after a restart neither the owner nor the
+agent could say whether a fix had loaded — the loop could not close. The
+`crash_logs` tool lists the last outcomes, so "did my patch load?" is now a
+question the app answers about itself.
+
 # Self-fix can now actually run, and the Linux tools stop mislabeling (2026-11-22)
 
 - **A patch that was "applied" could never run.** `AgentViewModel` built all

@@ -115,6 +115,14 @@ class CrashLogsTool(private val appContext: Context) : Tool {
             if (wd.size > MAX_LIST) sb.appendLine("    …(${wd.size - MAX_LIST} older omitted)")
         }
 
+        val patches = host.vorv.watchdog.HotPatcher.loadLog(appContext)
+        if (patches.isEmpty()) {
+            sb.appendLine("  hotpatch/load_log.json — (no patch has ever been considered on this install)")
+        } else {
+            sb.appendLine("  hotpatch/load_log.json — last ${patches.size} patch outcome(s):")
+            patches.takeLast(MAX_LIST).forEach { sb.appendLine("    $it") }
+        }
+
         sb.appendLine("  boot_trace_previous  — previous boot's breadcrumbs (null after a clean shutdown)")
         sb.appendLine("  boot_trace_current   — current boot's breadcrumbs")
 
