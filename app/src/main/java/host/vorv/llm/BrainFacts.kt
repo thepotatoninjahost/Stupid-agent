@@ -50,14 +50,12 @@ data class BrainFacts(
         /** The text a model answered with, when the body carries any. */
         val replyText: String
             get() = runCatching {
-                com.google.gson.JsonParser.parseString(body).asJsonObject
+                val choice = com.google.gson.JsonParser.parseString(body).asJsonObject
                     .getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-                    ?.getAsJsonObject("message")
-                    ?.let { m ->
-                        m.get("content")?.takeIf { !it.isJsonNull }?.asString.orEmpty().ifBlank {
-                            m.get("reasoning_content")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-                        }
-                    }.orEmpty()
+                // Same shapes the LLM code reads (content parts, reasoning,
+                // legacy "text"), so health and chat never disagree.
+                CompletionText.of(choice?.get("message"))
+                    .ifBlank { choice?.get("text")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty() }
             }.getOrDefault("")
 
         val toolCalls: Int

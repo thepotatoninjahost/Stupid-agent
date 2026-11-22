@@ -283,7 +283,10 @@ class CloudLlm(
                         val choice = choices[0].asJsonObject
                         val msg = choice.getAsJsonObject("message")
                         val finish = choice.get("finish_reason")?.takeIf { !it.isJsonNull }?.asString ?: "stop"
-                        val content = msg.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        // A gateway may send content as an array of parts;
+                        // reading only a plain string made a real answer look
+                        // empty (and retried four times for nothing).
+                        val content = CompletionText.content(msg)
                         val toolCallsArr = msg.getAsJsonArray("tool_calls")
 
                         return@withContext if (toolCallsArr != null && toolCallsArr.size() > 0) {
@@ -411,7 +414,12 @@ class CloudLlm(
                     val body = JsonObject().apply {
                         addProperty("model", model)
                         addProperty("temperature", 0f)
-                        addProperty("max_tokens", 8)
+                        // 8 tokens was enough for "VORV_KEY_OK" and nothing
+                        // else: a model that emits a short preamble (or a
+                        // gateway that adds reasoning) hit the ceiling with an
+                        // empty content and looked "retired". 64 costs a
+                        // fraction of a cent and leaves room to speak.
+                        addProperty("max_tokens", 64)
                         add("messages", com.google.gson.JsonArray().apply {
                             add(JsonObject().apply {
                                 addProperty("role", "user")
@@ -448,21 +456,20 @@ class CloudLlm(
                                 RuntimeException("No choices in response: ${text.take(200)}"),
                             )
                         }
-                        val message = choices[0].asJsonObject.getAsJsonObject("message")
-                        val content = message.get("content")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-                            .ifBlank {
-                                message.get("reasoning_content")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-                            }
+                        val message = choices[0].asJsonObject.get("message")
+                        // A gateway may send content as parts, or put the whole
+                        // reply in "reasoning" — both used to read as "no text".
+                        val content = CompletionText.of(message)
                         if (content.isBlank()) {
                             // 0.9.18: an HTTP 200 with an empty answer is NOT
-                            // proof the key works — it is the signature of a
-                            // retired or renamed model id (screenshot 2: the
-                            // probe said "key works" for exactly this reply).
+                            // proof the key works. Name what actually came
+                            // back instead of blaming the model id blind.
                             return@withContext Result.failure(
                                 RuntimeException(
-                                    "HTTP 200, but model \"$model\" returned no text. " +
-                                        "The key is not the problem — the model id is probably retired. " +
-                                        "Pick one the provider still lists.",
+                                    "HTTP 200, but model \"$model\" returned no text " +
+                                        "(${CompletionText.emptyReplyReason(text)}). " +
+                                        "The key is not the problem. If the provider says the model is unknown, " +
+                                        "tap Refresh list and pick one it still serves.",
                                 ),
                             )
                         }

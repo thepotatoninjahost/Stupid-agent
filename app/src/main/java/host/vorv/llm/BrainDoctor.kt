@@ -97,8 +97,9 @@ object BrainDoctor {
                     Check(
                         "last test",
                         State.FAIL,
-                        "HTTP ${p.code} but the reply carried no text — model \"${p.model}\" is probably retired",
-                        "Setup → model → Refresh list and pick one the provider still serves",
+                        "HTTP ${p.code} but the reply carried no text " +
+                            "(${CompletionText.emptyReplyReason(p.body)}) — model \"${p.model}\"",
+                        "Setup → model → Refresh list; if the provider names the model as unknown, pick another",
                     ),
                 )
                 p.code == 0 -> add(

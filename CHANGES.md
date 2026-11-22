@@ -1,3 +1,21 @@
+# A 200 with an empty answer is not "model retired" (2026-11-22)
+
+The owner's key test on `qwen/qwen3-coder` said "HTTP 200 but the reply carried
+no text", which blamed a model that exists.
+
+- **Old:** the probe read `choices[0].message.content` only as a string, with a
+  8-token allowance, and reported every empty 200 as a retired model id.
+  A gateway that sends `content` as parts, or the text in `reasoning`, produced
+  that verdict; so did any reply that spent the 8 tokens before speaking.
+- **New:** `CompletionText` reads a reply in every shape a gateway sends —
+  string, array of `{type:text,text}`, `reasoning`/`reasoning_content`/
+  `reasoning_details`, legacy `choices[0].text` — and the probe, the chat path
+  and Brain health all use it. The probe allowance is 64 tokens. An empty 200
+  now names what came back (`provider said: …`, `finish_reason=…`, or the body
+  head) instead of accusing the model id.
+- **Limit:** the real OpenRouter payload that produced the empty reply is only
+  visible on the phone; the next Test press will show it in Brain health.
+
 # Default cloud brain: the large Qwen on OpenRouter (2026-11-21)
 
 The owner's decision, now the code's default: the cloud brain is
