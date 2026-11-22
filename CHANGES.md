@@ -1,3 +1,12 @@
+# Provider answers stay out of cloud backup (2026-11-22)
+
+Brain health keeps the last provider URL and up to 600 characters of its raw
+answer — which can quote the prompt or a masked key prefix. That string lives
+in `datastore/vorv_prefs.preferences_pb`, which the backup rules did not
+exclude (the file's own comment claimed only non-secret settings were
+backed up). It is now excluded from cloud backup in both rule files; device
+transfer still carries it, since that is the owner's own new phone.
+
 # A refused patch says why, and the agent can read it (2026-11-22)
 
 Every patch outcome is now written to `files/hotpatch/load_log.json`: applied

@@ -28,4 +28,8 @@
     <exclude domain="external" path="crash_logs" />
     <exclude domain="external" path="watchdog" />
     <exclude domain="external" path="healer" />
+    <!-- Brain facts carry the last provider URL and up to 600 chars of its
+         raw answer, which can quote the prompt or a masked key prefix. That
+         is diagnostics, not settings, so it does not go to cloud backup. -->
+    <exclude domain="file" path="datastore/vorv_prefs.preferences_pb" />
 </full-backup-content>

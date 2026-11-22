@@ -15,6 +15,8 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
+        <!-- Brain facts hold the last provider URL and its raw answer text. -->
+        <exclude domain="file" path="datastore/vorv_prefs.preferences_pb" />
         <exclude domain="database" path="vorv.db" />
         <exclude domain="database" path="vorv.db-wal" />
         <exclude domain="database" path="vorv.db-shm" />
