@@ -2,6 +2,7 @@ package host.vorv.llm
 
 import host.vorv.llm.BrainDoctor.State
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -51,22 +52,41 @@ class BrainDoctorTest {
         BrainDoctor.diagnose(f).firstOrNull { it.name == name } ?: error("no check named $name")
 
     @Test
-    fun `a saved key with an empty reply is a retired model, said in those words`() {
+    fun `an empty 200 is reported with what the provider sent, never called retired`() {
         val c = check(
             facts(
                 probe = BrainFacts.Exchange(
-                    url = "https://api.z.ai/api/paas/v4/chat/completions",
-                    model = "glm-4.7-flash",
+                    url = "https://openrouter.ai/api/v1/chat/completions",
+                    model = "qwen/qwen3-coder-next",
                     authorizationSent = true,
                     code = 200,
-                    body = """{"choices":[{"message":{"content":""}}]}""",
+                    body = """{"choices":[{"message":{"content":""},"finish_reason":"length"}]}""",
                 ),
             ),
             "last test",
         )
         assertEquals(State.FAIL, c.state)
-        assertTrue(c.detail.contains("no text") || c.detail.contains("HTTP 200"))
-        assertTrue(c.remedy!!.contains("Refresh list"))
+        assertTrue(c.detail.contains("finish_reason=length"))
+        assertFalse(c.detail.contains("retired"))
+    }
+
+    @Test
+    fun `a reply that is a tool call counts as an answer, not as a dead model`() {
+        // Reproduced against OpenRouter with qwen/qwen3-coder-next and a tool
+        // list: content is null and the work is in tool_calls. The old check
+        // read that as "no text" and blamed the model.
+        val e = BrainFacts.Exchange(
+            url = "https://openrouter.ai/api/v1/chat/completions",
+            model = "qwen/qwen3-coder-next",
+            authorizationSent = true,
+            code = 200,
+            body = """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[""" +
+                """{"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}}]},""" +
+                """"finish_reason":"tool_calls"}]}""",
+            toolsSent = true,
+        )
+        assertTrue(e.answered)
+        assertTrue(BrainDoctor.diagnose(facts(exchange = e)).none { it.name == "last request" })
     }
 
     @Test

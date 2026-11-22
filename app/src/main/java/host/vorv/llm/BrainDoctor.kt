@@ -152,8 +152,9 @@ object BrainDoctor {
                     Check(
                         "last request",
                         State.FAIL,
-                        "HTTP 200 but the reply carried no text — model \"${e.model}\" is probably retired",
-                        "Setup → model → Refresh list and pick one the provider still serves",
+                        "HTTP 200 from \"${e.model}\" with no text and no tool call " +
+                            "(${CompletionText.emptyReplyReason(e.body)})",
+                        "Setup → model → Save & Test; this is what the provider sent, not a guess",
                     ),
                 )
             }

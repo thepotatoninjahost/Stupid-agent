@@ -1,3 +1,16 @@
+# The brain never calls a live model retired (2026-11-21)
+
+A real request to OpenRouter from the workspace proved the cloud route works:
+`qwen/qwen3-coder-next` answered HTTP 200 with the text "pong" (15 prompt
+tokens, 2 completion tokens, $0.0000034). With a tool list attached the same
+model answers HTTP 200 with `content: null` and the work in `tool_calls` —
+which is a valid answer, not a missing one.
+
+The brain screen used to turn any 200 without text into "the model is probably
+retired". That sentence is gone: an empty reply now prints what the provider
+actually sent (`provider said: …`, `finish_reason=…`, or the body head), and a
+reply that is a tool call counts as an answer.
+
 # The on-phone model actually runs on the phone (2026-11-21)
 
 The local engine asked GenieX for the NPU but passed `nGpuLayers = 0`, which
