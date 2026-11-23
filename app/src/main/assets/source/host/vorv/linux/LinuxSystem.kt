@@ -214,7 +214,8 @@ class LinuxSystem(private val context: Context) : GuestShell {
         val argv = prootArgv(proot, rootfs, home, tmp, binds, workDir, command)
         val env = guestEnv(loader, tmp, proot.parentFile ?: File("/"), proxyPort)
         val first = launch(argv, env, home, timeoutMs)
-        if (first.exitCode == 0 || first.timedOut || !first.output.contains("execve(")) {
+        val firstSaid = first.output + first.error.orEmpty()
+        if (first.exitCode == 0 || first.timedOut || !firstSaid.contains("execve(")) {
             return@withContext first
         }
         val broken = GuestTree.broken(rootfs)
@@ -222,7 +223,7 @@ class LinuxSystem(private val context: Context) : GuestShell {
             return@withContext Shell(
                 first.exitCode,
                 first.output + "\nvorv: the unpacked Linux system is broken: " + broken.joinToString("; "),
-                null,
+                first.error,
                 false,
             )
         }
@@ -246,8 +247,9 @@ class LinuxSystem(private val context: Context) : GuestShell {
             first.exitCode,
             first.output + "\nvorv: every file the guest needs is present and both start routes " +
                 "were refused, so proot itself cannot start the guest on this phone.\n" +
-                "vorv: fallback route said: " + second.output.lineSequence().take(6).joinToString(" | "),
-            null,
+                "vorv: fallback route said: " +
+                (second.output + second.error.orEmpty()).lineSequence().take(6).joinToString(" | "),
+            first.error,
             false,
         )
     }
@@ -260,39 +262,76 @@ class LinuxSystem(private val context: Context) : GuestShell {
      */
     internal fun writeGuestHosts() = writeGuestHosts(rootfs)
 
-    /** One proot run: start it, drain its output, enforce the timeout. */
+    /** Closing a finished process's pipes is best-effort; the run's own result
+     *  is what the model is told about, so these two closes stay quiet. */
+    private fun closeQuietly(vararg streams: java.io.Closeable) {
+        streams.forEach { runCatching { it.close() } }
+    }
+
+    /**
+     * One proot run: start it, drain BOTH of its pipes, enforce the timeout.
+     *
+     * stdout and stderr are kept apart, because `shell` promises the model the
+     * real stderr. They are drained on two threads for the reason
+     * java.lang.Process states: "failure to promptly ... read the output stream
+     * of the process may cause the process to block, or even deadlock" — a full
+     * pipe leaves the child waiting forever while this thread waits for it.
+     */
     private fun launch(argv: List<String>, env: Map<String, String>, home: File, timeoutMs: Long): Shell {
         val builder = ProcessBuilder(argv)
         builder.environment().putAll(env)
         builder.directory(home)
-        val process = runCatching { builder.redirectErrorStream(true).start() }.getOrElse {
+        val process = runCatching { builder.start() }.getOrElse {
             return Shell(-1, "", "proot could not be started: ${it.message ?: it.javaClass.simpleName}", false)
         }
         // Nothing is ever written to proot's stdin, and every pipe this leaves
         // open costs the app two file descriptors for the life of the process.
         runCatching { process.outputStream.close() }
-        // Reading on this thread would block *before* the timeout is checked: a
-        // command that never exits and never prints would never time out. The
-        // drain runs on its own thread so waitFor() is the thing that decides.
+
         val out = StringBuilder()
-        val drain = Thread {
-            runCatching {
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    synchronized(out) { if (out.length < MAX_OUTPUT) out.appendLine(line) }
+        val err = StringBuilder()
+        fun drain(name: String, ins: java.io.InputStream, into: StringBuilder) = Thread {
+            try {
+                drainCapped(ins, into)
+            } catch (e: Exception) {
+                // A pipe that dies mid-read is data, not noise: the model gets
+                // the note in place of the output it will never see.
+                synchronized(into) {
+                    into.append("\nvorv: this stream stopped early: ${e.message ?: e::class.java.simpleName}")
                 }
             }
-        }.apply { isDaemon = true; name = "vorv-guest-drain"; start() }
+        }.apply { isDaemon = true; this.name = name; start() }
+        // Reading on this thread would block *before* the timeout is checked: a
+        // command that never exits and never prints would never time out. The
+        // drains run on their own threads so waitFor() is the thing that decides.
+        val drainOut = drain("vorv-guest-stdout", process.inputStream, out)
+        val drainErr = drain("vorv-guest-stderr", process.errorStream, err)
+
         val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
         if (!finished) {
             process.destroyForcibly()
             process.waitFor(2, TimeUnit.SECONDS)
-            drain.join(500)
-            runCatching { process.inputStream.close() }
-            return Shell(-1, synchronized(out) { out.toString() }, "timed out after ${timeoutMs}ms", true)
+            drainOut.join(500)
+            drainErr.join(500)
+            closeQuietly(process.inputStream, process.errorStream)
+            val said = synchronized(err) { err.toString() }
+            return Shell(
+                -1,
+                synchronized(out) { out.toString() },
+                listOf(said.trimEnd(), "vorv: stopped after ${timeoutMs}ms").filter { it.isNotBlank() }
+                    .joinToString("\n"),
+                true,
+            )
         }
-        drain.join(2_000)
-        runCatching { process.inputStream.close() }
-        return Shell(process.exitValue(), synchronized(out) { out.toString() }, null, false)
+        drainOut.join(2_000)
+        drainErr.join(2_000)
+        closeQuietly(process.inputStream, process.errorStream)
+        return Shell(
+            process.exitValue(),
+            synchronized(out) { out.toString() },
+            synchronized(err) { err.toString() },
+            false,
+        )
     }
 
     companion object {
@@ -413,8 +452,40 @@ class LinuxSystem(private val context: Context) : GuestShell {
          * still cannot eat the phone's memory.
          */
         internal const val MAX_OUTPUT = 200_000
+
+        /** Appended once when a pipe produced more than [MAX_OUTPUT] chars. */
+        internal const val TRUNCATED = "\nvorv: this stream was cut at $MAX_OUTPUT characters"
+
+        /**
+         * Copies one pipe into [into], stopping at [MAX_OUTPUT] chars and
+         * appending [TRUNCATED] once. Here, not on the instance, so the ceiling
+         * is testable without a proot rootfs: a command that floods a pipe must
+         * not grow the app's heap. Both pipes are drained this way.
+         */
+        internal fun drainCapped(ins: java.io.InputStream, into: StringBuilder) {
+            val reader = ins.bufferedReader()
+            val buf = CharArray(8 * 1024)
+            while (true) {
+                val n = reader.read(buf)
+                if (n <= 0) break
+                synchronized(into) {
+                    val room = MAX_OUTPUT - into.length
+                    if (room > 0) into.append(buf, 0, minOf(n, room))
+                    if (into.length >= MAX_OUTPUT && !into.endsWith(TRUNCATED)) into.append(TRUNCATED)
+                }
+            }
+        }
     }
 
+    /**
+     * What one guest command produced.
+     *
+     * [output] is the command's stdout, [error] its stderr (both drained
+     * separately, both capped at [MAX_OUTPUT]); neither is ever the other's
+     * text. [exitCode] is -1 when no command ran at all — provisioning, the
+     * egress guard, a missing loader or the timeout — and callers must say
+     * "never ran", never "exited with code -1".
+     */
     data class Shell(val exitCode: Int, val output: String, val error: String?, val timedOut: Boolean) {
         val ok: Boolean get() = exitCode == 0 && !timedOut
     }

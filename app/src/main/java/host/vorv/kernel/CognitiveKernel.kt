@@ -246,11 +246,19 @@ class CognitiveKernel(
                 eventSink.setTaskIterations(taskId, iterations)
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
+                // The engine reports its window only after it is loaded; ask
+                // it to load first so the budget below is measured, not hoped.
+                llm.prepare()
+                val promptBudget = llm.promptBudget(toolSpecs)
                 val resp = try {
                     // M-2: compact history to the engine's honest budget right
                     // before every call — growth without bound used to overflow
-                    // the context opaquely.
-                    compactHistoryIfNeeded(messages, llm.contextTokenBudget)
+                    // the context opaquely. The budget is asked for WITH this
+                    // call's tool roster: on the local engine the schemas are
+                    // rendered into the prompt, and a budget that ignored them
+                    // let compaction "succeed" at 5896 while the engine
+                    // measured 7971 on an 8192 window.
+                    compactHistoryIfNeeded(messages, promptBudget)
                     llm.step(messages, toolSpecs)
                 } catch (e: CancellationException) {
                     // v0.6.16: user pressed STOP mid-generation — propagate.
@@ -269,7 +277,8 @@ class CognitiveKernel(
                     // added around them.
                     val engineSaid = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                     val honest = "iteration $iterations, prompt budget " +
-                        "${llm.contextTokenBudget} tokens after compaction, engine ${llm.label}: " +
+                        "$promptBudget tokens for messages with ${toolSpecs.size} tools rendered, " +
+                        "engine ${llm.label}: " +
                         engineSaid
                     lastError = engineSaid
                     lastErrorDetail = honest

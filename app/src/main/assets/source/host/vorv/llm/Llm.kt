@@ -36,6 +36,27 @@ interface Llm {
      */
     val contextTokenBudget: Int get() = 100_000
 
+    /**
+     * The prompt budget for one call, given the tools that call renders.
+     *
+     * On a local engine the tool SCHEMAS are part of the prompt the chat
+     * template builds, so a budget that counts only message text is not a
+     * budget: the kernel compacted to 5896 and the engine still measured 7971
+     * on a 8192 window. Engines that render tools into the prompt subtract
+     * them here; cloud engines neither render nor pay for them and keep the
+     * flat [contextTokenBudget].
+     */
+    fun promptBudget(tools: List<ToolSpec>): Int = contextTokenBudget
+
+    /**
+     * Load whatever [promptBudget] depends on, before it is asked.
+     *
+     * A local engine only knows its real window after the build succeeds, so
+     * a budget asked for earlier is a guess — and the kernel compacts on it.
+     * No-op for engines whose budget is fixed.
+     */
+    suspend fun prepare() {}
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,
@@ -134,6 +155,10 @@ class CloudLlm(
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
             require(apiKey.isNotBlank()) { "$model requires an API key — add one in Setup tab." }
+            // L-6: a key that cannot be sent is a deterministic failure. Say it
+            // once, here, instead of retrying it four times and reporting that
+            // "the call failed after 4 attempts".
+            host.vorv.llm.provider.ApiKey.normalize(apiKey)
             // H-5: a cleartext provider address never gets a prompt, even if
             // it was stored before this check existed.
             host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
@@ -407,6 +432,7 @@ class CloudLlm(
         ): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
+                host.vorv.llm.provider.ApiKey.normalize(apiKey)
                 host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
                     return@withContext Result.failure(IllegalArgumentException(it))
                 }

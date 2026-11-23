@@ -1,3 +1,106 @@
+# The brain, run for real — and the key that could not be sent (2026-11-23)
+
+Priority 1 was "get the AI and the brain working correctly", and it had never
+been tested through the app's own code: the cloud proof was a `curl` and a
+Python probe, the unit tests used fake engines. `LiveBrainTest` now runs the
+real `CloudLlm` inside the real `CognitiveKernel`, against the provider in
+Setup, and asserts what the owner actually cares about: the model is given one
+tool, it asks for it, the kernel runs it, and the answer carries the number the
+tool computed.
+
+It found a defect on the first run. The key field is a paste target; the value
+saved here held four keys on four lines. OkHttp refused the header ("Unexpected
+char 0x0a at 80 in Authorization value"), and `CloudLlm` treated that
+deterministic failure as transient — four attempts with backoff, then "LLM call
+failed after 4 attempts". Every cloud call would fail that way, with a sentence
+that names neither the cause nor the fix.
+
+- `ApiKey.normalize` is now the single gate on a key: surrounding whitespace is
+  removed (a trailing newline from a paste is ordinary), an interior line break
+  or space is refused with the count and the instruction, and a blank value
+  stays blank so the caller can say "no key yet".
+- `BrainHttp.applyAuth` uses it, so no request is ever built from an unsendable
+  value; `CloudLlm.step` checks before the retry loop, so the refusal is
+  immediate instead of retried; `CloudLlm.probeAt` reports it as the probe's
+  answer.
+- Setup refuses the paste at the door: nothing is saved, and the field shows
+  the same sentence. Picking one of several keys automatically would be a
+  guess about which is live, so the app does not.
+
+Receipts, with the first key only: `LiveBrainTest` → `LIVE text=pong`,
+`LIVE answer=[uncited] 391 toolCalls=1 ok=true`. Full suite: 886 tests
+(884 ran, 2 skipped: the live test skips when no single key is in the
+environment), 0 failures, 0 errors. Version 0.9.36 (83).
+
+The live test is the thing to run on the phone's behalf when a cloud answer is
+doubted: `OPENROUTER_API_KEY=<one key> ./gradlew :app:testDebugUnitTest
+--tests 'host.vorv.llm.LiveBrainTest'`.
+
+
+# The shell keeps its promises, and no read is unbounded (2026-11-22)
+
+Four review findings were true of the old code, and each was a place where the
+app could be wrong and say nothing.
+
+- `shell` promises "the REAL exit code, stdout and stderr". It used
+  `redirectErrorStream(true)`, so `stderr` was stdout+stderr merged. The two
+  pipes are now drained on separate threads — the reason is stated by
+  `java.lang.Process`: an unread pipe can block the child, so merging was the
+  cheap way out, not the correct one. Output no longer deadlocks, and a
+  command's real errors are labelled as errors.
+- A command that never ran (proot refused to start, exit `-1`) came back as
+  "exited with code -1" and *opened the shell knowledge gate*. It now fails
+  loudly, says it never ran, and proves nothing.
+- A command that floods a pipe grew a `StringBuilder` without limit. Each pipe
+  now stops at 200 000 chars and says where it was cut; a pipe that dies
+  mid-read puts a note in the output instead of vanishing.
+- The cloud model listing (`ModelCatalog`) read `res.body?.string()` whole, and
+  a body cut at any ceiling parsed to an *empty* list — Setup then said the
+  provider serves no models. It is now read through the same bounded reader as
+  every other reply (2 MB), and an unreadable body is reported as an error with
+  the first 160 characters instead of as an empty success. GPU bundle sidecars
+  get the same treatment (1 MB, refuse rather than half-import).
+
+- Two follow-ups from a second pass. The sidecar cap counted decoded
+  *characters* while calling itself a byte limit; it now stops on decompressed
+  bytes and decodes afterwards, so a sidecar of multibyte characters cannot
+  pass under a megachar while being 1.4 MB. And a 200 that carries
+  `{"error":{…}}` or `{"data":"unavailable"}` parsed to an *empty* listing,
+  which `isFresh` then treated as good; an object that carries neither a
+  `data` nor a `models` list is now a reported error, while `{}` and
+  `{"data":null}` stay empty answers.
+
+Tests: 878, all green. New: the stream ceiling and its single marker, a command
+that never ran (the gate stays shut), a real exit code (the gate opens), a
+listing body cut at the cap (reported, not silently empty), an error body with
+HTTP 200 (reported), and a sidecar over the byte cap but under a megachar
+(refused).
+
+
+# The prompt budget counts the tools, and the window is twice as big (2026-11-22)
+
+The phone said "prompt budget 5896 tokens after compaction" and then "the prompt
+is about 7971 tokens" on the same call. Both numbers were true. Compaction
+counted message text only; the chat template also renders every tool schema
+into the prompt, and that roster was never paid for.
+
+- The local budget is now `window - reply reserve - template margin - tool
+  roster`, measured with one chars/token rule on both sides. A roster that
+  alone exceeds the window leaves zero instead of a negative number, and the
+  kernel's error line prints the budget it actually used and how many tools
+  were rendered.
+- The window is now 16384 tokens (was 8192), which leaves about 12000 tokens of
+  history with a 40-tool roster — the owner asked for 10000. The KV cache is
+  the price and it is known from the GGUF itself: qwen35 is a hybrid
+  (`full_attention_interval = 4`), so only 8 of 32 blocks keep a cache
+  (llama.cpp's qwen3next graph allocates KV only for non-recurrent layers) —
+  32 KiB per token, 256 MiB at 8192 and 512 MiB at 16384, on top of the 5.31 GB
+  of weights. An earlier draft of this entry said 2 GiB; that counted all 32
+  blocks and was wrong.
+- The engine walks a RAM-gated ladder: 16384 then 8192 then 4096, NPU before
+  CPU at each rung, and the label names the window that actually loaded. An
+  8 GB phone never attempts what it cannot hold.
+
 # The brain never calls a live model retired (2026-11-21)
 
 A real request to OpenRouter from the workspace proved the cloud route works:

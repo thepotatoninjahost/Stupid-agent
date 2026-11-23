@@ -14,7 +14,9 @@ object BrainHttp {
 
     /** Adds the provider's own auth header. A blank key adds nothing at all. */
     fun applyAuth(builder: Request.Builder, provider: Provider?, apiKey: String): Request.Builder {
-        val key = apiKey.trim()
+        // A value with an interior line break is not a header OkHttp will
+        // build, and the sentence it throws names neither cause nor fix.
+        val key = ApiKey.normalize(apiKey)
         if (key.isEmpty()) return builder
         val style = provider?.authStyle ?: Provider.AuthStyle.BEARER
         if (style == Provider.AuthStyle.NONE) return builder

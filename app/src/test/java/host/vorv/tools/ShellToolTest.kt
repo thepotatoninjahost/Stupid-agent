@@ -167,6 +167,28 @@ class ShellToolTest {
     }
 
     @Test
+    fun `a command that never ran is named as such and proves nothing`() = runBlocking {
+        // proot could not start: exit -1, nothing executed. The old code marked
+        // the shell "verified" here — the knowledge gate opened on a command
+        // that never ran — and reported "exited with code -1".
+        val guest = FakeGuest(
+            result = LinuxSystem.Shell(-1, "", "Linux is not provisioned yet — open Setup and finish the install.", false),
+        )
+        val r = ShellTool(guest, context).run(input(), ctx(confirm = { true }))
+        assertFalse(r.ok)
+        assertTrue("error was: ${r.error}", r.error!!.contains("never ran"))
+        assertTrue("error was: ${r.error}", r.error!!.contains("not provisioned"))
+        assertFalse("a command that never ran must not open the shell gate", SessionGrants.shellVerified)
+    }
+
+    @Test
+    fun `a real exit code still opens the shell gate`() = runBlocking {
+        val guest = FakeGuest(result = LinuxSystem.Shell(127, "", "sh: nope: not found", false))
+        ShellTool(guest, context).run(input(), ctx(confirm = { true }))
+        assertTrue("a command that ran proves the guest works", SessionGrants.shellVerified)
+    }
+
+    @Test
     fun `its description tells the model a package manager exists`() {
         val d = ShellTool(FakeGuest(), context).description
         // R-1 (review 2026-11-14): the guest is Debian 12, not Alpine.

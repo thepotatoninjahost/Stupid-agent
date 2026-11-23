@@ -34,6 +34,11 @@ class ModelCatalog(
 
     private val cache = ConcurrentHashMap<String, Listing>()
 
+    companion object {
+        /** Ceiling for one `GET /models` body. */
+        internal const val MAX_LISTING_BYTES = 2_000_000
+    }
+
     fun cached(providerId: String): Listing? = cache[providerId]
 
     internal fun rememberForTest(listing: Listing) { cache[listing.providerId] = listing }
@@ -52,7 +57,9 @@ class ModelCatalog(
                 .get()
                 .build()
             client.newCall(req).execute().use { res ->
-                val body = res.body?.string().orEmpty()
+                // A provider list is a few KB; a server that streams megabytes
+                // must not be able to fill the app's heap before it is parsed.
+                val body = host.vorv.llm.CloudLlm.readBounded(res.body, MAX_LISTING_BYTES)
                 if (res.code in 300..399) {
                     val location = res.header("Location") ?: "(no Location header)"
                     Listing(
@@ -69,7 +76,18 @@ class ModelCatalog(
                         error = "HTTP ${res.code} from $url: ${body.take(160)}",
                     )
                 } else {
-                    Listing(provider.id, parse(body), clock())
+                    val entries = parseStrict(body)
+                    if (entries == null) {
+                        Listing(
+                            provider.id,
+                            emptyList(),
+                            clock(),
+                            error = "HTTP ${res.code} from $url, but the body is not a model list " +
+                                "(${body.length} chars read): ${body.take(160)}",
+                        )
+                    } else {
+                        Listing(provider.id, entries, clock())
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -79,15 +97,44 @@ class ModelCatalog(
         return listing
     }
 
-    /** Parses both `{"data":[{"id":…}]}` (OpenAI shape) and a bare array. */
-    fun parse(body: String): List<Entry> = runCatching {
+    /**
+     * Parses both `{"data":[{"id":…}]}` (OpenAI shape) and a bare array, and
+     * answers null when [body] is not a list this app can read. It used to
+     * answer an empty list instead: a body cut at the byte ceiling, or a
+     * proxy's HTML error page, then reached Setup as "the provider serves no
+     * models" — a claim with no evidence behind it. [Listing] carries the
+     * error line instead.
+     *
+     * `{"data":null}` and `{}` are readable lists that happen to be empty.
+     * An object that carries neither (`{"error":{…}}`, `{"data":"unavailable"}`)
+     * is a failure, and answers null.
+     */
+    fun parseStrict(body: String): List<Entry>? = runCatching {
         val root = JsonParser.parseString(body)
+        // A recognised envelope with no list in it is an empty catalogue (`{}`,
+        // `{"data":null}` are both answers). Anything that is not an envelope at
+        // all — an HTML error page, a body cut mid-object — is null, so the
+        // caller says what happened instead of "this provider serves nothing".
         val arr = when {
             root.isJsonArray -> root.asJsonArray
-            root.isJsonObject -> root.asJsonObject.getAsJsonArray("data")
-                ?: root.asJsonObject.getAsJsonArray("models")
-            else -> null
-        } ?: return@runCatching emptyList()
+            root.isJsonObject -> {
+                val obj = root.asJsonObject
+                val member = listOf("data", "models").firstOrNull { obj.get(it) != null }
+                val v = member?.let { obj.get(it) }
+                when {
+                    // `{}` is an empty answer; anything else without a list is
+                    // not a catalogue at all, so it must not read as "serves
+                    // no models".
+                    v == null -> if (obj.size() == 0) emptyList() else return@runCatching null
+                    v.isJsonNull -> emptyList()
+                    v.isJsonArray -> v.asJsonArray
+                    // `{"error":{…}}`, `{"data":"unavailable"}`: a failure the
+                    // caller must report, not a fresh empty listing.
+                    else -> return@runCatching null
+                }
+            }
+            else -> return@runCatching null
+        }
         arr.mapNotNull { el ->
             val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString
@@ -95,7 +142,7 @@ class ModelCatalog(
                 ?: return@mapNotNull null
             Entry(id, contextLength = null, price = null)
         }.distinctBy { it.id }.sortedBy { it.id }
-    }.getOrDefault(emptyList())
+    }.getOrNull()
 
     /**
      * When the owner types a display name instead of an id ("NVIDIA: Nemotron 3

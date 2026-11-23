@@ -128,15 +128,29 @@ class ShellTool(
             )
         }
 
+        // A negative code means nothing ran: provisioning failed, the egress
+        // guard refused, proot was missing. That is "never ran", not "exited
+        // with code -1", and it does NOT prove the shell works.
+        if (shell.exitCode < 0) {
+            val said = listOf(shell.output, shell.error.orEmpty())
+                .filter { it.isNotBlank() }.joinToString("\n").trim()
+            return@withContext fail(
+                if (said.isBlank()) {
+                    "The command never ran inside the Linux system, and the guest gave no reason."
+                } else {
+                    "The command never ran inside the Linux system:\n$said"
+                },
+            )
+        }
+
         // Only a command that actually ran proves the shell works; a non-zero
-        // exit still proves it ran, so the gate opens on exit codes but not on
-        // "could not start".
+        // exit still proves it ran, so the gate opens on real exit codes.
         SessionGrants.markShellVerified()
         val out = capWithMarker(shell.output.trimEnd(), MAX_OUTPUT_CHARS)
         ToolResult(
             ok = shell.exitCode == 0,
             output = out.ifBlank { if (shell.exitCode == 0) "(no output)" else "" },
-            stderr = shell.error.orEmpty(),
+            stderr = capWithMarker(shell.error.orEmpty().trimEnd(), MAX_OUTPUT_CHARS),
             exitCode = shell.exitCode,
             error = if (shell.exitCode != 0) "command exited with code ${shell.exitCode}" else null,
             durationMs = System.currentTimeMillis() - t0,

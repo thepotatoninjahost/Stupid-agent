@@ -1015,4 +1015,139 @@ class CognitiveKernelTest {
         assertTrue(systemPrompt.contains("crash_logs"))
         assertTrue(systemPrompt.contains("never ask the user to paste something a tool should provide"))
     }
+
+    /**
+     * An engine whose real budget is far below its flat budget, the way the
+     * local engine is: promptBudget() is what the kernel must compact to, and
+     * it must be asked AFTER prepare() and with the same tools step() gets.
+     */
+    private class RosterBudgetLlm(
+        private val budget: Int,
+        private val script: List<Llm.LlmResponse>,
+    ) : Llm {
+        override val label = "on-device"
+        override val contextTokenBudget = 100_000
+        val events = mutableListOf<String>()
+        val steps = mutableListOf<List<Llm.Message>>()
+        var budgetToolCount = -1
+        private var i = 0
+
+        override suspend fun prepare() { events.add("prepare") }
+
+        override fun promptBudget(tools: List<Llm.ToolSpec>): Int {
+            events.add("budget")
+            budgetToolCount = tools.size
+            return budget
+        }
+
+        override suspend fun step(
+            messages: List<Llm.Message>,
+            tools: List<Llm.ToolSpec>,
+        ): Llm.LlmResponse {
+            events.add("step")
+            steps.add(messages.toList())
+            return script[i++]
+        }
+    }
+
+    @Test
+    fun `run compacts to promptBudget, after prepare, with the tools step will get`() = runTest {
+        val sink = FakeSink()
+        // 40 000 chars of tool output is 10 000 tokens at the kernel's rule:
+        // over the 4000-token budget, nowhere near the 100 000 flat one.
+        val huge = "x".repeat(40_000)
+        val tool = FakeTool("big", ToolResult(true, huge, 1))
+        val llm = RosterBudgetLlm(
+            budget = 4_000,
+            script = listOf(toolUse("big", "{}"), Llm.LlmResponse.Text("done", done = true)),
+        )
+
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertTrue(result.ok)
+        // prepare() before every budget ask, so the window is real.
+        assertEquals(listOf("prepare", "budget", "step", "prepare", "budget", "step"), llm.events)
+        // The budget is asked for exactly the roster step() is called with.
+        assertEquals(1, llm.budgetToolCount)
+        // The second call's history fits the budget it was compacted for.
+        val secondTurnChars = llm.steps[1].sumOf { it.content.length }
+        assertTrue(
+            "second call must fit the 4000-token budget, was ${secondTurnChars / 4} tokens",
+            secondTurnChars / 4 <= 4_000,
+        )
+        // Folding keeps the task and the system prompt.
+        assertEquals("system", llm.steps[1].first().role)
+    }
+
+    // ------------------------------- the budget includes the tool roster
+    //
+    // Field report 2026-11-22: "prompt budget 5896 tokens after compaction" and
+    // then "the prompt is about 7971 tokens" on an 8192 window. Compaction
+    // counted message text only; the local engine also renders the tool schemas
+    // into the prompt. The kernel now asks the engine for the budget of THIS
+    // call, roster included.
+
+    @Test
+    fun `a roster-heavy budget folds the history below it`() {
+        val messages = mutableListOf(
+            Llm.Message("system", "SYS"),
+            Llm.Message("user", "THE-TASK"),
+        )
+        repeat(40) { messages.add(bigMsg("user", it)) } // ~48 KB, way over budget
+
+        // 4000 tokens = 16 000 chars: reachable once the tail is folded.
+        compactor().compactHistoryIfNeeded(messages, 4_000)
+
+        val chars = messages.sumOf { it.content.length }
+        assertTrue("the kept prompt must fit the roster-aware budget, was $chars chars", chars <= 16_000)
+        assertTrue("the task survives", messages.any { it.content == "THE-TASK" })
+        assertTrue("what was folded is still readable as a digest", messages[2].content.contains("digest"))
+    }
+
+    @Test
+    fun `a budget smaller than the system prompt still folds instead of crashing`() {
+        // The real failure mode: the roster alone eats most of the window.
+        // Compaction cannot remove the system prompt, so the honest outcome is
+        // "as small as it goes", never a crash and never a silently dropped task.
+        val messages = mutableListOf(
+            Llm.Message("system", "SYS"),
+            Llm.Message("user", "THE-TASK"),
+        )
+        repeat(40) { messages.add(bigMsg("user", it)) }
+
+        compactor().compactHistoryIfNeeded(messages, 400)
+
+        assertTrue("the task is never folded away", messages.any { it.content == "THE-TASK" })
+        assertTrue("the system prompt is never folded away", messages.first().content == "SYS")
+        assertTrue("the history is folded", messages.size < 40)
+        assertTrue("what was folded is still readable", messages[2].content.contains("digest"))
+    }
+
+    /** The error line names the budget that was really used, not the flat one. */
+    @Test
+    fun `an engine failure reports the roster-aware budget, not the flat context budget`() = runTest {
+        val sink = FakeSink()
+        val llm = object : Llm {
+            override val label = "on-device"
+            override val contextTokenBudget = 5_896
+            override fun promptBudget(tools: List<Llm.ToolSpec>): Int = 3_821
+            override suspend fun step(
+                messages: List<Llm.Message>,
+                tools: List<Llm.ToolSpec>,
+            ): Llm.LlmResponse = throw IllegalStateException("The prompt is about 7971 tokens")
+        }
+        val result = kernel(sink, listOf(FakeTool("t1"))).run("t1", "q", llm, null)
+
+        assertFalse(result.ok)
+        assertTrue(
+            "the budget shown must be the one used: ${result.answer}",
+            result.answer.contains("3821"),
+        )
+        assertFalse(
+            "the flat 5896 was the number that hid the bug: ${result.answer}",
+            result.answer.contains("5896"),
+        )
+        assertTrue("the engine's words survive", result.answer.contains("7971"))
+        assertTrue("the roster is named", result.answer.contains("1 tools rendered"))
+    }
 }
