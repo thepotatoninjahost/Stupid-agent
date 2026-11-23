@@ -1016,6 +1016,69 @@ class CognitiveKernelTest {
         assertTrue(systemPrompt.contains("never ask the user to paste something a tool should provide"))
     }
 
+    /**
+     * An engine whose real budget is far below its flat budget, the way the
+     * local engine is: promptBudget() is what the kernel must compact to, and
+     * it must be asked AFTER prepare() and with the same tools step() gets.
+     */
+    private class RosterBudgetLlm(
+        private val budget: Int,
+        private val script: List<Llm.LlmResponse>,
+    ) : Llm {
+        override val label = "on-device"
+        override val contextTokenBudget = 100_000
+        val events = mutableListOf<String>()
+        val steps = mutableListOf<List<Llm.Message>>()
+        var budgetToolCount = -1
+        private var i = 0
+
+        override suspend fun prepare() { events.add("prepare") }
+
+        override fun promptBudget(tools: List<Llm.ToolSpec>): Int {
+            events.add("budget")
+            budgetToolCount = tools.size
+            return budget
+        }
+
+        override suspend fun step(
+            messages: List<Llm.Message>,
+            tools: List<Llm.ToolSpec>,
+        ): Llm.LlmResponse {
+            events.add("step")
+            steps.add(messages.toList())
+            return script[i++]
+        }
+    }
+
+    @Test
+    fun `run compacts to promptBudget, after prepare, with the tools step will get`() = runTest {
+        val sink = FakeSink()
+        // 40 000 chars of tool output is 10 000 tokens at the kernel's rule:
+        // over the 4000-token budget, nowhere near the 100 000 flat one.
+        val huge = "x".repeat(40_000)
+        val tool = FakeTool("big", ToolResult(true, huge, 1))
+        val llm = RosterBudgetLlm(
+            budget = 4_000,
+            script = listOf(toolUse("big", "{}"), Llm.LlmResponse.Text("done", done = true)),
+        )
+
+        val result = kernel(sink, listOf(tool)).run("t1", "q", llm, null)
+
+        assertTrue(result.ok)
+        // prepare() before every budget ask, so the window is real.
+        assertEquals(listOf("prepare", "budget", "step", "prepare", "budget", "step"), llm.events)
+        // The budget is asked for exactly the roster step() is called with.
+        assertEquals(1, llm.budgetToolCount)
+        // The second call's history fits the budget it was compacted for.
+        val secondTurnChars = llm.steps[1].sumOf { it.content.length }
+        assertTrue(
+            "second call must fit the 4000-token budget, was ${secondTurnChars / 4} tokens",
+            secondTurnChars / 4 <= 4_000,
+        )
+        // Folding keeps the task and the system prompt.
+        assertEquals("system", llm.steps[1].first().role)
+    }
+
     // ------------------------------- the budget includes the tool roster
     //
     // Field report 2026-11-22: "prompt budget 5896 tokens after compaction" and

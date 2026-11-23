@@ -48,6 +48,15 @@ interface Llm {
      */
     fun promptBudget(tools: List<ToolSpec>): Int = contextTokenBudget
 
+    /**
+     * Load whatever [promptBudget] depends on, before it is asked.
+     *
+     * A local engine only knows its real window after the build succeeds, so
+     * a budget asked for earlier is a guess — and the kernel compacts on it.
+     * No-op for engines whose budget is fixed.
+     */
+    suspend fun prepare() {}
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,

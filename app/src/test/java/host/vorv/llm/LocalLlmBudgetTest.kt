@@ -114,6 +114,15 @@ class LocalPromptBudgetTest {
     }
 
     @Test
+    fun `before a load, and after release, the budget assumes the smallest window`() {
+        // release() sets loadedCtx to 0; quoting the old (or the top) window
+        // would compact for a window the next load may not get.
+        assertEquals(LocalLlm.FALLBACK_N_CTX, LocalLlm.effectiveWindow(0))
+        assertEquals(8_192, LocalLlm.effectiveWindow(8_192))
+        assertEquals(LocalLlm.N_CTX, LocalLlm.effectiveWindow(LocalLlm.N_CTX))
+    }
+
+    @Test
     fun `the window ladder starts at 16384 on a 12 GB phone`() {
         assertEquals(listOf(16_384, 8_192, 4_096), LocalLlm.contextLadder(12L * 1024 * 1024 * 1024))
     }

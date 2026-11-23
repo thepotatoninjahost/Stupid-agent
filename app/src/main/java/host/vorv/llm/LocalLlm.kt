@@ -39,8 +39,8 @@ class LocalLlm(
 
     @Volatile private var cpuFallback = false
 
-    /** Window the engine actually got. A smaller one is said out loud. */
-    @Volatile private var loadedCtx = N_CTX
+    /** Window the engine actually built, or 0 when nothing is loaded. */
+    @Volatile private var loadedCtx = 0
 
     /** The file the engine was actually built from (trained generation or base). */
     @Volatile private var loadedModelPath = ""
@@ -59,7 +59,7 @@ class LocalLlm(
         get() {
             val silicon = if (cpuFallback) " (CPU fallback)" else ""
             val failed = championFailure
-            val window = if (loadedCtx < N_CTX) " — $loadedCtx-token window" else ""
+            val window = if (loadedCtx in 1 until N_CTX) " — $loadedCtx-token window" else ""
             return when {
                 failed != null -> "$displayLabel$silicon — trained generation did not load ($failed)"
                 servingGeneration > 0 -> "your trained model, generation $servingGeneration$silicon$window"
@@ -88,8 +88,22 @@ class LocalLlm(
     override fun promptBudget(tools: List<Llm.ToolSpec>): Int =
         promptBudgetFor(windowOrFull(), MAX_OUTPUT_TOKENS, TEMPLATE_MARGIN, toolRosterTokens(tools))
 
-    /** The window actually allocated — the NPU can grant less than [N_CTX]. */
-    private fun windowOrFull(): Int = if (loadedCtx > 0) loadedCtx else N_CTX
+    /**
+     * Loading the model, so [promptBudget] is answered from a real window.
+     * Without this the budget before the first call assumed [N_CTX] while the
+     * load could settle at [FALLBACK_N_CTX] — the same lie, one step earlier.
+     */
+    override suspend fun prepare() {
+        ensureLoaded()
+    }
+
+    /**
+     * The window actually allocated — the NPU can grant less than [N_CTX].
+     * Before a load, and after [release], nothing is loaded: the honest
+     * answer is the smallest window the next load may settle for, never the
+     * biggest one it might have got.
+     */
+    private fun windowOrFull(): Int = effectiveWindow(loadedCtx)
 
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
@@ -168,6 +182,14 @@ class LocalLlm(
          * the last rung: a small window beats no engine at all. Pure, so the
          * gate is pinned by a test instead of discovered by an OOM on a phone.
          */
+        /**
+         * The window the budget is measured against. With nothing loaded the
+         * answer is the smallest window the next load may settle for, so the
+         * kernel never compacts for a window the engine might not get.
+         */
+        fun effectiveWindow(loadedCtx: Int, fallback: Int = FALLBACK_N_CTX): Int =
+            if (loadedCtx > 0) loadedCtx else fallback
+
         fun contextLadder(totalRamBytes: Long): List<Int> {
             val gib = totalRamBytes / (1024.0 * 1024.0 * 1024.0)
             val ladder = ArrayList<Int>(3)
@@ -472,5 +494,8 @@ class LocalLlm(
                 }
         }
         llmWrapper = null
+        // Nothing is loaded any more, so no window may be quoted until the
+        // next build reports one.
+        loadedCtx = 0
     }
 }

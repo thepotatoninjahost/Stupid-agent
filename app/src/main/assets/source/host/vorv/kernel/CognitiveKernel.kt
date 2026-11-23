@@ -246,6 +246,9 @@ class CognitiveKernel(
                 eventSink.setTaskIterations(taskId, iterations)
                 _trace.emit(TraceStep.Thinking("Iteration $iterations", "Planning next step…"))
 
+                // The engine reports its window only after it is loaded; ask
+                // it to load first so the budget below is measured, not hoped.
+                llm.prepare()
                 val promptBudget = llm.promptBudget(toolSpecs)
                 val resp = try {
                     // M-2: compact history to the engine's honest budget right
