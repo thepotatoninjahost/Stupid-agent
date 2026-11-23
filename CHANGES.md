@@ -1,3 +1,32 @@
+# The shell keeps its promises, and no read is unbounded (2026-11-22)
+
+Four review findings were true of the old code, and each was a place where the
+app could be wrong and say nothing.
+
+- `shell` promises "the REAL exit code, stdout and stderr". It used
+  `redirectErrorStream(true)`, so `stderr` was stdout+stderr merged. The two
+  pipes are now drained on separate threads — the reason is stated by
+  `java.lang.Process`: an unread pipe can block the child, so merging was the
+  cheap way out, not the correct one. Output no longer deadlocks, and a
+  command's real errors are labelled as errors.
+- A command that never ran (proot refused to start, exit `-1`) came back as
+  "exited with code -1" and *opened the shell knowledge gate*. It now fails
+  loudly, says it never ran, and proves nothing.
+- A command that floods a pipe grew a `StringBuilder` without limit. Each pipe
+  now stops at 200 000 chars and says where it was cut; a pipe that dies
+  mid-read puts a note in the output instead of vanishing.
+- The cloud model listing (`ModelCatalog`) read `res.body?.string()` whole, and
+  a body cut at any ceiling parsed to an *empty* list — Setup then said the
+  provider serves no models. It is now read through the same bounded reader as
+  every other reply (2 MB), and an unreadable body is reported as an error with
+  the first 160 characters instead of as an empty success. GPU bundle sidecars
+  get the same treatment (1 MB, refuse rather than half-import).
+
+Tests: 877, all green. New: the stream ceiling and its single marker, a command
+that never ran (the gate stays shut), a real exit code (the gate opens), and a
+listing body cut at the cap (reported, not silently empty).
+
+
 # The prompt budget counts the tools, and the window is twice as big (2026-11-22)
 
 The phone said "prompt budget 5896 tokens after compaction" and then "the prompt

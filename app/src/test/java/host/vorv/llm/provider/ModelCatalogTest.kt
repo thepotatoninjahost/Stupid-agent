@@ -3,6 +3,7 @@ package host.vorv.llm.provider
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -73,19 +74,45 @@ class ModelCatalogTest {
               {"id":"cedar-3b"}
             ]}
         """.trimIndent()
-        val ids = catalog.parse(body).map { it.id }
+        val ids = catalog.parseStrict(body)!!.map { it.id }
         // Sorted by id: the chips are easier to scan, and order is not the API's.
         assertEquals(listOf("acorn-1b", "bloom-7b", "cedar-3b"), ids)
     }
 
     @Test
-    fun `missing or malformed lists are empty, never a crash`() {
-        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parse("""{"data":null}"""))
-        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parse("{}"))
-        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parse("<html>gateway</html>"))
-        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parse(""))
+    fun `an unreadable list is null, an empty one is empty, and neither crashes`() {
+        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parseStrict("""{"data":null}"""))
+        assertEquals(emptyList<ModelCatalog.Entry>(), catalog.parseStrict("{}"))
+        // Not a list at all: null, so the caller can say so instead of "no models".
+        assertNull(catalog.parseStrict("<html>gateway</html>"))
+        assertNull(catalog.parseStrict(""))
+        assertNull(catalog.parseStrict("""{"data":[{"id":"a"}"""))
         // An entry with no id is useless and must not become an empty chip.
-        assertEquals(listOf("a"), catalog.parse("""{"data":[{"id":"a"},{"context_length":1}]}""").map { it.id })
+        assertEquals(listOf("a"), catalog.parseStrict("""{"data":[{"id":"a"},{"context_length":1}]}""")!!.map { it.id })
+    }
+
+    @Test
+    fun `a listing body over the cap is cut, not read whole`() = runBlocking {
+        // A server (or a proxy having a bad day) that streams a huge body must
+        // not be able to fill the heap: the read stops at MAX_LISTING_BYTES,
+        // and the truncation shows up as an honest parse error.
+        val server = okhttp3.mockwebserver.MockWebServer()
+        val pad = "x".repeat((ModelCatalog.MAX_LISTING_BYTES * 2))
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                okhttp3.mockwebserver.MockResponse().setBody("""{"data":[{"id":"m"}],"pad":"$pad"}""")
+        }
+        server.start()
+        try {
+            val base = server.url("/").toString().trimEnd('/')
+            val localClient = OkHttpClient.Builder()
+                .dns { listOf(java.net.InetAddress.getLoopbackAddress()) }
+                .build()
+            val listing = ModelCatalog(localClient).fetch(Provider.custom(base), apiKey = "")
+            assertTrue("a cut body must not parse as a success", listing.error != null)
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test

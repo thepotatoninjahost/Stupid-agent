@@ -65,7 +65,12 @@ object GpuBundleZip {
                                     "Nothing was imported.",
                             )
                         }
-                        manifestText = open.getInputStream(entry).bufferedReader().use { it.readText() }
+                        manifestText = readCapped(open.getInputStream(entry), MAX_SIDECAR_BYTES)
+                            ?: return Result.Failed(
+                                "${zip.name} has an oversized or unreadable manifest " +
+                                    "(more than ${MAX_SIDECAR_BYTES / (1024 * 1024)} MB). " +
+                                    "Nothing was imported.",
+                            )
                     }
 
                     base == GpuImport.METRICS && metricsText == null -> {
@@ -76,7 +81,12 @@ object GpuBundleZip {
                                     "Nothing was imported.",
                             )
                         }
-                        metricsText = open.getInputStream(entry).bufferedReader().use { it.readText() }
+                        metricsText = readCapped(open.getInputStream(entry), MAX_SIDECAR_BYTES)
+                            ?: return Result.Failed(
+                                "${zip.name} has an oversized or unreadable metrics " +
+                                    "(more than ${MAX_SIDECAR_BYTES / (1024 * 1024)} MB). " +
+                                    "Nothing was imported.",
+                            )
                     }
 
                     base.endsWith(".gguf") && modelEntry == null -> {
@@ -146,4 +156,23 @@ object GpuBundleZip {
             )
         }
     }
+
+    /**
+     * Reads a small sidecar file with a HARD ceiling. The size in a zip's
+     * central directory is only a claim: a file that inflates past [limit] is
+     * refused instead of being read into the heap.
+     */
+    private fun readCapped(input: java.io.InputStream, limit: Long): String? =
+        input.use { stream ->
+            val reader = stream.bufferedReader()
+            val buf = CharArray(8 * 1024)
+            val sb = StringBuilder()
+            while (true) {
+                val n = reader.read(buf)
+                if (n <= 0) break
+                sb.append(buf, 0, n)
+                if (sb.length > limit) return null
+            }
+            sb.toString()
+        }
 }

@@ -28,7 +28,7 @@ android {
         applicationId = "host.vorv"
         minSdk = 31
         targetSdk = 35
-        versionCode = 81
+        versionCode = 82
         // The build names itself: "0.9.30+<git sha>". A screenshot of the app
         // is then evidence of which code is running, instead of a guess.
         val gitSha = runCatching {
@@ -38,7 +38,7 @@ android {
                 .start()
             p.inputStream.bufferedReader().readText().trim().ifEmpty { "nogit" }
         }.getOrDefault("nogit")
-        versionName = "0.9.34"
+        versionName = "0.9.35"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
