@@ -71,29 +71,49 @@ class LocalLlm(
     fun trainedGeneration(): Int = servingGeneration
 
     /**
-     * Honest prompt budget (audit M-2): nCtx is 4096 and GenerationConfig
-     * reserves up to 2048 output tokens plus chat-template overhead — so the
-     * kernel must keep the PROMPT (messages) under ~1800 tokens or the
-     * engine truncates/fails opaquely. The kernel compacts history to fit.
+     * Prompt budget of the window that is actually loaded, without the tool
+     * roster (GenieX fixes nCtx at load; the NPU may grant less than [N_CTX]).
+     * Engines that render tools into the prompt use [promptBudget] instead.
      */
-    override val contextTokenBudget: Int get() = CONTEXT_BUDGET
+    override val contextTokenBudget: Int
+        get() = promptBudgetFor(windowOrFull(), MAX_OUTPUT_TOKENS, TEMPLATE_MARGIN, 0)
+
+    /**
+     * Audit (field, 2026-11-22): the phone reported "prompt budget 5896 after
+     * compaction" and then "the prompt is about 7971 tokens" on the same call.
+     * Both numbers were true: 5896 counted message text, 7971 was what the
+     * template built once the tool schemas were rendered into it. The roster
+     * is prompt, so it is paid for before the history gets its share.
+     */
+    override fun promptBudget(tools: List<Llm.ToolSpec>): Int =
+        promptBudgetFor(windowOrFull(), MAX_OUTPUT_TOKENS, TEMPLATE_MARGIN, toolRosterTokens(tools))
+
+    /** The window actually allocated — the NPU can grant less than [N_CTX]. */
+    private fun windowOrFull(): Int = if (loadedCtx > 0) loadedCtx else N_CTX
 
     /** Which ModelChoice this engine instance wraps (used by ModelRepository). */
     val modelId: String get() = modelChoice.id
 
     companion object {
         /**
-         * Context the engine allocates.
+         * Context the engine allocates, largest rung first.
          *
          * 4096 was too small for this agent: the system prompt alone is ~2.7 KB
          * and the tool roster ~2.3 KB, and the chat template renders the tool
          * SCHEMAS on top of that — so "input prompt too long" could fire on a
-         * three-word message. 8192 gives the prompt room AND keeps the 2048
-         * output reserve.
+         * three-word message. 8192 gave the prompt room but only ~3800 tokens
+         * of it once the reply, the template and the roster are paid for, so
+         * the owner asked for 10 000+: this ladder tops out at 16384, which
+         * leaves ~12 000 tokens of history.
+         *
+         * The cost is the KV cache, and it is knowable from the GGUF itself:
+         * OmniCoder-9B (qwen35) has 32 blocks, 4 KV heads of key/value length
+         * 256 — 32 x 4 x 256 x 2 (K and V) x 2 bytes = 128 KiB per token.
+         * 8192 tokens = 1 GiB, 16384 = 2 GiB, on top of the 5.31 GB of weights.
          */
-        const val N_CTX = 8192
-        /** Window tried when the NPU cannot allocate [N_CTX]. */
-        const val FALLBACK_N_CTX = 4096
+        const val N_CTX = 16_384
+        /** Window tried when the larger ones cannot be allocated. */
+        const val FALLBACK_N_CTX = 4_096
         /** Output reserve: file_write payloads need 2048 (audit M-1). */
         const val MAX_OUTPUT_TOKENS = 2048
         /** Chat template + BOS/EOS overhead measured on a 2-message prompt. */
@@ -115,6 +135,57 @@ class LocalLlm(
         fun replyTokensFor(promptTokens: Int, ctx: Int): Int? {
             val room = ctx - promptTokens - PROMPT_SAFETY
             return if (room < MIN_OUTPUT_TOKENS) null else minOf(MAX_OUTPUT_TOKENS, room)
+        }
+
+        /**
+         * Prompt tokens the tool roster itself costs. The chat template renders
+         * every schema into the prompt, so this is prompt the history cannot
+         * have. Pure and measured with the same chars/token rule the kernel
+         * uses, so both sides count the same way.
+         */
+        fun toolRosterTokens(tools: List<Llm.ToolSpec>): Int =
+            if (tools.isEmpty()) 0
+            else kotlin.math.ceil(buildToolsJson(tools).length / CHARS_PER_TOKEN).toInt()
+
+        /**
+         * What is left for messages once the reply, the template and the tool
+         * roster are paid for. Never negative: a roster that alone exceeds the
+         * window leaves zero, which the caller reports instead of folding
+         * history forever.
+         */
+        fun promptBudgetFor(window: Int, replyReserve: Int, templateMargin: Int, toolTokens: Int): Int =
+            (window - replyReserve - templateMargin - toolTokens).coerceAtLeast(0)
+
+        /**
+         * Windows to try, largest first, for a device with [totalRamBytes].
+         * 16384 needs room for the 5.31 GB of weights plus 2 GiB of KV cache,
+         * so it is only attempted on an 11 GB device or better. 4096 is always
+         * the last rung: a small window beats no engine at all. Pure, so the
+         * gate is pinned by a test instead of discovered by an OOM on a phone.
+         */
+        fun contextLadder(totalRamBytes: Long): List<Int> {
+            val gib = totalRamBytes / (1024.0 * 1024.0 * 1024.0)
+            val ladder = ArrayList<Int>(3)
+            if (gib >= 11.0) ladder.add(16_384)
+            if (gib >= 7.0) ladder.add(8_192)
+            ladder.add(FALLBACK_N_CTX)
+            return ladder
+        }
+
+        /** The roster as the chat template receives it: part of the prompt. */
+        internal fun buildToolsJson(tools: List<Llm.ToolSpec>): String {
+            val arr = com.google.gson.JsonArray()
+            tools.forEach { spec ->
+                arr.add(com.google.gson.JsonObject().apply {
+                    addProperty("type", "function")
+                    add("function", com.google.gson.JsonObject().apply {
+                        addProperty("name", spec.name)
+                        addProperty("description", spec.description)
+                        add("parameters", spec.parameters)
+                    })
+                })
+            }
+            return arr.toString()
         }
 
         /**
@@ -219,48 +290,47 @@ class LocalLlm(
             return built
         }
 
-        // Full window first; only if BOTH units refuse it does the smaller
-        // window come back — and then the label says so, because a 4096-token
-        // engine that pretends to be 8192 is how "prompt too long" surprises
-        // the owner again.
-        val npu = attempt(ComputeUnitValue.NPU.value, N_CTX)
-        if (npu.isSuccess) {
-            loadedCtx = N_CTX
-            return npu
-        }
-        val npuError = npu.exceptionOrNull()
-        Log.w("Vorv/LocalLlm", "NPU build at $N_CTX failed (${npuError?.message}); retrying on CPU", npuError)
-        val cpu = attempt(ComputeUnitValue.CPU.value, N_CTX)
-        if (cpu.isSuccess) {
-            cpuFallback = true
-            loadedCtx = N_CTX
-            return cpu
-        }
-        val cpuError = cpu.exceptionOrNull()
-        Log.w("Vorv/LocalLlm", "CPU build at $N_CTX failed (${cpuError?.message}); retrying at $FALLBACK_N_CTX", cpuError)
+        // Largest window the device can hold first, NPU before CPU at each
+        // rung. The label says which window won, because a 4096-token engine
+        // that pretends to be 16384 is how "prompt too long" surprises the
+        // owner again.
+        val ladder = contextLadder(deviceTotalRamBytes())
+        val failures = ArrayList<String>(ladder.size * 2)
+        for (ctx in ladder) {
+            val npu = attempt(ComputeUnitValue.NPU.value, ctx)
+            if (npu.isSuccess) {
+                loadedCtx = ctx
+                return npu
+            }
+            failures.add("NPU $ctx: ${npu.exceptionOrNull()?.message}")
+            Log.w("Vorv/LocalLlm", "NPU build at $ctx failed (${npu.exceptionOrNull()?.message}); trying CPU", npu.exceptionOrNull())
 
-        val npuSmall = attempt(ComputeUnitValue.NPU.value, FALLBACK_N_CTX)
-        if (npuSmall.isSuccess) {
-            cpuFallback = false
-            loadedCtx = FALLBACK_N_CTX
-            Log.w("Vorv/LocalLlm", "running at $FALLBACK_N_CTX tokens of context; the long prompt may not fit")
-            return npuSmall
-        }
-        val cpuSmall = attempt(ComputeUnitValue.CPU.value, FALLBACK_N_CTX)
-        if (cpuSmall.isSuccess) {
-            cpuFallback = true
-            loadedCtx = FALLBACK_N_CTX
-            Log.w("Vorv/LocalLlm", "running on CPU at $FALLBACK_N_CTX tokens of context")
-            return cpuSmall
+            val cpu = attempt(ComputeUnitValue.CPU.value, ctx)
+            if (cpu.isSuccess) {
+                cpuFallback = true
+                loadedCtx = ctx
+                Log.w("Vorv/LocalLlm", "running on CPU at $ctx tokens of context")
+                return cpu
+            }
+            failures.add("CPU $ctx: ${cpu.exceptionOrNull()?.message}")
+            Log.w("Vorv/LocalLlm", "CPU build at $ctx failed (${cpu.exceptionOrNull()?.message}); trying the next window", cpu.exceptionOrNull())
         }
         cpuFallback = false
         return Result.failure(
-            IllegalStateException(
-                "NPU: ${npuError?.message}; CPU: ${cpuError?.message}; " +
-                    "also failed at $FALLBACK_N_CTX (NPU: ${npuSmall.exceptionOrNull()?.message}; " +
-                    "CPU: ${cpuSmall.exceptionOrNull()?.message})",
-            ),
+            IllegalStateException("no window in $ladder would load — " + failures.joinToString("; ")),
         )
+    }
+
+    /** Total RAM, the budget the KV cache has to come out of. */
+    private fun deviceTotalRamBytes(): Long = try {
+        val am = appContext.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+            as android.app.ActivityManager
+        val info = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(info)
+        info.totalMem
+    } catch (e: Exception) {
+        Log.w("Vorv/LocalLlm", "could not read total RAM (${e.message}); assuming 8 GB", e)
+        8L * 1024 * 1024 * 1024
     }
 
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
@@ -382,21 +452,6 @@ class LocalLlm(
 
     private fun estimateTokens(text: String): Int =
         kotlin.math.ceil(text.length / CHARS_PER_TOKEN).toInt()
-
-    private fun buildToolsJson(tools: List<Llm.ToolSpec>): String {
-        val arr = com.google.gson.JsonArray()
-        tools.forEach { spec ->
-            arr.add(com.google.gson.JsonObject().apply {
-                addProperty("type", "function")
-                add("function", com.google.gson.JsonObject().apply {
-                    addProperty("name", spec.name)
-                    addProperty("description", spec.description)
-                    add("parameters", spec.parameters)
-                })
-            })
-        }
-        return arr.toString()
-    }
 
     /**
      * Free native memory. MUST be called when swapping models or closing.

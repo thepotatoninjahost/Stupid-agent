@@ -36,6 +36,18 @@ interface Llm {
      */
     val contextTokenBudget: Int get() = 100_000
 
+    /**
+     * The prompt budget for one call, given the tools that call renders.
+     *
+     * On a local engine the tool SCHEMAS are part of the prompt the chat
+     * template builds, so a budget that counts only message text is not a
+     * budget: the kernel compacted to 5896 and the engine still measured 7971
+     * on a 8192 window. Engines that render tools into the prompt subtract
+     * them here; cloud engines neither render nor pay for them and keep the
+     * flat [contextTokenBudget].
+     */
+    fun promptBudget(tools: List<ToolSpec>): Int = contextTokenBudget
+
     data class Message(
         val role: String,        // "system" | "user" | "assistant" | "tool"
         val content: String,

@@ -13,10 +13,11 @@ class LocalModelTest {
         assertTrue(
             LocalLlm.CONTEXT_BUDGET + LocalLlm.MAX_OUTPUT_TOKENS <= LocalLlm.N_CTX,
         )
-        // 8192 window − 2048 output − 248 template margin. Pinned because the
-        // 4096 window this replaced is exactly what produced "Input prompt too
-        // long" on a three-word message (system prompt + tool schemas).
-        assertEquals(5896, LocalLlm.CONTEXT_BUDGET)
+        // 16384 window − 2048 output − 248 template margin, minus nothing else:
+        // the tool roster is subtracted per call by promptBudget(tools), because
+        // only the kernel knows which tools that call renders. 8192 was the
+        // window that overflowed at 7971 prompt tokens on the phone.
+        assertEquals(14_088, LocalLlm.CONTEXT_BUDGET)
     }
 
     @Test

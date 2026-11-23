@@ -1,3 +1,24 @@
+# The prompt budget counts the tools, and the window is twice as big (2026-11-22)
+
+The phone said "prompt budget 5896 tokens after compaction" and then "the prompt
+is about 7971 tokens" on the same call. Both numbers were true. Compaction
+counted message text only; the chat template also renders every tool schema
+into the prompt, and that roster was never paid for.
+
+- The local budget is now `window - reply reserve - template margin - tool
+  roster`, measured with one chars/token rule on both sides. A roster that
+  alone exceeds the window leaves zero instead of a negative number, and the
+  kernel's error line prints the budget it actually used and how many tools
+  were rendered.
+- The window is now 16384 tokens (was 8192), which leaves about 12000 tokens of
+  history with a 40-tool roster — the owner asked for 10000. The KV cache is
+  the price and it is known from the GGUF itself: qwen35, 32 blocks, 4 KV heads
+  of key/value length 256, so 128 KiB per token — 2 GiB at 16384 on top of the
+  5.31 GB of weights.
+- The engine walks a RAM-gated ladder: 16384 then 8192 then 4096, NPU before
+  CPU at each rung, and the label names the window that actually loaded. An
+  8 GB phone never attempts what it cannot hold.
+
 # The brain never calls a live model retired (2026-11-21)
 
 A real request to OpenRouter from the workspace proved the cloud route works:
