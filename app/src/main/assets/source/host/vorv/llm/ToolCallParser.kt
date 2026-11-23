@@ -1,22 +1,39 @@
 package host.vorv.llm
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 
 /**
  * Parses raw local-LLM output into either a tool-call request or a final
  * answer (audit finding H-6: extracted from LocalLlm so it is unit-testable).
  *
- * The on-device model's chat template emits OpenAI-style tool calls as:
- *   <tool>{"name": "...", "arguments": {...}}</tool>
+ * Four shapes are recognised, in this order:
  *
- * Fallback plain format (system-prompt-driven):
- *   TOOL_CALL: tool_name
- *   ARGS: {"...": ...}
+ * 1. The on-device template's OpenAI-style JSON call:
+ *      <tool>{"name": "...", "arguments": {...}}</tool>
+ *
+ * 2. Qwen3-Coder's XML call — what OmniCoder-9B actually sends when the
+ *    template picks the XML function format (field, 2026-11-23: chat showed
+ *    this markup verbatim as an "[uncited]" answer because nothing parsed it):
+ *      <tool_call>
+ *      <function=crash_logs>
+ *      <parameter=action>
+ *      list
+ *      </parameter>
+ *      </function>
+ *      </tool_call>
+ *
+ * 3. Markdown-fenced or bare JSON: ```{"name": ..., "arguments": {...}}```
+ *
+ * 4. The plain-text protocol the system prompt describes:
+ *      TOOL_CALL: tool_name
+ *      ARGS: {"...": ...}
  *
  * Because the local model runs with a finite maxTokens budget, a tool call
- * can be TRUNCATED mid-JSON. [repairJson] balances braces/brackets/quotes so
- * a truncated call is still recoverable instead of being mis-read as a raw
+ * can be TRUNCATED mid-JSON or mid-tag. [repairJson] balances braces/brackets
+ * so a truncated call is still recoverable instead of being mis-read as a raw
  * text answer (audit finding M-1).
  */
 object ToolCallParser {
@@ -35,6 +52,12 @@ object ToolCallParser {
         pattern = "TOOL_CALL:\\s*([A-Za-z0-9_]+)\\s*:?\\s*ARGS:\\s*([\\s\\S]*)",
     )
     private val answerRegex = Regex("ANSWER:\\s*([\\s\\S]*)")
+    /** One `<tool_call>…</tool_call>` block; an unterminated one (a cut-off
+     *  reply) runs to the end of the text. */
+    private val xmlCallBlockRegex = Regex("<tool_call>([\\s\\S]*?)(</tool_call>|$)")
+    private val xmlFunctionRegex = Regex("<function=([A-Za-z0-9_.\\-]+)>")
+    private val xmlParameterRegex =
+        Regex("<parameter=([A-Za-z0-9_.\\-]+)>([\\s\\S]*?)(</parameter>|$)")
 
     fun parse(text: String, knownTools: Set<String>): Llm.LlmResponse {
         val trimmed = text.trim()
@@ -53,6 +76,11 @@ object ToolCallParser {
                 repairJson(raw)?.let { parseOpenAiArgs(it) }?.let { return it }
             }
         }
+
+        // 2.4. Qwen3-Coder XML calls. Explicitly tagged as a call, so a name
+        //      outside the roster is still a call: the kernel answers with
+        //      "no such tool" instead of chat printing the markup.
+        parseXmlCalls(trimmed)?.let { return it }
 
         // 2.5. Markdown-fenced or bare-JSON tool call.
         //      The on-device model via GenieX sometimes emits tool calls as:
@@ -189,6 +217,55 @@ object ToolCallParser {
         while (sb.isNotEmpty() && sb.last() in ",:") sb.deleteCharAt(sb.length - 1)
         while (stack.isNotEmpty()) sb.append(stack.removeLast())
         return sb.toString()
+    }
+
+    /**
+     * `<tool_call><function=name><parameter=k>v</parameter>…</function></tool_call>`,
+     * one call per `<function>`, however many blocks the model wrote.
+     * Returns null when the text carries no such call, so prose containing
+     * the word "function" is never mistaken for one.
+     */
+    private fun parseXmlCalls(text: String): Llm.LlmResponse? {
+        if (!text.contains("<tool_call>") && !text.contains("<function=")) return null
+        val calls = ArrayList<Llm.ToolCall>()
+        val blocks = if (text.contains("<tool_call>")) {
+            xmlCallBlockRegex.findAll(text).map { it.groupValues[1] }.toList()
+        } else {
+            listOf(text)
+        }
+        for (block in blocks) {
+            for (fn in xmlFunctionRegex.findAll(block)) {
+                val name = fn.groupValues[1]
+                // Parameters belong to this function only: stop at the next one.
+                val body = block.substring(fn.range.last + 1).substringBefore("<function=")
+                val args = JsonObject()
+                for (p in xmlParameterRegex.findAll(body)) {
+                    args.add(p.groupValues[1], xmlValue(p.groupValues[2]))
+                }
+                calls.add(
+                    Llm.ToolCall(
+                        id = java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        arguments = args.toString(),
+                    ),
+                )
+            }
+        }
+        return if (calls.isEmpty()) null else Llm.LlmResponse.ToolUse(calls, reasoning = null)
+    }
+
+    /**
+     * A parameter's value, typed the way the template wrote it: the body of a
+     * `<parameter>` is raw text, and only JSON (numbers, booleans, objects,
+     * arrays) means something other than a string.
+     */
+    private fun xmlValue(raw: String): JsonElement {
+        val v = raw.trim()
+        if (v.isEmpty()) return JsonPrimitive("")
+        val parsed = runCatching { JsonParser.parseString(v) }.getOrNull()
+        if (parsed != null && parsed.isJsonPrimitive && !parsed.asJsonPrimitive.isString) return parsed
+        if (parsed != null && (parsed.isJsonObject || parsed.isJsonArray)) return parsed
+        return JsonPrimitive(v)
     }
 
     /**

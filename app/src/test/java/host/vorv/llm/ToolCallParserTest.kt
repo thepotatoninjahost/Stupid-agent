@@ -28,6 +28,66 @@ class ToolCallParserTest {
     private fun parseText(res: Llm.LlmResponse): String? =
         (res as? Llm.LlmResponse.Text)?.content
 
+    // ------------------------------------- Qwen3-Coder XML (field 2026-11-23)
+    //
+    // The owner's screenshot: OmniCoder-9B answered a question with
+    //   <tool_call>
+    //   <function=crash_logs>
+    //   <parameter=action>
+    //   list
+    //   </parameter>
+    //   </function>
+    //   </tool_call>
+    // and chat showed that markup verbatim under "[uncited] — no tool
+    // evidence": the call was never executed, so asking again produced the
+    // same call again, on the phone and in the cloud.
+
+    private val xmlCall = """
+        <tool_call>
+        <function=crash_logs>
+        <parameter=action>
+        list
+        </parameter>
+        </function>
+        </tool_call>
+    """.trimIndent()
+
+    @Test fun `parses the qwen xml tool call the phone actually emits`() {
+        val r = parse(xmlCall)
+        assertEquals("crash_logs", parseName(r))
+        assertEquals("""{"action":"list"}""", parseArgs(r))
+    }
+
+    @Test fun `an xml call inside prose is still a call, not an answer`() {
+        val r = parse("Let me look at the crash reports.\n$xmlCall")
+        assertEquals("crash_logs", parseName(r))
+    }
+
+    @Test fun `two xml calls in one reply are both kept`() {
+        val r = parse(
+            "<tool_call><function=file_list><parameter=path>/sdcard</parameter></function></tool_call>" +
+                "<tool_call><function=memory_write><parameter=text>done</parameter></function></tool_call>",
+        )
+        val calls = (r as? Llm.LlmResponse.ToolUse)?.toolCalls ?: emptyList()
+        assertEquals(listOf("file_list", "memory_write"), calls.map { it.name })
+    }
+
+    @Test fun `an xml parameter keeps its type`() {
+        val r = parse("<tool_call><function=shell><parameter=max_tokens>10</parameter></function></tool_call>")
+        assertEquals("""{"max_tokens":10}""", parseArgs(r))
+    }
+
+    @Test fun `a truncated xml call still parses`() {
+        val r = parse("<tool_call>\n<function=crash_logs>\n<parameter=action>\nlist")
+        assertEquals("crash_logs", parseName(r))
+        assertEquals("""{"action":"list"}""", parseArgs(r))
+    }
+
+    @Test fun `prose without markup is still an answer`() {
+        val r = parse("The crash log is empty, so nothing crashed.")
+        assertEquals("The crash log is empty, so nothing crashed.", parseText(r))
+    }
+
     // ---------------------------------------------------- well-formed <tool>
 
     @Test fun `parses well-formed openai tool call`() {

@@ -347,7 +347,21 @@ class CloudLlm(
                             }
                             Llm.LlmResponse.ToolUse(calls, reasoning = content.takeIf { it.isNotBlank() })
                         } else {
-                            Llm.LlmResponse.Text(content, done = finish == "stop")
+                            // A gateway may hand the model's own template markup
+                            // through as content instead of parsed tool_calls
+                            // (Qwen coder models do). That is a call, not an
+                            // answer: chat used to print the tags verbatim under
+                            // "[uncited] — no tool evidence" and the task stalled.
+                            val leaked = if (content.contains("<tool_call>")) {
+                                ToolCallParser.parse(content, tools.map { it.name }.toSet())
+                            } else {
+                                null
+                            }
+                            if (leaked is Llm.LlmResponse.ToolUse) {
+                                leaked
+                            } else {
+                                Llm.LlmResponse.Text(content, done = finish == "stop")
+                            }
                         }
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
