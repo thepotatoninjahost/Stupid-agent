@@ -12,9 +12,12 @@ into the prompt, and that roster was never paid for.
   were rendered.
 - The window is now 16384 tokens (was 8192), which leaves about 12000 tokens of
   history with a 40-tool roster — the owner asked for 10000. The KV cache is
-  the price and it is known from the GGUF itself: qwen35, 32 blocks, 4 KV heads
-  of key/value length 256, so 128 KiB per token — 2 GiB at 16384 on top of the
-  5.31 GB of weights.
+  the price and it is known from the GGUF itself: qwen35 is a hybrid
+  (`full_attention_interval = 4`), so only 8 of 32 blocks keep a cache
+  (llama.cpp's qwen3next graph allocates KV only for non-recurrent layers) —
+  32 KiB per token, 256 MiB at 8192 and 512 MiB at 16384, on top of the 5.31 GB
+  of weights. An earlier draft of this entry said 2 GiB; that counted all 32
+  blocks and was wrong.
 - The engine walks a RAM-gated ladder: 16384 then 8192 then 4096, NPU before
   CPU at each rung, and the label names the window that actually loaded. An
   8 GB phone never attempts what it cannot hold.

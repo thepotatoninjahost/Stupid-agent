@@ -106,10 +106,14 @@ class LocalLlm(
          * the owner asked for 10 000+: this ladder tops out at 16384, which
          * leaves ~12 000 tokens of history.
          *
-         * The cost is the KV cache, and it is knowable from the GGUF itself:
-         * OmniCoder-9B (qwen35) has 32 blocks, 4 KV heads of key/value length
-         * 256 — 32 x 4 x 256 x 2 (K and V) x 2 bytes = 128 KiB per token.
-         * 8192 tokens = 1 GiB, 16384 = 2 GiB, on top of the 5.31 GB of weights.
+         * The cost is the KV cache, and it is knowable from the GGUF itself.
+         * qwen35 is a hybrid: "full_attention_interval = 4" means only 8 of the
+         * 32 blocks keep a KV cache (llama.cpp's qwen3next graph allocates KV
+         * only for the non-recurrent layers; the other 24 hold a fixed
+         * recurrent state of ~27 MB in total). So the cache is
+         * 8 x 4 KV heads x (256 + 256) x 2 bytes = 32 KiB per token:
+         * 8192 = 256 MiB, 16384 = 512 MiB. Weights (5.31 GB) dominate, which is
+         * why the gate below is about free RAM, not about the window.
          */
         const val N_CTX = 16_384
         /** Window tried when the larger ones cannot be allocated. */
@@ -158,8 +162,9 @@ class LocalLlm(
 
         /**
          * Windows to try, largest first, for a device with [totalRamBytes].
-         * 16384 needs room for the 5.31 GB of weights plus 2 GiB of KV cache,
-         * so it is only attempted on an 11 GB device or better. 4096 is always
+         * 16384 needs room for the 5.31 GB of weights plus 512 MiB of KV cache
+         * plus Android itself, so it is only attempted on an 11 GB device or
+         * better; an 8 GB phone keeps the 8192 rung it already ran. 4096 is always
          * the last rung: a small window beats no engine at all. Pure, so the
          * gate is pinned by a test instead of discovered by an OOM on a phone.
          */
