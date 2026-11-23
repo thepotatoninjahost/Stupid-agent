@@ -87,6 +87,9 @@ class ModelCatalogTest {
         assertNull(catalog.parseStrict("<html>gateway</html>"))
         assertNull(catalog.parseStrict(""))
         assertNull(catalog.parseStrict("""{"data":[{"id":"a"}"""))
+        // An error body with HTTP 200 is a failure, not a fresh empty listing.
+        assertNull(catalog.parseStrict("""{"error":{"message":"upstream unavailable"}}"""))
+        assertNull(catalog.parseStrict("""{"data":"unavailable"}"""))
         // An entry with no id is useless and must not become an empty chip.
         assertEquals(listOf("a"), catalog.parseStrict("""{"data":[{"id":"a"},{"context_length":1}]}""")!!.map { it.id })
     }

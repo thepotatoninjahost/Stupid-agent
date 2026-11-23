@@ -22,9 +22,20 @@ app could be wrong and say nothing.
   the first 160 characters instead of as an empty success. GPU bundle sidecars
   get the same treatment (1 MB, refuse rather than half-import).
 
-Tests: 877, all green. New: the stream ceiling and its single marker, a command
-that never ran (the gate stays shut), a real exit code (the gate opens), and a
-listing body cut at the cap (reported, not silently empty).
+- Two follow-ups from a second pass. The sidecar cap counted decoded
+  *characters* while calling itself a byte limit; it now stops on decompressed
+  bytes and decodes afterwards, so a sidecar of multibyte characters cannot
+  pass under a megachar while being 1.4 MB. And a 200 that carries
+  `{"error":{…}}` or `{"data":"unavailable"}` parsed to an *empty* listing,
+  which `isFresh` then treated as good; an object that carries neither a
+  `data` nor a `models` list is now a reported error, while `{}` and
+  `{"data":null}` stay empty answers.
+
+Tests: 878, all green. New: the stream ceiling and its single marker, a command
+that never ran (the gate stays shut), a real exit code (the gate opens), a
+listing body cut at the cap (reported, not silently empty), an error body with
+HTTP 200 (reported), and a sidecar over the byte cap but under a megachar
+(refused).
 
 
 # The prompt budget counts the tools, and the window is twice as big (2026-11-22)

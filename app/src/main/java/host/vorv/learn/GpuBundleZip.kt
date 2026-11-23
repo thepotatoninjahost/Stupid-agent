@@ -162,17 +162,24 @@ object GpuBundleZip {
      * central directory is only a claim: a file that inflates past [limit] is
      * refused instead of being read into the heap.
      */
+    /**
+     * Reads at most [limit] decompressed BYTES and only then decodes them. The
+     * cap used to count decoded characters: a sidecar that inflates past its
+     * declared size could then hand back more bytes than the constant name
+     * promised before the stop was noticed.
+     */
     private fun readCapped(input: java.io.InputStream, limit: Long): String? =
         input.use { stream ->
-            val reader = stream.bufferedReader()
-            val buf = CharArray(8 * 1024)
-            val sb = StringBuilder()
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(8 * 1024)
+            var total = 0L
             while (true) {
-                val n = reader.read(buf)
+                val n = stream.read(buf)
                 if (n <= 0) break
-                sb.append(buf, 0, n)
-                if (sb.length > limit) return null
+                total += n
+                if (total > limit) return null
+                out.write(buf, 0, n)
             }
-            sb.toString()
+            out.toString("UTF-8")
         }
 }

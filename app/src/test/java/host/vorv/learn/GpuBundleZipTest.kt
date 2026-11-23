@@ -71,6 +71,24 @@ class GpuBundleZipTest {
     }
 
     @Test
+    fun m2_the_sidecar_cap_counts_bytes_not_characters() {
+        // 700 000 two-byte characters: under a million CHARS, over a megabyte of
+        // BYTES. The cap is named in bytes, so this must be refused.
+        val text = "é".repeat(700_000).toByteArray(Charsets.UTF_8)
+        assertEquals(1_400_000, text.size)
+        val file = zip(
+            mapOf(
+                "vorv/manifest.json" to text,
+                "vorv/model.gguf" to payload,
+            )
+        )
+        val out = File(tmp.newFolder(), "model.gguf")
+        val result = GpuBundleZip.read(file, out) as GpuBundleZip.Result.Failed
+        assertTrue(result.message, result.message.contains("oversized or unreadable manifest"))
+        assertTrue("no model may be left behind", !out.exists())
+    }
+
+    @Test
     fun m2_an_oversized_archive_is_refused_in_words() {
         val file = tmp.newFile("huge.zip")
         java.io.RandomAccessFile(file, "rw").use { it.setLength(13L * 1024 * 1024 * 1024) }

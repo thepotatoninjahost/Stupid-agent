@@ -106,6 +106,8 @@ class ModelCatalog(
      * error line instead.
      *
      * `{"data":null}` and `{}` are readable lists that happen to be empty.
+     * An object that carries neither (`{"error":{…}}`, `{"data":"unavailable"}`)
+     * is a failure, and answers null.
      */
     fun parseStrict(body: String): List<Entry>? = runCatching {
         val root = JsonParser.parseString(body)
@@ -115,10 +117,22 @@ class ModelCatalog(
         // caller says what happened instead of "this provider serves nothing".
         val arr = when {
             root.isJsonArray -> root.asJsonArray
-            root.isJsonObject -> listOf("data", "models")
-                .firstNotNullOfOrNull { key ->
-                    root.asJsonObject.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
-                } ?: return@runCatching emptyList<Entry>()
+            root.isJsonObject -> {
+                val obj = root.asJsonObject
+                val member = listOf("data", "models").firstOrNull { obj.get(it) != null }
+                val v = member?.let { obj.get(it) }
+                when {
+                    // `{}` is an empty answer; anything else without a list is
+                    // not a catalogue at all, so it must not read as "serves
+                    // no models".
+                    v == null -> if (obj.size() == 0) emptyList() else return@runCatching null
+                    v.isJsonNull -> emptyList()
+                    v.isJsonArray -> v.asJsonArray
+                    // `{"error":{…}}`, `{"data":"unavailable"}`: a failure the
+                    // caller must report, not a fresh empty listing.
+                    else -> return@runCatching null
+                }
+            }
             else -> return@runCatching null
         }
         arr.mapNotNull { el ->
