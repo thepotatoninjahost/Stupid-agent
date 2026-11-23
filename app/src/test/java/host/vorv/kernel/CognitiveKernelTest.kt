@@ -51,12 +51,20 @@ class CognitiveKernelTest {
         override val timeoutMs: Long = 60_000L,
         override val maxCallsPerTask: Int = 20,
         private val onRun: (JsonObject) -> Unit = {},
+        /** Description size and schema padding model the real 24-tool roster. */
+        override val description: String = "fake $name",
+        private val schemaPad: Int = 0,
     ) : Tool {
-        override val description = "fake $name"
         override fun schema() = JsonObject().apply {
             addProperty("type", "object")
             add("properties", JsonObject().apply {
                 add("x", JsonObject().apply { addProperty("type", "string") })
+                if (schemaPad > 0) {
+                    add("pad", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("description", "x".repeat(schemaPad))
+                    })
+                }
             })
             add("required", com.google.gson.JsonArray().apply { add("x") })
         }
@@ -495,7 +503,10 @@ class CognitiveKernelTest {
         val systemMsg = llm.steps[0].first()
         assertEquals("system", systemMsg.role)
         assertTrue(systemMsg.content.contains("UNTRUSTED DATA"))
-        assertTrue(systemMsg.content.contains("- alpha:"))
+        // Names only: the engine renders the schemas, and repeating the
+        // descriptions here cost the local prompt the room it needed to answer
+        // (see `the real 24-tool roster leaves room to answer on the 8192 window`).
+        assertTrue(systemMsg.content.contains("Tools (schemas supplied with this request): alpha"))
         assertTrue(systemMsg.content.contains("confirmation"))
         // v0.6.13: the act-don't-advise rule is part of the standing prompt.
         assertTrue(systemMsg.content.contains("code block is NOT doing it"))
@@ -1121,6 +1132,72 @@ class CognitiveKernelTest {
         assertTrue("the system prompt is never folded away", messages.first().content == "SYS")
         assertTrue("the history is folded", messages.size < 40)
         assertTrue("what was folded is still readable", messages[2].content.contains("digest"))
+    }
+
+    /**
+     * The field numbers of 2026-11-23, pinned as a test.
+     *
+     * On the phone the kernel reported "prompt budget 1508 tokens for messages
+     * with 24 tools rendered" and the engine then measured "about 8034 tokens"
+     * on the same 8192-token window: 8034 = 3398 of messages + 4388 of rendered
+     * tool schemas + 248 of template. 1508 = 8192 - 2048 reply - 248 template
+     * - 4388 roster. So the messages had 1508 tokens to live in while the
+     * system prompt alone was ~3400 — the history could never be compacted
+     * small enough, and every task, a three-word question included, died at
+     * iteration 1 with "there is no room to answer".
+     *
+     * The system prompt was paying for the whole tool roster twice: once as the
+     * schemas the engine renders and once as "Available tools: - name: long
+     * description" lines. This test builds the roster at the sizes the phone
+     * measured and demands that the fixed part of the prompt leaves the reply
+     * its full reserve on the smallest window the app can load (8192).
+     */
+    @Test
+    fun `the real 24-tool roster leaves room to answer on the 8192 window`() = runTest {
+        val sink = FakeSink()
+        // 24 tools, ~7.5 KB of descriptions and ~9 KB of schema text: the
+        // roster the phone measured at 4388 prompt tokens.
+        val tools = (0 until 24).map { i ->
+            FakeTool(
+                "tool_$i",
+                description = "Tool $i. ".repeat(42), // ~336 chars, the real average
+                schemaPad = 190,
+            )
+        }
+        val llm = FakeLlm(listOf(Llm.LlmResponse.Text("ok", done = true)))
+        kernel(sink, tools).run("t1", "what does that mean?", llm, null)
+
+        val specs = tools.map { Llm.ToolSpec(it.name, it.description, it.schema()) }
+        val roster = host.vorv.llm.LocalLlm.toolRosterTokens(specs)
+        val window = 8_192
+        val sent = llm.steps.first()
+        val messageTokens = sent.sumOf { it.content.length } / 4
+
+        val budget = host.vorv.llm.LocalLlm.promptBudgetFor(
+            window, host.vorv.llm.LocalLlm.MAX_OUTPUT_TOKENS,
+            host.vorv.llm.LocalLlm.TEMPLATE_MARGIN, roster,
+        )
+        assertTrue(
+            "the messages must fit the budget they are compacted to: system + task are " +
+                "${messageTokens} tokens, budget is $budget",
+            messageTokens <= budget,
+        )
+        assertEquals(
+            "the prompt must leave the full reply reserve on the 8192 window: " +
+                "messages $messageTokens + roster $roster + template",
+            host.vorv.llm.LocalLlm.MAX_OUTPUT_TOKENS,
+            host.vorv.llm.LocalLlm.replyTokensFor(
+                messageTokens + roster + host.vorv.llm.LocalLlm.TEMPLATE_MARGIN, window,
+            ),
+        )
+        assertFalse(
+            "the system prompt must not repeat descriptions the engine already renders",
+            sent.first().content.contains("Tool 0. Tool 0."),
+        )
+        assertTrue(
+            "it still names every tool, so a provider that drops the schemas is not blind",
+            (0 until 24).all { sent.first().content.contains("tool_$it") },
+        )
     }
 
     /** The error line names the budget that was really used, not the flat one. */

@@ -777,8 +777,18 @@ class CognitiveKernel(
         appendLine("   can reach it, say exactly that (\"I have no tool that can read X\") —")
         appendLine("   never ask the user to paste something a tool should provide.")
         appendLine()
-        appendLine("Available tools:")
-        tools.forEach { t -> appendLine("- ${t.name}: ${t.description}") }
+        // The engine renders every tool SCHEMA into the prompt (the local chat
+        // template, the cloud "tools" field), so listing each description here
+        // charged the prompt for the roster twice: 24 tools meant ~7.5 KB of
+        // text on top of ~10 KB of schemas. On the 8192-token window the phone
+        // loaded, that left the history 1508 tokens while this system prompt
+        // alone needed ~3400, so compaction could never fit the prompt and
+        // every task — a three-word question included — died at iteration 1
+        // with "there is no room to answer". Names only: still enough for a
+        // provider that drops the schemas, cheap enough to leave the reply its
+        // full reserve.
+        appendLine("Tools (schemas supplied with this request): " +
+            tools.joinToString(", ") { it.name })
         appendLine()
         appendLine("Workspace: ${if (workspaceUri.isNullOrBlank()) "(none granted — file tools will fail until user picks a folder in Files tab)" else "granted"}")
         // v0.6.15 (field finding #3): live shell status. The model used to

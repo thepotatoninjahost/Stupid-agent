@@ -57,6 +57,26 @@ class BrainChoiceResolveTest {
     }
 
     @Test
+    fun `a reply cut off at its output ceiling is not a retired model`() {
+        // Screenshot 2026-11-23: HTTP 200, finish_reason=length, empty content
+        // from a model that answers perfectly well. The gate called it retired
+        // and pushed the owner off the cloud for good.
+        val truncated = BrainFacts.Exchange(
+            url = "https://openrouter.ai/api/v1/chat/completions",
+            model = "qwen/qwen3-coder-next",
+            authorizationSent = true,
+            code = 200,
+            body = """{"id":"gen-1","model":"qwen/qwen3-coder-next","choices":[""" +
+                """{"message":{"content":"","reasoning":""},"finish_reason":"length"}]}""",
+            at = 2_000L,
+        )
+        val r = BrainChoice.resolve(
+            facts(key = true, model = "qwen/qwen3-coder-next", probe = truncated),
+        )
+        assertTrue("a cut-off reply must not close the gate: ${r.reason}", r.usable)
+    }
+
+    @Test
     fun `a custom model with no key is labelled and refused with the same reason`() {
         val r = BrainChoice.resolve(facts(key = false, model = "NVIDIA: Nemotron 3 Ultra"))
         assertFalse(r.usable)

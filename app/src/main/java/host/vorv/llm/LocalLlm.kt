@@ -191,10 +191,16 @@ class LocalLlm(
             if (loadedCtx > 0) loadedCtx else fallback
 
         fun contextLadder(totalRamBytes: Long): List<Int> {
-            val gib = totalRamBytes / (1024.0 * 1024.0 * 1024.0)
+            // RAM is sold and reported in decimal GB: a "12 GB" phone reports a
+            // MemTotal of about 11.4 GB, which is only 10.6 GiB. Comparing GiB
+            // against an 11.0 bar therefore gave the owner's 12 GB phone the
+            // 8192 rung, the window this agent had already outgrown — the fix
+            // for the prompt budget could never be measured on the phone it
+            // was written for. The gate is "11 GB or better", in GB.
+            val gb = totalRamBytes / 1_000_000_000.0
             val ladder = ArrayList<Int>(3)
-            if (gib >= 11.0) ladder.add(16_384)
-            if (gib >= 7.0) ladder.add(8_192)
+            if (gb >= 11.0) ladder.add(16_384)
+            if (gb >= 7.0) ladder.add(8_192)
             ladder.add(FALLBACK_N_CTX)
             return ladder
         }

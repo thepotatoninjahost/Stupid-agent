@@ -1,5 +1,6 @@
 package host.vorv.llm
 
+import com.google.gson.JsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -24,11 +25,18 @@ class FallbackLlmTest {
     private class FakeLlm(
         override val label: String,
         override val contextTokenBudget: Int = 100_000,
+        private val rosterBudget: Int? = null,
         private val behavior: suspend () -> Llm.LlmResponse,
     ) : Llm {
         val received = mutableListOf<List<Llm.Message>>()
+        val budgetAsks = mutableListOf<Int>()
         var calls = 0
             private set
+
+        override fun promptBudget(tools: List<Llm.ToolSpec>): Int {
+            budgetAsks.add(tools.size)
+            return rosterBudget ?: contextTokenBudget
+        }
 
         override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse {
             calls++
@@ -74,6 +82,34 @@ class FallbackLlmTest {
         assertEquals(1, secondary.calls)
         assertEquals("local", switchTo)
         assertTrue(switchReason!!.contains("HTTP 529"))
+    }
+
+    @Test
+    fun `the fallback compacts to the secondary's roster-aware budget`() = runTest {
+        // The local engine's real budget on the 16384 window with a 24-tool
+        // roster is ~9500 tokens, not the flat 100 000. The old code compacted
+        // to contextTokenBudget, so a 16 000-token history passed through
+        // untouched and then overflowed the window it was "compacted" for.
+        val secondary = FakeLlm(
+            "local",
+            contextTokenBudget = 100_000,
+            rosterBudget = 9_500,
+        ) { text("offline answer") }
+        val primary = FakeLlm("cloud") { throw RuntimeException("HTTP 529: busy") }
+        val fb = FallbackLlm(primary, secondary)
+        val history = listOf(msg("system", "SYS")) +
+            (1..40).map { msg("user", "payload $it ".repeat(150)) }
+
+        fb.step(history, List(24) { Llm.ToolSpec("t$it", "does $it", JsonObject()) })
+
+        assertEquals(listOf(24), secondary.budgetAsks)
+        val compacted = secondary.received.single()
+        val tokens = compacted.sumOf { it.content.length } / 4
+        assertTrue(
+            "the secondary must receive a prompt inside its own budget, was ~$tokens tokens",
+            tokens <= 9_500,
+        )
+        assertEquals("system", compacted.first().role)
     }
 
     @Test

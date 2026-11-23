@@ -128,6 +128,24 @@ class LocalPromptBudgetTest {
     }
 
     @Test
+    fun `a 12 GB phone reports 11 GB, not 12 GiB, and still gets 16384`() {
+        // Field 2026-11-23: the ladder compared GiB against 11.0, but RAM is
+        // sold in decimal GB. An S25-class 12 GB phone reports MemTotal of
+        // ~11.4 GB = 10.6 GiB, fell to the 8192 rung, and the owner kept
+        // hitting the window the fix had already outgrown.
+        assertEquals(listOf(16_384, 8_192, 4_096), LocalLlm.contextLadder(11_400_000_000L))
+        // 11 GB exactly is the bar, in GB.
+        assertEquals(listOf(16_384, 8_192, 4_096), LocalLlm.contextLadder(11_000_000_000L))
+    }
+
+    @Test
+    fun `a 6 GB phone still gets the 4096 rung`() {
+        // Decimal GB must not promote a phone that cannot hold the 8192 window.
+        assertEquals(listOf(4_096), LocalLlm.contextLadder(5_900_000_000L))
+        assertEquals(listOf(8_192, 4_096), LocalLlm.contextLadder(7_400_000_000L))
+    }
+
+    @Test
     fun `an 8 GB phone gets 8192, never the window it cannot hold`() {
         assertEquals(listOf(8_192, 4_096), LocalLlm.contextLadder(8L * 1024 * 1024 * 1024))
     }

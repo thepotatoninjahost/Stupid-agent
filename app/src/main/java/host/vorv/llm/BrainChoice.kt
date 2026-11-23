@@ -102,6 +102,11 @@ object BrainChoice {
                 !e.authorizationSent && e.code in 400..499 -> "the request went out without the key header"
                 e.code == 401 || e.code == 403 -> "HTTP ${e.code}: the provider refused the key (${e.body.take(120)})"
                 e.code == 404 -> "HTTP 404: model \"${e.model}\" is not served there"
+                // A model that was cut off at its output ceiling said nothing
+                // this once but is alive: the screenshot of 2026-11-23 showed
+                // finish_reason=length from a working model, and the old rule
+                // closed the gate on it as "probably retired". Not a hard fact.
+                e.code in 200..299 && !e.answered && CompletionText.finishReason(e.body) == "length" -> null
                 e.code in 200..299 && !e.answered ->
                     "HTTP 200 with no text: model \"${e.model}\" is probably retired"
                 else -> null

@@ -52,7 +52,11 @@ class FallbackLlm(
         } catch (e: Exception) {
             if (isAuthError(e)) throw e
             val reason = e.message ?: e.javaClass.simpleName
-            val compacted = compactFor(messages, secondary.contextTokenBudget)
+            // Ask the SECONDARY for its budget WITH this call's roster: on the
+            // local engine the tool schemas are prompt tokens, and the flat
+            // contextTokenBudget ignores them, so the "compacted" history still
+            // overflowed the window it was compacted for.
+            val compacted = compactFor(messages, secondary.promptBudget(tools))
             runCatching { onEngineSwitch?.invoke(primary.label, secondary.label, reason) }
             secondary.step(compacted, tools).also { lastEngineUsed = secondary.label }
         }

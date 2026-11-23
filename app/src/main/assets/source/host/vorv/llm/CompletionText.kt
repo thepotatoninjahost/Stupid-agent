@@ -61,6 +61,19 @@ internal object CompletionText {
     }
 
     /**
+     * `choices[0].finish_reason`, or null when the provider did not say.
+     * "length" means the model ran into its output ceiling: it said nothing
+     * because it was cut off, which is not proof that the model is gone.
+     */
+    fun finishReason(body: String): String? = try {
+        JsonParser.parseString(body).asJsonObject
+            .getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
+            ?.get("finish_reason")?.takeIf { it.isJsonPrimitive }?.asString
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
      * Why a 200 carried nothing, in the provider's own words when it gave any:
      * `error.message`, the finish reason, and the body head. A bare "no text"
      * left the owner guessing; this names the actual payload.

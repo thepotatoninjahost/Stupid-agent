@@ -306,13 +306,33 @@ class CloudLlm(
                             throw RuntimeException("LLM returned no choices: ${responseBody.take(300)}")
                         }
                         val choice = choices[0].asJsonObject
-                        val msg = choice.getAsJsonObject("message")
                         val finish = choice.get("finish_reason")?.takeIf { !it.isJsonNull }?.asString ?: "stop"
+                        // 2026-11-23: a reply without a "message" object was an
+                        // NPE here, dressed up by the kernel as an engine fault.
+                        val msg = choice.getAsJsonObject("message")
+                            ?: throw RuntimeException(
+                                "HTTP ${res.code} without an assistant message " +
+                                    "(finish_reason=$finish): ${responseBody.take(240)}",
+                            )
                         // A gateway may send content as an array of parts;
                         // reading only a plain string made a real answer look
                         // empty (and retried four times for nothing).
                         val content = CompletionText.content(msg)
                         val toolCallsArr = msg.getAsJsonArray("tool_calls")
+                        if (content.isBlank() && (toolCallsArr == null || toolCallsArr.size() == 0)) {
+                            // Never hand the kernel an empty answer as if it
+                            // were one: name what the provider did. A blank
+                            // bubble reads as "the agent is broken".
+                            val why = if (finish == "length") {
+                                "it hit the 2048-token output ceiling before saying anything"
+                            } else {
+                                "the provider sent an empty message"
+                            }
+                            throw RuntimeException(
+                                "HTTP ${res.code}, but model \"$model\" returned no text: $why " +
+                                    "(${CompletionText.emptyReplyReason(responseBody)}).",
+                            )
+                        }
 
                         return@withContext if (toolCallsArr != null && toolCallsArr.size() > 0) {
                             val calls = toolCallsArr.map { tcEl ->
@@ -415,13 +435,19 @@ class CloudLlm(
          * when a key is saved or a cloud model is picked. Verifiable
          * execution, applied to configuration: the Setup screen shows the
          * model's actual reply (or the actual error string from Z.ai), never
-         * a guess. Single attempt, no retries — a probe failing IS the answer.
+         * a guess. One attempt — a probe failing IS the answer, except that a
+         * model cut off at its own output ceiling gets one retry with real
+         * room before it is judged.
          *
          * Cost: ~8 output tokens. On the free default model, $0. On the paid
          * flagship, ~4 thousandths of a cent.
          */
         suspend fun probe(apiKey: String, baseUrl: String, model: String): Result<String> =
             probeAt(apiKey, baseUrl, model)
+
+        /** The model hit its output ceiling with nothing to show for it. */
+        private class CutOffReply(maxTokens: Int) :
+            RuntimeException("cut off at $maxTokens tokens before answering")
 
         /** Same one-call proof, against any address that speaks this format. */
         suspend fun probeAt(
@@ -436,16 +462,17 @@ class CloudLlm(
                 host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
                     return@withContext Result.failure(IllegalArgumentException(it))
                 }
-                try {
+                // 8 tokens was enough for "VORV_KEY_OK" and nothing else: a
+                // model that emits a short preamble (or a gateway that adds
+                // reasoning) hit the ceiling with an empty content and looked
+                // "retired". 64 costs a fraction of a cent and leaves room to
+                // speak; a TEST model at 64 may still be cut off, so one retry
+                // with real room follows below.
+                suspend fun ask(maxTokens: Int): Result<String> {
                     val body = JsonObject().apply {
                         addProperty("model", model)
                         addProperty("temperature", 0f)
-                        // 8 tokens was enough for "VORV_KEY_OK" and nothing
-                        // else: a model that emits a short preamble (or a
-                        // gateway that adds reasoning) hit the ceiling with an
-                        // empty content and looked "retired". 64 costs a
-                        // fraction of a cent and leaves room to speak.
-                        addProperty("max_tokens", 64)
+                        addProperty("max_tokens", maxTokens)
                         add("messages", com.google.gson.JsonArray().apply {
                             add(JsonObject().apply {
                                 addProperty("role", "user")
@@ -459,7 +486,7 @@ class CloudLlm(
                         .addHeader("Content-Type", "application/json")
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
-                    client.newCall(req).execute().use { res ->
+                    return client.newCall(req).execute().use { res ->
                         // M-1: a probe reads 600 chars; never buffer more.
                         val text = readBounded(res.body, PROBE_BODY_BYTES)
                         val exchange = BrainFacts.Exchange(
@@ -471,14 +498,14 @@ class CloudLlm(
                         )
                         BrainState.recordProbe(exchange)
                         if (!res.isSuccessful) {
-                            return@withContext Result.failure(
+                            return Result.failure(
                                 RuntimeException("HTTP ${res.code}: ${text.take(200)}"),
                             )
                         }
                         val json = JsonParser.parseString(text).asJsonObject
                         val choices = json.getAsJsonArray("choices")
                         if (choices == null || choices.size() == 0) {
-                            return@withContext Result.failure(
+                            return Result.failure(
                                 RuntimeException("No choices in response: ${text.take(200)}"),
                             )
                         }
@@ -487,10 +514,15 @@ class CloudLlm(
                         // reply in "reasoning" — both used to read as "no text".
                         val content = CompletionText.of(message)
                         if (content.isBlank()) {
+                            if (CompletionText.finishReason(text) == "length") {
+                                // Cut off before it said anything: the key and
+                                // the model are fine, the allowance was not.
+                                return Result.failure(CutOffReply(maxTokens))
+                            }
                             // 0.9.18: an HTTP 200 with an empty answer is NOT
                             // proof the key works. Name what actually came
                             // back instead of blaming the model id blind.
-                            return@withContext Result.failure(
+                            return Result.failure(
                                 RuntimeException(
                                     "HTTP 200, but model \"$model\" returned no text " +
                                         "(${CompletionText.emptyReplyReason(text)}). " +
@@ -501,6 +533,28 @@ class CloudLlm(
                         }
                         Result.success(content)
                     }
+                }
+                try {
+                    val first = ask(64)
+                    if (first.exceptionOrNull() !is CutOffReply) return@withContext first
+                    // One retry with room to answer. The 2026-11-23 screenshot
+                    // showed a working model cut off inside the probe's own
+                    // ceiling, and the app told the owner it was retired.
+                    val retry = ask(512)
+                    val retryErr = retry.exceptionOrNull()
+                    if (retryErr is CutOffReply) {
+                        return@withContext Result.failure(
+                            RuntimeException(
+                                "HTTP 200, but model \"$model\" was still cut off at 512 tokens " +
+                                    "without answering (finish_reason=length): it spends its allowance on " +
+                                    "reasoning before it speaks. The key works. Pick a model that answers " +
+                                    "directly, or run the on-phone coder.",
+                            ),
+                        )
+                    }
+                    retry
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Result.failure(e)
                 }
