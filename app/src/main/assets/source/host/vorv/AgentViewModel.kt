@@ -846,7 +846,21 @@ class AgentViewModel(
      */
     fun setApiKey(key: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            secrets.setZaiApiKey(key)
+            // One key, or a refusal that says what is wrong. The field is a
+            // paste target: four keys on four lines used to be saved as-is, and
+            // then every cloud call failed with OkHttp's "Unexpected char 0x0a
+            // … in Authorization value" — a sentence that names no cause.
+            val one = try {
+                host.vorv.llm.provider.ApiKey.normalize(key)
+            } catch (e: IllegalArgumentException) {
+                _state.update { it.copy(keyTesting = false, keyTestResult = "✗ ${e.message}") }
+                return@launch
+            }
+            if (one.isBlank()) {
+                _state.update { it.copy(keyTesting = false, keyTestResult = "✗ No key was typed, so nothing was saved.") }
+                return@launch
+            }
+            secrets.setZaiApiKey(one)
             // B-1 (code review, 2026-11): publish key presence IMMEDIATELY.
             // The hot SecretsStore flow also carries this update now, but
             // send()'s engineAvailable gate reads AgentState.hasApiKey —
@@ -855,7 +869,7 @@ class AgentViewModel(
             // This one line is the difference between "paste a key, get told
             // to paste a key" (the four-year first-run loop) and a working
             // default cloud mode.
-            _state.update { it.copy(hasApiKey = key.isNotBlank()) }
+            _state.update { it.copy(hasApiKey = one.isNotBlank()) }
             _state.update { it.copy(keyTesting = true, keyTestResult = null) }
             // 0.9.30: no compiled-in model catalogue. A blank address means the
             // owner's default (BrainTarget), so a fresh key is tested against it.
@@ -864,7 +878,7 @@ class AgentViewModel(
                 prefs.cloudCustomModel.first(),
                 _state.value.providerId,
             )
-            val probe = CloudLlm.probe(key, target.baseUrl, target.modelId)
+            val probe = CloudLlm.probe(one, target.baseUrl, target.modelId)
             if (probe.isSuccess) {
                 _state.update {
                     it.copy(

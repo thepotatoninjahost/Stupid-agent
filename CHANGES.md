@@ -1,3 +1,42 @@
+# The brain, run for real — and the key that could not be sent (2026-11-23)
+
+Priority 1 was "get the AI and the brain working correctly", and it had never
+been tested through the app's own code: the cloud proof was a `curl` and a
+Python probe, the unit tests used fake engines. `LiveBrainTest` now runs the
+real `CloudLlm` inside the real `CognitiveKernel`, against the provider in
+Setup, and asserts what the owner actually cares about: the model is given one
+tool, it asks for it, the kernel runs it, and the answer carries the number the
+tool computed.
+
+It found a defect on the first run. The key field is a paste target; the value
+saved here held four keys on four lines. OkHttp refused the header ("Unexpected
+char 0x0a at 80 in Authorization value"), and `CloudLlm` treated that
+deterministic failure as transient — four attempts with backoff, then "LLM call
+failed after 4 attempts". Every cloud call would fail that way, with a sentence
+that names neither the cause nor the fix.
+
+- `ApiKey.normalize` is now the single gate on a key: surrounding whitespace is
+  removed (a trailing newline from a paste is ordinary), an interior line break
+  or space is refused with the count and the instruction, and a blank value
+  stays blank so the caller can say "no key yet".
+- `BrainHttp.applyAuth` uses it, so no request is ever built from an unsendable
+  value; `CloudLlm.step` checks before the retry loop, so the refusal is
+  immediate instead of retried; `CloudLlm.probeAt` reports it as the probe's
+  answer.
+- Setup refuses the paste at the door: nothing is saved, and the field shows
+  the same sentence. Picking one of several keys automatically would be a
+  guess about which is live, so the app does not.
+
+Receipts, with the first key only: `LiveBrainTest` → `LIVE text=pong`,
+`LIVE answer=[uncited] 391 toolCalls=1 ok=true`. Full suite: 886 tests
+(884 ran, 2 skipped: the live test skips when no single key is in the
+environment), 0 failures, 0 errors. Version 0.9.36 (83).
+
+The live test is the thing to run on the phone's behalf when a cloud answer is
+doubted: `OPENROUTER_API_KEY=<one key> ./gradlew :app:testDebugUnitTest
+--tests 'host.vorv.llm.LiveBrainTest'`.
+
+
 # The shell keeps its promises, and no read is unbounded (2026-11-22)
 
 Four review findings were true of the old code, and each was a place where the

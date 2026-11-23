@@ -155,6 +155,10 @@ class CloudLlm(
     override suspend fun step(messages: List<Llm.Message>, tools: List<Llm.ToolSpec>): Llm.LlmResponse =
         withContext(Dispatchers.IO) {
             require(apiKey.isNotBlank()) { "$model requires an API key — add one in Setup tab." }
+            // L-6: a key that cannot be sent is a deterministic failure. Say it
+            // once, here, instead of retrying it four times and reporting that
+            // "the call failed after 4 attempts".
+            host.vorv.llm.provider.ApiKey.normalize(apiKey)
             // H-5: a cleartext provider address never gets a prompt, even if
             // it was stored before this check existed.
             host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
@@ -428,6 +432,7 @@ class CloudLlm(
         ): Result<String> =
             withContext(Dispatchers.IO) {
                 if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("No API key saved yet."))
+                host.vorv.llm.provider.ApiKey.normalize(apiKey)
                 host.vorv.llm.provider.ProviderUrl.rejectionReason(baseUrl)?.let {
                     return@withContext Result.failure(IllegalArgumentException(it))
                 }
