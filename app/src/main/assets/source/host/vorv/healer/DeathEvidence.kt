@@ -38,6 +38,22 @@ object DeathEvidence {
         reason == android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
 
     /**
+     * Reasons Android gives when it, not a bug, ended the process. These are
+     * kills: the app must not call them a crash, and must not call them
+     * nothing either — "Android killed it for memory" is the whole answer the
+     * owner needs.
+     */
+    fun isKillReason(reason: Int): Boolean = when (reason) {
+        android.app.ApplicationExitInfo.REASON_LOW_MEMORY,
+        android.app.ApplicationExitInfo.REASON_SIGNALED,
+        android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+        // REASON_MEMORY_LIMITER: documented value 17, not a constant in this compileSdk
+        17,
+        -> true
+        else -> false
+    }
+
+    /**
      * Pure decision, so the rule can be tested without a device.
      *
      * Times are epoch millis; null means "none was found". [prevBootStart] is
@@ -64,6 +80,8 @@ object DeathEvidence {
             return Verdict(true, "the watchdog detected this process dying")
         }
         val why = when {
+            osReason != null && osAt != null && afterStart(osAt) && isKillReason(osReason) ->
+                "Android ended it: ${NativeCrashHistory.reasonName(osReason)} — a system kill, not a crash"
             osReason != null && osAt != null && afterStart(osAt) ->
                 "Android's exit history says ${NativeCrashHistory.reasonName(osReason)} — ended, not crashed"
             osReason != null && osAt != null ->

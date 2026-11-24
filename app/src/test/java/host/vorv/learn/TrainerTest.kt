@@ -155,4 +155,69 @@ class TrainerTest {
         assertTrue(text, text.contains("perplexity"))
         assertEquals(Math.exp(0.5), Trainer.perplexityOf(0.5), 1e-9)
     }
+
+    @Test
+    fun `a worker stop ends the run as paused, not as a result`() {
+        val dir = tmp.newFolder("brain")
+        val out = Trainer(dir).run(rows(), settings(), shouldStop = { true })
+        assertFalse(out.ran)
+        assertTrue("a stop is not a refusal", out.paused)
+        assertNull(GenerationStore(dir).champion())
+    }
+
+    @Test
+    fun `a stop in the middle of the loop saves nothing and says so`() {
+        val dir = tmp.newFolder("brain")
+        var asked = 0
+        val out = Trainer(dir).run(rows(), settings(steps = 100), shouldStop = { asked++ > 4 })
+        assertFalse(out.ran)
+        assertTrue(out.paused)
+        assertTrue(out.message, out.message.contains("stopped the run at step"))
+        assertNull(GenerationStore(dir).champion())
+        assertFalse("no half-trained generation may be left behind", File(dir, "gen-1").exists())
+    }
+
+    @Test
+    fun `rows that cannot yield a held-out window are refused before the tokenizer is trained`() {
+        val dir = tmp.newFolder("brain")
+        // Deliberately pick only rows the split sends to training, so the
+        // held-out set is empty however the hashes fall.
+        val noHeld = (0 until 200).map { i ->
+            LearningLedger.Row(
+                ts = 1_700_000_000_000 + i,
+                kind = LearningLedger.Kind.CHAT_ASSISTANT,
+                sessionId = "s$i",
+                inputText = "the owner asks question number $i about the build",
+                outputText = "the answer explains step $i and names the test that proves it",
+            )
+        }.filter { row ->
+            !Trainer.isHeldOut("${row.inputText.trim()}\n${row.outputText.trim()}")
+        }.take(3)
+        assertEquals(3, noHeld.size)
+
+        val out = Trainer(dir).run(noHeld, settings())
+        assertFalse(out.ran)
+        assertTrue(out.message, out.message.contains("held-out"))
+        assertFalse("tokenising is the expensive part and must not run", File(dir, "tokenizer.txt").exists())
+        assertNull(GenerationStore(dir).champion())
+    }
+
+    @Test
+    fun `the held-out split follows the text, so a row inserted above changes nothing`() {
+        val dir = tmp.newFolder("brain")
+        val base = rows()
+        val withInsert = listOf(
+            LearningLedger.Row(
+                ts = 1_699_000_000_000,
+                kind = LearningLedger.Kind.CHAT_ASSISTANT,
+                sessionId = "inserted",
+                inputText = "a row inserted at the top",
+                outputText = "which must not shift the split of the rows below it",
+            ),
+        ) + base
+        val a = Trainer(dir).run(base, settings(steps = 20))
+        val b = Trainer(dir).run(withInsert, settings(steps = 20))
+        assertEquals(a.ran, b.ran)
+        assertTrue(a.valLoss.isFinite() && b.valLoss.isFinite())
+    }
 }

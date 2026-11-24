@@ -19,7 +19,19 @@ class Tokenizer(private val merges: List<Pair<Int, Int>>, val name: String = "vo
         const val VERSION = 1
         const val MAX_TRAIN_CHARS = 400_000
 
-        fun train(text: String, targetVocab: Int, name: String = "vorv-bpe"): Tokenizer {
+        /**
+         * [shouldStop] is checked once per merge round. A round is the unit of
+         * real work here (up to 767 of them on a phone), so a stop that lands
+         * after half of them keeps the merges already learned instead of
+         * throwing the whole cost away: a smaller vocabulary is still a valid
+         * one, and it is saved so the next run does not repeat the work.
+         */
+        fun train(
+            text: String,
+            targetVocab: Int,
+            name: String = "vorv-bpe",
+            shouldStop: () -> Boolean = { false },
+        ): Tokenizer {
             require(targetVocab in FIRST_MERGE..20_000) { "target vocab $targetVocab outside $FIRST_MERGE..20000" }
             val sample = if (text.length > MAX_TRAIN_CHARS) text.substring(0, MAX_TRAIN_CHARS) else text
             val words = splitWords(sample)
@@ -40,6 +52,7 @@ class Tokenizer(private val merges: List<Pair<Int, Int>>, val name: String = "vo
             val learned = ArrayList<Pair<Int, Int>>()
             countPairs()
             while (FIRST_MERGE + learned.size < targetVocab) {
+                if (shouldStop()) break
                 var bestKey = -1L
                 var bestCount = 0
                 for ((k, c) in counts) {

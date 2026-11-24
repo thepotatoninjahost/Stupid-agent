@@ -124,4 +124,27 @@ class DeathEvidenceTest {
         val section = "[07:14:43.412] BOOT_STARTED — pid=21408 install=abc"
         assertNull(host.vorv.BootTracer.sectionStartEpoch(section))
     }
+
+    @Test
+    fun `a system kill for memory is reported as a kill, not a crash and not a shrug`() {
+        // 17 is REASON_MEMORY_LIMITER, the documented value on Android 17.
+        for (reason in listOf(ApplicationExitInfo.REASON_LOW_MEMORY, ApplicationExitInfo.REASON_SIGNALED, 17)) {
+            val v = DeathEvidence.decide(bootStart, reason, bootStart + 1_000, null, null)
+            assertFalse("$reason must not be called a crash", v.crashed)
+            assertTrue("$reason must name the kill: ${v.detail}", v.detail.contains("system kill"))
+        }
+    }
+
+    @Test
+    fun `an unexplained exit stays unexplained`() {
+        val v = DeathEvidence.decide(bootStart, ApplicationExitInfo.REASON_OTHER, bootStart + 1_000, null, null)
+        assertFalse(v.crashed)
+        assertTrue(v.detail, v.detail.contains("ended, not crashed"))
+        assertFalse(v.detail, v.detail.contains("system kill"))
+    }
+
+    @Test
+    fun `the memory limiter reason has a name instead of a bare number`() {
+        assertTrue(NativeCrashHistory.reasonName(17).contains("MEMORY_LIMITER"))
+    }
 }
