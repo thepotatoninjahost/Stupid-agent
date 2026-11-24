@@ -424,7 +424,10 @@ class CognitiveKernel(
                             }
 
                             // ---- schema validation before dispatch ----
-                            val validationError = ToolCallValidator.validate(tool, input)
+                            // A template-rendered call writes scalars as text;
+                            // match them to the declared types before judging.
+                            val args = ToolCallValidator.coerce(tool, input)
+                            val validationError = ToolCallValidator.validate(tool, args)
                             if (validationError != null) {
                                 _trace.emit(TraceStep.Error(validationError))
                                 messages.add(Llm.Message("tool", "{\"error\":\"$validationError\"}", toolCallId = tc.id))
@@ -434,7 +437,7 @@ class CognitiveKernel(
                             // M14: validated — NOW the call is real. Charge it.
                             rateCounts[tc.name] = used + 1
 
-                            _trace.emit(TraceStep.ToolStart(iterations, tc.name, input))
+                            _trace.emit(TraceStep.ToolStart(iterations, tc.name, args))
 
                             val tCtx = ToolContext(
                                 taskId = taskId,
@@ -445,7 +448,7 @@ class CognitiveKernel(
 
                             val t0 = System.currentTimeMillis()
                             val result = try {
-                                withTimeoutOrNull(tool.timeoutMs) { tool.run(input, tCtx) }
+                                withTimeoutOrNull(tool.timeoutMs) { tool.run(args, tCtx) }
                                     ?: ToolResult(
                                         ok = false,
                                         output = "",
@@ -481,7 +484,7 @@ class CognitiveKernel(
                                 taskId = taskId,
                                 iteration = iterations,
                                 toolName = tc.name,
-                                inputJson = input.toString(),
+                                inputJson = args.toString(),
                                 outputJson = preview,
                                 exitCode = result.exitCode,
                                 durationMs = actualMs,

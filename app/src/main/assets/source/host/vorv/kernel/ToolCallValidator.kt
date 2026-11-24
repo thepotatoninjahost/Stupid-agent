@@ -1,6 +1,7 @@
 package host.vorv.kernel
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
 import host.vorv.tools.Tool
 
 /**
@@ -15,6 +16,41 @@ import host.vorv.tools.Tool
  * Returns null when valid, or a human/LLM-readable error message.
  */
 object ToolCallValidator {
+
+    /**
+     * Matches each declared argument to the type its schema asks for.
+     *
+     * Qwen's chat template writes every scalar argument as plain text — a
+     * number as `10`, a boolean as `True` — so an XML/Hermes tool call that is
+     * right in meaning would otherwise be refused for its JSON type ("count
+     * must be integer, got string") and cost the model an iteration. Only
+     * declared properties are touched, a value that does not convert is left
+     * alone for [validate] to reject, and objects/arrays pass through.
+     */
+    fun coerce(tool: Tool, input: JsonObject): JsonObject {
+        val props = runCatching { tool.schema().getAsJsonObject("properties") }.getOrNull() ?: return input
+        var out: JsonObject? = null
+        for ((name, def) in props.entrySet()) {
+            val v = input.get(name) ?: continue
+            if (v.isJsonNull || !v.isJsonPrimitive) continue
+            val expected = (def as? JsonObject)?.get("type")?.takeIf { !it.isJsonNull }?.asString ?: continue
+            val coerced = when (expected) {
+                "integer" -> v.asString.toLongOrNull()?.let { JsonPrimitive(it) }
+                "number" -> v.asString.toDoubleOrNull()?.let { JsonPrimitive(it) }
+                "boolean" -> when (v.asString.trim().lowercase()) {
+                    "true" -> JsonPrimitive(true)
+                    "false" -> JsonPrimitive(false)
+                    else -> null
+                }
+                "string" -> if (v.asJsonPrimitive.isString) null else JsonPrimitive(v.asString)
+                else -> null
+            } ?: continue
+            if (coerced == v) continue
+            val target = out ?: input.deepCopy().also { out = it }
+            target.add(name, coerced)
+        }
+        return out ?: input
+    }
 
     fun validate(tool: Tool, input: JsonObject): String? {
         val schema = tool.schema()

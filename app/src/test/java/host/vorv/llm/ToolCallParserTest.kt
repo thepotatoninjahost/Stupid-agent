@@ -83,6 +83,55 @@ class ToolCallParserTest {
         assertEquals("""{"action":"list"}""", parseArgs(r))
     }
 
+    // Qwen's own chat template puts the value on its own lines and says a
+    // value "can span multiple lines": keep the text, drop only the padding.
+    @Test fun `an xml parameter keeps a multi-line value`() {
+        val r = parse(
+            "<tool_call>\n<function=memory_write>\n<parameter=content>\nline one\nline two\n</parameter>\n</function>\n</tool_call>",
+        )
+        assertEquals("""{"content":"line one\nline two"}""", parseArgs(r))
+    }
+
+    @Test fun `an xml parameter that is json keeps its shape`() {
+        val r = parse(
+            "<tool_call><function=js_exec><parameter=args>{\"n\":2,\"deep\":[1,2]}</parameter></function></tool_call>",
+        )
+        assertEquals("""{"args":{"n":2,"deep":[1,2]}}""", parseArgs(r))
+    }
+
+    // Qwen recommends Hermes-style calls for its chat models: the JSON object
+    // sits inside the <tool_call> tags instead of <function=...> tags.
+    @Test fun `a hermes call inside tool_call tags is a call`() {
+        val r = parse(
+            "<tool_call>\n{\"name\": \"crash_logs\", \"arguments\": {\"action\": \"list\"}}\n</tool_call>",
+        )
+        assertEquals("crash_logs", parseName(r))
+        assertEquals("""{"action":"list"}""", parseArgs(r))
+    }
+
+    @Test fun `two hermes calls in two tag pairs are both kept`() {
+        val r = parse(
+            "<tool_call>{\"name\":\"file_list\",\"arguments\":{}}</tool_call>\n" +
+                "<tool_call>{\"name\":\"memory_write\",\"arguments\":{\"text\":\"ok\"}}</tool_call>",
+        )
+        val calls = (r as? Llm.LlmResponse.ToolUse)?.toolCalls ?: emptyList()
+        assertEquals(listOf("file_list", "memory_write"), calls.map { it.name })
+    }
+
+    // A reply cut off after the second value has neither closer: each value
+    // must still stop at the next <parameter=, not swallow the rest.
+    @Test fun `a truncated two-parameter call keeps both values apart`() {
+        val r = parse("<tool_call>\n<function=crash_logs>\n<parameter=action>\nlist\n<parameter=limit>\n20")
+        assertEquals("""{"action":"list","limit":20}""", parseArgs(r))
+    }
+
+    @Test fun `a value stops at the function's closing tag`() {
+        val r = parse(
+            "<tool_call><function=memory_write><parameter=text>ok</parameter></function></tool_call>",
+        )
+        assertEquals("""{"text":"ok"}""", parseArgs(r))
+    }
+
     @Test fun `prose without markup is still an answer`() {
         val r = parse("The crash log is empty, so nothing crashed.")
         assertEquals("The crash log is empty, so nothing crashed.", parseText(r))

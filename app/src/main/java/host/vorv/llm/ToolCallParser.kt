@@ -25,9 +25,15 @@ import com.google.gson.JsonPrimitive
  *      </function>
  *      </tool_call>
  *
- * 3. Markdown-fenced or bare JSON: ```{"name": ..., "arguments": {...}}```
+ * 3. The Hermes JSON a `<tool_call>` may wrap instead (Qwen recommends it for
+ *    Qwen3 chat models):
+ *      <tool_call>
+ *      {"name": "crash_logs", "arguments": {"action": "list"}}
+ *      </tool_call>
  *
- * 4. The plain-text protocol the system prompt describes:
+ * 4. Markdown-fenced or bare JSON: ```{"name": ..., "arguments": {...}}```
+ *
+ * 5. The plain-text protocol the system prompt describes:
  *      TOOL_CALL: tool_name
  *      ARGS: {"...": ...}
  *
@@ -57,7 +63,10 @@ object ToolCallParser {
     private val xmlCallBlockRegex = Regex("<tool_call>([\\s\\S]*?)(</tool_call>|$)")
     private val xmlFunctionRegex = Regex("<function=([A-Za-z0-9_.\\-]+)>")
     private val xmlParameterRegex =
-        Regex("<parameter=([A-Za-z0-9_.\\-]+)>([\\s\\S]*?)(</parameter>|$)")
+        Regex(
+            "<parameter=([A-Za-z0-9_.\\-]+)>([\\s\\S]*?)" +
+                "(?=</parameter>|<parameter=|</function>|$)",
+        )
 
     fun parse(text: String, knownTools: Set<String>): Llm.LlmResponse {
         val trimmed = text.trim()
@@ -221,7 +230,8 @@ object ToolCallParser {
 
     /**
      * `<tool_call><function=name><parameter=k>v</parameter>…</function></tool_call>`,
-     * one call per `<function>`, however many blocks the model wrote.
+     * one call per `<function>`, however many blocks the model wrote; a block
+     * that is bare JSON is the Hermes shape.
      * Returns null when the text carries no such call, so prose containing
      * the word "function" is never mistaken for one.
      */
@@ -234,6 +244,15 @@ object ToolCallParser {
             listOf(text)
         }
         for (block in blocks) {
+            if (!xmlFunctionRegex.containsMatchIn(block)) {
+                // Hermes style: the block IS the JSON object
+                // (<tool_call>{"name": ..., "arguments": {...}}</tool_call>) —
+                // the shape the Qwen docs recommend for Qwen3 chat models,
+                // whose templates wrap the call in <tool_call> tags.
+                val hermes = parseToolCallJson(block.trim()) as? Llm.LlmResponse.ToolUse
+                if (hermes != null) calls.addAll(hermes.toolCalls)
+                continue
+            }
             for (fn in xmlFunctionRegex.findAll(block)) {
                 val name = fn.groupValues[1]
                 // Parameters belong to this function only: stop at the next one.
