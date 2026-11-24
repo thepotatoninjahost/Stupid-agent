@@ -44,31 +44,40 @@ class TrainingWorker(
         val ledger = LearningStore(db.learningDao())
 
         val stepsRequested = inputData.getInt(KEY_STEPS, DEFAULT_STEPS)
-        val runId = runs.insert(
-            host.vorv.data.entity.TrainingRunEntity(
-                startedAt = startedAt,
-                state = "running",
-                rung = "",
-                corpusRows = 0,
-                message = "Training started.",
-            ),
-        )
-        // A row left "running" by a killed process is a lie about the present;
-        // this run clears older ones before it starts.
-        runs.failStale(startedAt, "The process was killed before this run finished, so it is recorded as failed.")
-
+        var runId = -1L
+        var rows = 0
         try {
-            val rows = ledger.rows()
-            val budget = BrainPaths.budgetBytes(applicationContext)
+            val ledgerRows = ledger.rows()
+            rows = ledgerRows.size
+            runId = runs.insert(
+                host.vorv.data.entity.TrainingRunEntity(
+                    startedAt = startedAt,
+                    state = "running",
+                    rung = "",
+                    corpusRows = rows,
+                    message = "Training started.",
+                ),
+            )
+            // A row left "running" by a killed process is a lie about the present;
+            // this run clears older ones before it starts.
+            runs.failStale(startedAt, "The process was killed before this run finished, so it is recorded as failed.")
+
             val settings = Trainer.Settings(
-                budgetBytes = budget,
+                budgetBytes = BrainPaths.budgetBytes(applicationContext),
                 maxSteps = stepsRequested,
             )
-            setForegroundQuietly("Preparing generation from ${rows.size} ledger rows")
-            val outcome = Trainer(BrainPaths.dir(applicationContext)).run(rows, settings) { line ->
+            setForegroundQuietly("Preparing generation from $rows ledger rows")
+            val outcome = Trainer(BrainPaths.dir(applicationContext)).run(
+                rows = ledgerRows,
+                settings = settings,
+                // The system stops a worker when its constraints lapse or the
+                // owner touches the phone; the loop must notice, not run on.
+                shouldStop = { isStopped },
+            ) { line ->
                 notify("Training the on-device brain", line)
             }
             val state = when {
+                outcome.paused -> "paused"
                 !outcome.ran -> "stopped"
                 outcome.promoted -> "promoted"
                 else -> "refused"
@@ -84,21 +93,27 @@ class TrainingWorker(
                 seconds = outcome.seconds.takeIf { it > 0 },
                 message = outcome.message,
                 decision = outcome.decision?.let { PromotionGate.explain(it) } ?: "",
+                corpusRows = rows,
             )
-            notify(
-                if (outcome.promoted) "A new generation is serving" else "Training finished without a promotion",
-                outcome.message,
-            )
+            notify(notificationTitle(state), outcome.message)
+            // A paused run is not a result: WorkManager may start it again.
+            if (outcome.paused) {
+                return Result.retry()
+            }
             val data = workDataOf(
                 KEY_STATE to state,
                 KEY_GENERATION to outcome.generation,
                 KEY_MESSAGE to outcome.message,
             )
             return Result.success(data)
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            // Cancellation is the system reclaiming the process, not a failure.
+            recordPaused(runs, runId, rows)
+            throw c
         } catch (t: Throwable) {
             val why = "Training failed: ${t.javaClass.simpleName}: ${t.message ?: "no message"}"
             try {
-                runs.finish(runId, "failed", System.currentTimeMillis(), 0, 0, null, null, null, why, "")
+                runs.finish(runId, "failed", System.currentTimeMillis(), 0, 0, null, null, null, why, "", rows)
             } catch (inner: Throwable) {
                 android.util.Log.e(TAG, "could not record the failed run: ${inner.message}", inner)
             }
@@ -111,6 +126,31 @@ class TrainingWorker(
                 android.util.Log.w(TAG, "closing the database failed: ${t.message}")
             }
         }
+    }
+
+    private suspend fun recordPaused(
+        runs: host.vorv.data.dao.TrainingRunDao,
+        runId: Long,
+        rows: Int,
+    ) {
+        if (runId < 0) return
+        val why = "Android stopped the run because its conditions lapsed. Nothing was saved; " +
+            "it will start again when the phone is charging."
+        try {
+            runs.finish(runId, "paused", System.currentTimeMillis(), 0, 0, null, null, null, why, "", rows)
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "could not record the paused run: ${t.message}")
+        }
+        notify("Training paused", why)
+    }
+
+    /** The notification says what the row says; it never upgrades a stop into a promotion. */
+    private fun notificationTitle(state: String): String = when (state) {
+        "promoted" -> "A new generation is serving"
+        "refused" -> "Training finished without a promotion"
+        "stopped" -> "Training did not run"
+        "paused" -> "Training paused"
+        else -> "Training finished"
     }
 
     private var foregroundTried = false
@@ -189,12 +229,21 @@ class TrainingWorker(
                 .setInputData(workDataOf(KEY_STEPS to steps))
                 .apply {
                     if (chargingOnly) {
+                        // Charging and battery-not-low only. Adding device-idle
+                        // here is the pairing Google's own lint rule warns
+                        // about, and WorkManager cannot set backoff while the
+                        // idle constraint is on, so a stopped run had no way
+                        // back.
                         setConstraints(
                             androidx.work.Constraints.Builder()
                                 .setRequiresCharging(true)
                                 .setRequiresBatteryNotLow(true)
-                                .setRequiresDeviceIdle(true)
                                 .build(),
+                        )
+                        setBackoffCriteria(
+                            androidx.work.BackoffPolicy.LINEAR,
+                            java.util.concurrent.TimeUnit.MINUTES.toMillis(15),
+                            java.util.concurrent.TimeUnit.MILLISECONDS,
                         )
                     }
                 }

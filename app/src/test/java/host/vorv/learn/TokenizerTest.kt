@@ -91,4 +91,16 @@ class TokenizerTest {
     fun anImpossibleVocabularySizeIsRefused() {
         Tokenizer.train(corpus, 10)
     }
+
+    @Test
+    fun `a stop during training keeps the merges already learned`() {
+        val full = Tokenizer.train(corpus, 400)
+        var rounds = 0
+        val cut = Tokenizer.train(corpus, 400, shouldStop = { rounds++ >= 3 })
+        assertTrue("it must stop early: ${cut.vocabSize}", cut.vocabSize < full.vocabSize)
+        assertTrue("and keep some learning: ${cut.vocabSize}", cut.vocabSize > 256)
+        // A smaller vocabulary is still a valid one: the ids still round-trip.
+        val ids = cut.encode("hello world", addEos = false)
+        assertEquals("hello world", cut.decode(ids))
+    }
 }

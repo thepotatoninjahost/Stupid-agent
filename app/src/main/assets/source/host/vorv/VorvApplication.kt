@@ -263,14 +263,11 @@ class VorvApplication : Application() {
             .addMigrations(*VorvDatabase.ALL_MIGRATIONS)
             .build()
         BootTracer.step(this, "init_room_end")
-        // Step 9: a training run stays queued until the phone is charging and
-        // idle. WorkManager owns the wait, so a dead session never leaves a
-        // half-written generation behind.
-        try {
-            host.vorv.learn.TrainingWorker.enqueue(this, chargingOnly = true)
-        } catch (t: Throwable) {
-            android.util.Log.w("Vorv/Learn", "could not queue training: ${t.message}", t)
-        }
+        // Training is not queued here. Every process start used to arm a run —
+        // the crash-report worker starts the process too — so a crash in the
+        // background turned into training minutes later with nobody asking for
+        // it. A run now begins only when the owner taps Train on the Brain
+        // screen (AgentViewModel.startTraining).
         BootTracer.step(this, "init_model_repo")
         modelRepository = ModelRepository(this)
 

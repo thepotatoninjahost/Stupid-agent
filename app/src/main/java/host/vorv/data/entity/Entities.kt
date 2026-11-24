@@ -179,7 +179,7 @@ data class TrainingRunEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val startedAt: Long,
     val finishedAt: Long? = null,
-    val state: String,              // "running" | "promoted" | "refused" | "failed" | "stopped"
+    val state: String,              // "running" | "promoted" | "refused" | "failed" | "stopped" | "paused"
     val generation: Int = 0,
     val rung: String = "",
     val steps: Int = 0,

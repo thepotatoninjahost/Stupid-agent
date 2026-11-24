@@ -193,7 +193,7 @@ interface TrainingRunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(run: host.vorv.data.entity.TrainingRunEntity): Long
 
-    @Query("UPDATE training_runs SET state = :state, finishedAt = :finishedAt, generation = :generation, steps = :steps, trainLoss = :trainLoss, valLoss = :valLoss, seconds = :seconds, message = :message, decision = :decision WHERE id = :id")
+    @Query("UPDATE training_runs SET state = :state, finishedAt = :finishedAt, generation = :generation, steps = :steps, trainLoss = :trainLoss, valLoss = :valLoss, seconds = :seconds, message = :message, decision = :decision, corpusRows = :corpusRows WHERE id = :id")
     suspend fun finish(
         id: Long,
         state: String,
@@ -205,6 +205,7 @@ interface TrainingRunDao {
         seconds: Double?,
         message: String,
         decision: String,
+        corpusRows: Int,
     )
 
     @Query("SELECT * FROM training_runs ORDER BY startedAt DESC, id DESC LIMIT :limit")

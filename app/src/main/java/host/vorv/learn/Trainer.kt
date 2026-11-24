@@ -50,6 +50,8 @@ class Trainer(private val brainDir: File) {
         val decision: PromotionGate.Decision?,
         val eval: EvalSuite.Vector?,
         val speed: SpeedRecord.Verdict? = null,
+        /** The phone stopped the run (screen touched, worker stopped); nothing was judged. */
+        val paused: Boolean = false,
     )
 
     private fun sha256(bytes: ByteArray): String =
@@ -58,11 +60,20 @@ class Trainer(private val brainDir: File) {
     fun run(
         rows: List<LearningLedger.Row>,
         settings: Settings = Settings(),
+        /** True once the system has asked the worker to stop; the loop then ends here. */
+        shouldStop: () -> Boolean = { false },
         onProgress: (String) -> Unit = {},
     ): Outcome {
         fun stopped(why: String) = Outcome(
             false, why, 0, false, Double.NaN, Double.NaN, 0, 0, 0.0, null, null, null, null,
         )
+        fun paused(why: String) = Outcome(
+            false, why, 0, false, Double.NaN, Double.NaN, 0, 0, 0.0, null, null, null, null,
+            paused = true,
+        )
+        if (shouldStop()) {
+            return paused("The phone stopped the run before it began. Nothing was trained or changed.")
+        }
 
         if (rows.isEmpty()) {
             return stopped("The ledger is empty, so there is nothing to learn from yet. Talk to Vorv first, then train.")
@@ -81,7 +92,20 @@ class Trainer(private val brainDir: File) {
             ?: VorvCore.chooseTrainingRung(settings.budgetBytes)
         if (rung.reason.contains("cannot train here")) return stopped(rung.reason)
 
-        val tokenizer = loadOrTrainTokenizer(corpus, settings.tokenizerTarget, rung.config.vocab)
+        // Cheap feasibility first: tokenising costs minutes on a phone, and a
+        // corpus too small to yield a held-out window cannot be trained on
+        // whatever the tokenizer does. Byte counts bound the token counts from
+        // above, so failing this check means the real split fails too.
+        val (estTrain, estHeld) = byteWindows(rows, rung.config.ctx)
+        if (estTrain < 2 || estHeld < 1) {
+            return stopped(
+                "Only $estTrain training windows and $estHeld held-out windows fit at " +
+                    "${rung.config.ctx} tokens each, from ${rows.size} ledger rows. That is too little " +
+                    "to measure a change honestly, so nothing was trained.",
+            )
+        }
+
+        val tokenizer = loadOrTrainTokenizer(corpus, settings.tokenizerTarget, rung.config.vocab, shouldStop)
         val config = rung.config.copy(vocab = tokenizer.vocabSize)
         onProgress("tokenizer ${tokenizer.vocabSize} tokens; ${config.name} ${VorvCore.paramCount(config)} parameters")
 
@@ -104,6 +128,9 @@ class Trainer(private val brainDir: File) {
         val rng = Random(settings.seed)
         var stepStarted = System.nanoTime()
         for (step in 0 until settings.maxSteps) {
+            if (shouldStop()) {
+                return paused("The phone stopped the run at step $steps. No generation was saved, so nothing changed.")
+            }
             val batch = List(settings.batchSequences) { examples.train[rng.nextInt(examples.train.size)] }
             var total = 0.0f
             for (seq in batch) total += core.loss(seq).data[0]
@@ -254,24 +281,53 @@ class Trainer(private val brainDir: File) {
 
     private data class Examples(val train: List<IntArray>, val heldOut: List<IntArray>)
 
+    private fun rowText(row: LearningLedger.Row): String = buildString {
+        if (row.inputText.isNotBlank()) append(row.inputText.trim()).append('\n')
+        if (row.outputText.isNotBlank()) append(row.outputText.trim())
+    }
+
+    /**
+     * Windows per row as if every byte were a token. Real ids are never more
+     * than the byte count (byte-level BPE merges shrink it), and more ids only
+     * ever means more windows, so this is an upper bound: if it says "not
+     * enough", the tokenised split says so too.
+     */
+    private fun byteWindows(rows: List<LearningLedger.Row>, ctx: Int): Pair<Int, Int> {
+        var train = 0
+        var held = 0
+        for (row in rows) {
+            val text = rowText(row)
+            if (text.isBlank()) continue
+            val ids = text.toByteArray(Charsets.UTF_8).size
+            if (ids < 3) continue
+            var start = 0
+            while (start < ids - 1) {
+                val end = minOf(ids, start + ctx)
+                if (end - start >= 3) {
+                    if (isHeldOut(text)) held++ else train++
+                }
+                if (end == ids) break
+                start += maxOf(1, (end - start) / 2)
+            }
+        }
+        return train to held
+    }
+
     private fun examplesFrom(rows: List<LearningLedger.Row>, tokenizer: Tokenizer, ctx: Int): Examples {
         val train = ArrayList<IntArray>()
         val held = ArrayList<IntArray>()
-        rows.forEachIndexed { index, row ->
-            val text = buildString {
-                if (row.inputText.isNotBlank()) append(row.inputText.trim()).append('\n')
-                if (row.outputText.isNotBlank()) append(row.outputText.trim())
-            }
-            if (text.isBlank()) return@forEachIndexed
+        for (row in rows) {
+            val text = rowText(row)
+            if (text.isBlank()) continue
             val ids = tokenizer.encode(text)
-            if (ids.size < 3) return@forEachIndexed
+            if (ids.size < 3) continue
+            val holdRow = isHeldOut(text)
             var start = 0
             while (start < ids.size - 1) {
                 val end = minOf(ids.size, start + ctx)
                 if (end - start >= 3) {
                     val window = ids.copyOfRange(start, end)
-                    // Every seventh row is held out, and its windows never train.
-                    if (index % 7 == 6) held.add(window) else train.add(window)
+                    if (holdRow) held.add(window) else train.add(window)
                 }
                 if (end == ids.size) break
                 start += maxOf(1, (end - start) / 2)
@@ -280,7 +336,12 @@ class Trainer(private val brainDir: File) {
         return Examples(train, held)
     }
 
-    private fun loadOrTrainTokenizer(corpus: String, target: Int, modelVocab: Int): Tokenizer {
+    private fun loadOrTrainTokenizer(
+        corpus: String,
+        target: Int,
+        modelVocab: Int,
+        shouldStop: () -> Boolean,
+    ): Tokenizer {
         val file = File(brainDir, "tokenizer.txt")
         val existing = if (file.exists()) {
             host.vorv.tools.Attempt.of("loading the tokenizer at ${file.path}") { Tokenizer.load(file) }
@@ -288,7 +349,7 @@ class Trainer(private val brainDir: File) {
             null
         }
         if (existing != null && existing.vocabSize in 257..modelVocab) return existing
-        val tok = Tokenizer.train(corpus, minOf(target, modelVocab), name = "owner-bpe")
+        val tok = Tokenizer.train(corpus, minOf(target, modelVocab), name = "owner-bpe", shouldStop = shouldStop)
         if (!brainDir.isDirectory && !brainDir.mkdirs()) throw java.io.IOException("cannot create ${brainDir.path}")
         tok.save(file)
         return tok
@@ -380,5 +441,12 @@ class Trainer(private val brainDir: File) {
         fun bytesToMb(bytes: Long): String = "%.0f MB".format(bytes / (1024.0 * 1024.0))
 
         fun bitsPerByte(valLoss: Double): Double = ln(perplexityOf(valLoss)) / ln(2.0)
+
+        /**
+         * Which rows never train. Chosen from the text itself, not from its
+         * position, so a window cannot drift into the training set because a
+         * row was inserted above it. Roughly one row in seven.
+         */
+        fun isHeldOut(text: String): Boolean = Math.floorMod(text.hashCode(), 7) == 0
     }
 }

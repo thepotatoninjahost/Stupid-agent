@@ -103,6 +103,9 @@ object NativeCrashHistory {
         ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
         ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
         ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        // Documented value 17 ("Added in version 37.2"); the constant is not in
+        // this compileSdk, so the number is written out with this comment.
+        17 -> "MEMORY_LIMITER (the platform's app memory limiter)"
         else -> "UNKNOWN($reason)"
     }
 
