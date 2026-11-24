@@ -221,34 +221,32 @@ class TrainingWorker(
         private const val WORK_NAME = "vorv-training"
 
         /**
-         * Queues a run. [chargingOnly] is true for the automatic nightly run and
-         * false for the run the owner starts by tapping in the Brain screen.
+         * Queues the run the owner just asked for. No constraints: a tap is
+         * an explicit instruction to start now, and the worker promotes
+         * itself to a foreground service so the system does not cut it short
+         * for being in the background. REPLACE because a newer tap supersedes
+         * an older one.
          */
-        fun enqueue(context: Context, steps: Int = DEFAULT_STEPS, chargingOnly: Boolean = true) {
+        fun enqueue(context: Context, steps: Int = DEFAULT_STEPS) {
             val request = OneTimeWorkRequestBuilder<TrainingWorker>()
                 .setInputData(workDataOf(KEY_STEPS to steps))
-                .apply {
-                    if (chargingOnly) {
-                        // Charging and battery-not-low only. Adding device-idle
-                        // here is the pairing Google's own lint rule warns
-                        // about, and WorkManager cannot set backoff while the
-                        // idle constraint is on, so a stopped run had no way
-                        // back.
-                        setConstraints(
-                            androidx.work.Constraints.Builder()
-                                .setRequiresCharging(true)
-                                .setRequiresBatteryNotLow(true)
-                                .build(),
-                        )
-                        setBackoffCriteria(
-                            androidx.work.BackoffPolicy.LINEAR,
-                            java.util.concurrent.TimeUnit.MINUTES.toMillis(15),
-                            java.util.concurrent.TimeUnit.MILLISECONDS,
-                        )
-                    }
-                }
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
+            WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+        }
+
+        /**
+         * Drops any run an older build left queued (they were armed at process
+         * start) and any paused run waiting to retry. Called when the process
+         * starts, because a run must begin only from a tap.
+         */
+        fun cancelPending(context: Context) {
+            try {
+                WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+            } catch (e: IllegalStateException) {
+                // WorkManager is not initialised in some processes and in unit
+                // tests; there is nothing queued there to drop.
+                android.util.Log.w("TrainingWorker", "No WorkManager here: ${e.message}")
+            }
         }
     }
 }

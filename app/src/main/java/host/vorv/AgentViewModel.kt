@@ -737,7 +737,7 @@ class AgentViewModel(
                     brainNote = "Training queued on $rows ledger rows. It runs when the phone is charging and cool.",
                 )
             }
-            host.vorv.learn.TrainingWorker.enqueue(appContext, steps = steps, chargingOnly = false)
+            host.vorv.learn.TrainingWorker.enqueue(appContext, steps = steps)
         }
     }
 

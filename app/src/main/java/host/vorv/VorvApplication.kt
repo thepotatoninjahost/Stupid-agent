@@ -267,7 +267,9 @@ class VorvApplication : Application() {
         // the crash-report worker starts the process too — so a crash in the
         // background turned into training minutes later with nobody asking for
         // it. A run now begins only when the owner taps Train on the Brain
-        // screen (AgentViewModel.startTraining).
+        // screen (AgentViewModel.startTraining). Queued work from a build that
+        // still armed runs is dropped here so it cannot fire either.
+        host.vorv.learn.TrainingWorker.cancelPending(this)
         BootTracer.step(this, "init_model_repo")
         modelRepository = ModelRepository(this)
 
