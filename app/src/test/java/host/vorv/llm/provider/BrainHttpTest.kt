@@ -21,9 +21,15 @@ class BrainHttpTest {
 
     @Test
     fun `a provider that wants x-api-key gets it without a prefix`() {
-        val anthropic = ProviderRegistry.byId("anthropic")!!
-        assertEquals("abc", headers(anthropic, "abc")["x-api-key"])
-        assertNull(headers(anthropic, "abc")["Authorization"])
+        // Built here, not looked up: the shipped list holds no x-api-key preset.
+        val xApiKey = Provider(
+            id = "somewhere",
+            label = "somewhere",
+            baseUrl = "https://example.test/v1",
+            authStyle = Provider.AuthStyle.X_API_KEY,
+        )
+        assertEquals("abc", headers(xApiKey, "abc")["x-api-key"])
+        assertNull(headers(xApiKey, "abc")["Authorization"])
     }
 
     @Test

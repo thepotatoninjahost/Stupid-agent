@@ -1049,7 +1049,8 @@ class AgentViewModel(
                     catalogLoading = false,
                     catalogIds = usable,
                     catalogNote = if (hidden > 0) {
-                        "$hidden GLM model${if (hidden == 1) "" else "s"} hidden - you asked for none."
+                        "$hidden model${if (hidden == 1) "" else "s"} hidden - you asked for " +
+                            "${if (hidden == 1) "it" else "them"} gone."
                     } else null,
                     catalogError = listing.error?.let { err ->
                         "Could not read the model list: $err. You can still type a model name."

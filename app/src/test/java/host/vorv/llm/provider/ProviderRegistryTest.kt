@@ -1,7 +1,9 @@
 package host.vorv.llm.provider
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,6 +29,56 @@ class ProviderRegistryTest {
             assertTrue("${p.id} must use https", p.baseUrl.startsWith("https://"))
             assertTrue("${p.id} must not end in a slash", !p.baseUrl.endsWith("/"))
         }
+    }
+
+    @Test
+    fun `the ids named in the model screenshots are never offered`() {
+        val blocked = listOf(
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-safeguard-20b",
+            "openai/gpt-oss-120b",
+            "meta-llama/llama-prompt-guard-2-22m",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "allam-2-7b",
+            "canopylabs/orpheus-arabic-saudi",
+        )
+        blocked.forEach { assertTrue("$it must be hidden", ProviderRegistry.isRemovedModelId(it)) }
+        // Case and padding come from a provider's own list, so they must not
+        // open a hole in the filter.
+        assertTrue(ProviderRegistry.isRemovedModelId("  OpenAI/GPT-OSS-20B "))
+        // Neighbours are not swept up with them.
+        assertFalse(ProviderRegistry.isRemovedModelId("openai/gpt-oss-20b-vision"))
+        assertFalse(ProviderRegistry.isRemovedModelId("google/gemma-4-31b-it:free"))
+        assertEquals(8, ProviderRegistry.hiddenModelCount(blocked + listOf("z-ai/glm-5")))
+    }
+
+    @Test
+    fun `the shipped list is three routes, and nothing else grows back`() {
+        assertEquals(
+            listOf("openrouter", "huggingface", "custom"),
+            ProviderRegistry.presets.map { it.id },
+        )
+        // A provider that was removed keeps its key in storage but never the
+        // selection: the app lands on the default route instead of a dead id.
+        assertEquals("openrouter", ProviderRegistry.orDefault("deepseek").id)
+        assertEquals("openrouter", ProviderRegistry.orDefault("groq").id)
+        assertNull(ProviderRegistry.byId("google"))
+        assertNull(ProviderRegistry.byId("openai"))
+        assertNull(ProviderRegistry.byId("anthropic"))
+        // A typed address still works for a provider that is no longer shipped.
+        val adHoc = ProviderRegistry.byIdOrCustom("deepseek", "https://api.deepseek.com/v1")
+        assertEquals("https://api.deepseek.com/v1", adHoc.baseUrl)
+    }
+
+    @Test
+    fun `Hugging Face is offered, and says it is not a no-cost route`() {
+        val hf = ProviderRegistry.byId("huggingface")!!
+        assertEquals("https://router.huggingface.co/v1", hf.baseUrl)
+        assertEquals("/models", hf.modelsPath)
+        // Their pricing doc: free accounts get no monthly credits.
+        assertFalse(hf.freeTier)
+        assertTrue(hf.notes.contains("no monthly credits"))
+        assertTrue(hf.suggestions.any { it.endsWith(":fastest") })
     }
 
     @Test

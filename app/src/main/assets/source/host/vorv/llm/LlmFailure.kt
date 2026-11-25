@@ -20,10 +20,9 @@ fun explainLlmFailure(e: Throwable): String {
             "this account has no credit for that model (HTTP 402). Pick a free one, or use the local " +
                 "model, which needs no account and has no quota."
         http.code == 429 ->
-            "the provider's rate limit is used up (HTTP 429), and it is not your key. Free plans are small — OpenRouter's free " +
-                "models allow 20 requests a minute and 50 a day until $10 of credit has been bought once; " +
-                "Groq's free plan allows 30 a minute and 1,000 a day. For no limit, switch to the local " +
-                "model: it needs no key and no quota."
+            "the provider's rate limit is used up (HTTP 429), and it is not your key. Free plans are small — " +
+                "OpenRouter's free models allow 20 requests a minute and 50 a day until $10 of credit has " +
+                "been bought once. For no limit, switch to the local model: it needs no key and no quota."
         http.code >= 500 -> "the provider is having an outage (HTTP ${http.code}). Not your configuration."
         else -> "HTTP ${http.code}: ${body.take(160)}"
     }

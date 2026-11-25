@@ -140,7 +140,7 @@ class ProviderChainLlmTest {
 
     @Test
     fun `the route builder puts the chosen provider first and only keyed ones after it`() {
-        val keys = mapOf("openrouter" to "okey", "groq" to "gkey")
+        val keys = mapOf("openrouter" to "okey", "huggingface" to "hkey")
         val routes = ProviderChainLlm.routes(
             chosen = ProviderRegistry.byId(ProviderRegistry.DEFAULT_ID)!!,
             chosenBaseUrl = "https://openrouter.ai/api/v1",
@@ -150,9 +150,9 @@ class ProviderChainLlmTest {
 
         assertEquals("openrouter", routes.first().providerId)
         assertEquals("qwen/qwen3-coder", routes.first().modelId)
-        assertEquals(listOf("openrouter", "groq"), routes.map { it.providerId })
+        assertEquals(listOf("openrouter", "huggingface"), routes.map { it.providerId })
         assertTrue("the model must be named", routes[1].label.contains("·"))
-        assertTrue("a keyed provider keeps its own address", routes[1].baseUrl.contains("groq.com"))
+        assertTrue("a keyed provider keeps its own address", routes[1].baseUrl.contains("huggingface.co"))
     }
 
     @Test
