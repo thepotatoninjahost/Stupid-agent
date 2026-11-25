@@ -11,9 +11,14 @@ package host.vorv.llm.provider
  */
 object BrainTarget {
 
-    /** The default route a blank address resolves to: the owner's trainer model. */
+    /**
+     * The default route a blank address resolves to. It is a FREE id on
+     * purpose: the owner will never pay for a model, so a paid default meant
+     * the app could not work for him at all. `openrouter/free` is OpenRouter's
+     * alias that routes to whichever free model is currently serving.
+     */
     const val DEFAULT_BASE = "https://openrouter.ai/api/v1"
-    const val DEFAULT_MODEL = "qwen/qwen3-coder-next"
+    const val DEFAULT_MODEL = "openrouter/free"
 
     data class Engine(val baseUrl: String, val modelId: String)
 

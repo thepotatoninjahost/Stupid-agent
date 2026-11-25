@@ -25,7 +25,13 @@ class ModelCatalog(
     private val ttlMs: Long = 24 * 60 * 60 * 1000L,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
-    data class Entry(val id: String, val contextLength: Long? = null, val price: String? = null)
+    data class Entry(
+        val id: String,
+        val contextLength: Long? = null,
+        val price: String? = null,
+        /** Both prices are "0": the owner can use it without paying. */
+        val free: Boolean = false,
+    )
     data class Listing(val providerId: String, val entries: List<Entry>, val fetchedAt: Long, val error: String? = null)
 
     // H-5: the listing carries the key in a header, so it must not follow a
@@ -140,7 +146,19 @@ class ModelCatalog(
             val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString
                 ?: o.get("name")?.takeIf { !it.isJsonNull }?.asString
                 ?: return@mapNotNull null
-            Entry(id, contextLength = null, price = null)
+            // A model the owner can never afford must not be offered as the
+            // default or as a rescue candidate. `pricing` is absent on some
+            // providers, so "unknown" is not "free".
+            val pricing = o.get("pricing")?.takeIf { it.isJsonObject }?.asJsonObject
+            fun zero(key: String): Boolean =
+                pricing?.get(key)?.takeIf { !it.isJsonNull }?.asString?.trim()?.let { it == "0" || it == "0.0" } == true
+            Entry(
+                id,
+                contextLength = o.get("context_length")?.takeIf { !it.isJsonNull }
+                    ?.let { host.vorv.tools.Attempt.of("reading a model's context_length") { it.asLong } },
+                price = null,
+                free = zero("prompt") && zero("completion"),
+            )
         }.distinctBy { it.id }.sortedBy { it.id }
     }.getOrNull()
 

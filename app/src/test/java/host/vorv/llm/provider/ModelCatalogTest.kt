@@ -3,6 +3,7 @@ package host.vorv.llm.provider
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -77,6 +78,24 @@ class ModelCatalogTest {
         val ids = catalog.parseStrict(body)!!.map { it.id }
         // Sorted by id: the chips are easier to scan, and order is not the API's.
         assertEquals(listOf("acorn-1b", "bloom-7b", "cedar-3b"), ids)
+    }
+
+    @Test
+    fun `a free model is marked free, a priced or unpriced one is not`() {
+        val body = """
+            {"data":[
+              {"id":"zero","context_length":1000,"pricing":{"prompt":"0","completion":"0.0"}},
+              {"id":"paid","pricing":{"prompt":"0.00000012","completion":"0.0000008"}},
+              {"id":"unknown"},
+              {"id":"half","pricing":{"prompt":"0","completion":"0.5"}}
+            ]}
+        """.trimIndent()
+        val byId = catalog.parseStrict(body)!!.associateBy { it.id }
+        assertTrue(byId.getValue("zero").free)
+        assertFalse(byId.getValue("paid").free)
+        assertFalse(byId.getValue("unknown").free)
+        assertFalse(byId.getValue("half").free)
+        assertEquals(1000L, byId.getValue("zero").contextLength)
     }
 
     @Test

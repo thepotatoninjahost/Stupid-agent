@@ -30,11 +30,11 @@ class ProviderRegistryTest {
     }
 
     @Test
-    fun `the default provider is OpenRouter with the large Qwen3 Coder`() {
+    fun `the default provider is OpenRouter with a free model the owner can run`() {
         assertEquals("openrouter", ProviderRegistry.DEFAULT_ID)
         val d = ProviderRegistry.byId(ProviderRegistry.DEFAULT_ID)!!
         assertEquals("https://openrouter.ai/api/v1", d.baseUrl)
-        assertEquals("qwen/qwen3-coder-next", d.defaultModel)
+        assertEquals("openrouter/free", d.defaultModel)
         // An install that still holds "z.ai" (or nothing) must land on the
         // default route rather than on a provider that no longer exists.
         assertEquals(ProviderRegistry.DEFAULT_ID, ProviderRegistry.orDefault("").id)
