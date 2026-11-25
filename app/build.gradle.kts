@@ -531,3 +531,18 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.androidx.work.testing)
 }
+
+// Robolectric downloads its own android-all jar from repo1.maven.org, ignoring
+// the repositories in settings.gradle.kts. On 2026-11-25 that fetch threw
+// IOException on the CI runner and every Robolectric class failed at
+// classMethod, so the build went red without naming a defect in the app. Send
+// it to the same Google Central mirror the rest of the build uses;
+// robolectric.org/configuring documents both property names and confirms
+// repo1.maven.org is the default that failed.
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "robolectric.dependency.repo.url",
+        "https://maven-central.storage-download.googleapis.com/maven2",
+    )
+    systemProperty("robolectric.dependency.repo.id", "google-central-mirror")
+}
