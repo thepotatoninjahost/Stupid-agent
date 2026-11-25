@@ -9,7 +9,7 @@ import org.junit.Test
 
 class ModelRescueTest {
 
-    private fun entries(vararg ids: String) = ids.map { ModelCatalog.Entry(it) }
+    private fun entries(vararg ids: String) = ids.map { ModelCatalog.Entry(it, free = true) }
 
     @Test
     fun `an empty 200 is about the model, not the key`() {
@@ -45,6 +45,16 @@ class ModelRescueTest {
     fun `at most four models are tried`() {
         val list = entries("a/1", "a/2", "a/3", "a/4", "a/5", "a/6")
         assertEquals(ModelRescue.MAX_TRIES, ModelRescue.candidates(list, emptySet()).size)
+    }
+
+    @Test
+    fun `a paid model is never offered as a rescue`() {
+        val list = listOf(
+            ModelCatalog.Entry("vendor/paid-coder", free = false),
+            ModelCatalog.Entry("vendor/free-plain", free = true),
+            ModelCatalog.Entry("vendor/unknown-price"),
+        )
+        assertEquals(listOf("vendor/free-plain"), ModelRescue.candidates(list, emptySet()))
     }
 
     @Test

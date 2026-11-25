@@ -21,7 +21,7 @@ class BrainTargetTest {
         val t = BrainTarget.resolve("", "")
         assertEquals(BrainTarget.DEFAULT_BASE, t.baseUrl)
         assertEquals(BrainTarget.DEFAULT_MODEL, t.modelId)
-        assertEquals("qwen/qwen3-coder-next", t.modelId)
+        assertEquals("openrouter/free", t.modelId)
         assertNull(BrainTarget.refusal("", ""))
     }
 
@@ -54,7 +54,8 @@ class BrainTargetTest {
         // sent that key to OpenRouter with a model it never chose.
         val t = BrainTarget.resolveFor("", "", ProviderRegistry.DEFAULT_ID)
         assertEquals("https://openrouter.ai/api/v1", t.baseUrl)
-        assertEquals("qwen/qwen3-coder-next", t.modelId)
+        // Free on purpose: the owner never pays for a model.
+        assertEquals("openrouter/free", t.modelId)
 
         assertEquals(
             "https://api.deepseek.com/v1",

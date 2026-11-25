@@ -78,15 +78,21 @@ object ProviderRegistry {
             id = DEFAULT_ID,
             label = "OpenRouter",
             baseUrl = "https://openrouter.ai/api/v1",
+            freeTier = true,
             capability = Provider.Capability.CODE,
             modelsPath = "/models",
-            defaultModel = "qwen/qwen3-coder-next",
+            // The owner does not pay for a model, so the default and the
+            // suggestions are free ids only. `openrouter/free` is OpenRouter's
+            // own alias that routes to whichever free model is up.
+            defaultModel = "openrouter/free",
             suggestions = listOf(
-                "qwen/qwen3-coder-next",
-                "qwen/qwen3-coder",
-                "qwen/qwen3.8-2.4t-a95b",
+                "openrouter/free",
+                "google/gemma-4-31b-it:free",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
             ),
-            notes = "One key, many vendors. Model ids are vendor/model.",
+            notes = "One key, many vendors. Model ids are vendor/model. Free models are capped at " +
+                "20 requests a minute and 50 a day until $10 of credit has been bought once, so a long " +
+                "run will hit the cap.",
         ),
         Provider(
             id = "deepseek",
@@ -101,7 +107,9 @@ object ProviderRegistry {
             baseUrl = "https://api.groq.com/openai/v1",
             freeTier = true,
             capability = Provider.Capability.GENERAL,
-            suggestions = listOf("qwen/qwen3-32b", "llama-3.3-70b-versatile"),
+            // Free plan, no card: 30 requests a minute, 1,000 a day for this id.
+            defaultModel = "qwen/qwen3.8-27b",
+            suggestions = listOf("qwen/qwen3.8-27b", "openai/gpt-oss-120b"),
         ),
         Provider(
             id = "cerebras",

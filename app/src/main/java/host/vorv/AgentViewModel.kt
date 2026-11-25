@@ -1037,7 +1037,11 @@ class AgentViewModel(
                 ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, s.cloudBaseUrl)
             _state.update { it.copy(catalogLoading = true, catalogError = null) }
             val listing = catalog.fetch(provider, secrets.keyFor(id))
-            val usable = listing.entries.map { e -> e.id }
+            // Free first: the owner never pays, so a priced id must never sit
+            // at the top of the list he is choosing from.
+            val usable = listing.entries
+                .sortedByDescending { it.free }
+                .map { e -> e.id }
                 .filterNot { host.vorv.llm.provider.ProviderRegistry.isRemovedModelId(it) }
             val hidden = listing.entries.size - usable.size
             _state.update {
