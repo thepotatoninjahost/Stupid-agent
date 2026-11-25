@@ -68,3 +68,19 @@ were reported as fixed and were not.
   169 `.deb`s, check each sha256, run `dpkg-deb -x` over a copy of the rootfs, and
   assert the tools land. That drill found the missing javac; the phone found the
   ELOOP. Unit tests found neither.
+
+## The owner's standing rule: research before AND after every task
+
+The owner has required this every time and will not accept work without it, so
+it is not optional and not something to do only when it seems useful:
+
+1. Before starting any task, do real internet research on it — official
+   documentation, the vendor's own pages, the upstream project — deep enough to
+   answer "how does this actually work" and "what does the manual say".
+2. After finishing the task, research again: check the result against the
+   official documentation, and check whether the change contradicts anything
+   the docs say.
+3. Cite it: name the exact URL and the sentence or constant relied on, and say
+   plainly which sources were dead or unreadable and what that leaves
+   unverified. Never claim a source was checked when it was not.
+4. If a claim cannot be confirmed from a source, say so instead of asserting it.
