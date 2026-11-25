@@ -989,7 +989,7 @@ class AgentViewModel(
             )
             val base = target.baseUrl
             val model = target.modelId
-            val probe = CloudLlm.probeAt(key, base, model)
+            var probe = CloudLlm.probeAt(key, base, model)
             val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
                 ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, base)
             router.record(
@@ -997,12 +997,28 @@ class AgentViewModel(
                 code = probe.exceptionOrNull()?.let { (it as? LlmHttpException)?.code },
                 errorText = probe.exceptionOrNull()?.message ?: "",
             )
+            var usedModel = model
+            var switched: host.vorv.llm.provider.ModelRescue.Healed? = null
+            if (probe.isFailure && host.vorv.llm.provider.ModelRescue.isModelFault(probe.exceptionOrNull())) {
+                switched = rescueModel(key, base, model, provider)
+                if (switched != null) {
+                    usedModel = switched.model
+                    prefs.setCloudCustomModel(switched.model)
+                    probe = Result.success(switched.reply)
+                    _state.update { s -> refresh(s.copy(cloudCustomModel = switched.model)) }
+                }
+            }
             _state.update {
                 it.copy(
                     keyTesting = false,
                     keyTestResult = probe.fold(
                         onSuccess = { text ->
-                            "✓ ${provider.label} answered “${text.take(40)}” with $model — this coder works."
+                            if (switched != null) {
+                                "✓ ${provider.label}: switched from $model to $usedModel — $model answered " +
+                                    "HTTP 200 with no text. $usedModel replied “${text.take(40)}”."
+                            } else {
+                                "✓ ${provider.label} answered “${text.take(40)}” with $usedModel — this coder works."
+                            }
                         },
                         onFailure = { e -> "✗ ${provider.label} · $model: ${explainLlmFailure(e)}" },
                     ),
@@ -1055,18 +1071,55 @@ class AgentViewModel(
             val target = host.vorv.llm.provider.BrainTarget.resolveFor(s.cloudBaseUrl, s.cloudCustomModel, id)
             val base = target.baseUrl
             val model = target.modelId
-            val probe = CloudLlm.probeAt(key, base, model)
+            val provider = host.vorv.llm.provider.ProviderRegistry.byId(id)
+                ?: host.vorv.llm.provider.ProviderRegistry.byIdOrCustom(id, s.cloudBaseUrl)
+            var probe = CloudLlm.probeAt(key, base, model)
             router.record(id, (probe.exceptionOrNull() as? LlmHttpException)?.code)
+            var usedModel = model
+            var switched: host.vorv.llm.provider.ModelRescue.Healed? = null
+            // An empty answer from one model is not a verdict on the key: ask
+            // the provider what it serves and prove the next coder instead of
+            // leaving a red line for the owner to clear by hand.
+            if (probe.isFailure && host.vorv.llm.provider.ModelRescue.isModelFault(probe.exceptionOrNull())) {
+                switched = rescueModel(key, base, model, provider)
+                if (switched != null) {
+                    usedModel = switched.model
+                    prefs.setCloudCustomModel(switched.model)
+                    _state.update { st -> refresh(st.copy(cloudCustomModel = switched.model)) }
+                    probe = Result.success(switched.reply)
+                }
+            }
             _state.update {
                 it.copy(
                     keyTesting = false,
                     keyTestResult = probe.fold(
-                        onSuccess = { text -> "✓ $model replied “${text.take(40)}” — works with your key." },
+                        onSuccess = { text ->
+                            if (switched != null) {
+                                "✓ switched from $model to $usedModel — $model answered HTTP 200 with no text. " +
+                                    "$usedModel replied “${text.take(40)}” with your key, and is saved as the coder."
+                            } else {
+                                "✓ $model replied “${text.take(40)}” — works with your key."
+                            }
+                        },
                         onFailure = { e -> "✗ $model: ${explainLlmFailure(e)}" },
                     ),
                 )
             }
             _state.update { st -> refresh(st) }
+        }
+    }
+
+    /** Tries the models the provider lists until one answers; null means none did. */
+    private suspend fun rescueModel(
+        key: String,
+        base: String,
+        model: String,
+        provider: host.vorv.llm.provider.Provider,
+    ): host.vorv.llm.provider.ModelRescue.Healed? {
+        val listing = catalog.cached(provider.id) ?: catalog.fetch(provider, key)
+        if (listing.error != null) return null
+        return host.vorv.llm.provider.ModelRescue.heal(model, listing.entries) { id ->
+            CloudLlm.probeAt(key, base, id, provider)
         }
     }
 
