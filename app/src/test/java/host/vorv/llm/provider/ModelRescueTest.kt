@@ -76,4 +76,14 @@ class ModelRescueTest {
         }
         assertNull(healed)
     }
+
+    @Test
+    fun `a model the owner removed from the picker is never offered as a rescue`() {
+        val entries = listOf(
+            ModelCatalog.Entry(id = "openai/gpt-oss-120b", free = true),
+            ModelCatalog.Entry(id = "meta-llama/llama-prompt-guard-2-22m", free = true),
+            ModelCatalog.Entry(id = "google/gemma-4-31b-it:free", free = true),
+        )
+        assertEquals(listOf("google/gemma-4-31b-it:free"), ModelRescue.candidates(entries, emptySet()))
+    }
 }

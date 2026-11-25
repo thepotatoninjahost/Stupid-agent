@@ -57,21 +57,44 @@ data class Provider(
 }
 
 /**
- * The addresses the app ships with. Ordered strongest-coder-first, because the
- * owner's complaint was "I still don't have a good coder", not "I need more
- * buttons".
+ * The routes the app ships with: free or bring-your-own, and only those.
+ *
+ * The owner does not pay for a model and does not want a wall of provider
+ * buttons, so this list is deliberately short — OpenRouter (free ids), Hugging
+ * Face (a router, honestly labelled as paid), and the owner's own address.
+ * Anything else is added as Custom, not compiled in.
  */
 object ProviderRegistry {
 
-    /** The owner's route: OpenRouter with the large Qwen3 Coder as its model. */
+    /** The owner's route: OpenRouter's own alias for whichever free model is up. */
     const val DEFAULT_ID = "openrouter"
 
     /**
-     * GLM ids are not used (owner decision: "all of the GLM models need to be
-     * removed"). The compiled catalogue is gone; this also keeps a provider's
-     * live /models listing from offering them back.
+     * Ids the owner does not want offered, whatever the provider's live list
+     * says. GLM is a family (owner decision: "all of the GLM models need to be
+     * removed"); the rest were named one by one in a screenshot of the model
+     * picker and are pinned exactly, so a similarly named id is not caught by
+     * accident.
      */
-    fun isRemovedModelId(id: String): Boolean = id.lowercase().contains("glm")
+    private val removedFamilies = listOf("glm")
+
+    private val removedIds = setOf(
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-safeguard-20b",
+        "openai/gpt-oss-120b",
+        "meta-llama/llama-prompt-guard-2-22m",
+        "meta-llama/llama-prompt-guard-2-86m",
+        "allam-2-7b",
+        "canopylabs/orpheus-arabic-saudi",
+    )
+
+    fun isRemovedModelId(id: String): Boolean {
+        val lower = id.trim().lowercase()
+        return lower in removedIds || removedFamilies.any { lower.contains(it) }
+    }
+
+    /** The count Setup reports as hidden, so the list never lies by omission. */
+    fun hiddenModelCount(ids: List<String>): Int = ids.count { isRemovedModelId(it) }
 
     val presets: List<Provider> = listOf(
         Provider(
@@ -95,77 +118,22 @@ object ProviderRegistry {
                 "run will hit the cap.",
         ),
         Provider(
-            id = "deepseek",
-            label = "DeepSeek",
-            baseUrl = "https://api.deepseek.com/v1",
+            id = "huggingface",
+            label = "Hugging Face",
+            baseUrl = "https://router.huggingface.co/v1",
             capability = Provider.Capability.CODE,
-            suggestions = listOf("deepseek-coder", "deepseek-chat"),
-        ),
-        Provider(
-            id = "groq",
-            label = "Groq",
-            baseUrl = "https://api.groq.com/openai/v1",
-            freeTier = true,
-            capability = Provider.Capability.GENERAL,
-            // Free plan, no card: 30 requests a minute, 1,000 a day for this id.
-            defaultModel = "qwen/qwen3.8-27b",
-            suggestions = listOf("qwen/qwen3.8-27b", "openai/gpt-oss-120b"),
-        ),
-        Provider(
-            id = "cerebras",
-            label = "Cerebras",
-            baseUrl = "https://api.cerebras.ai/v1",
-            freeTier = true,
-            capability = Provider.Capability.GENERAL,
-            suggestions = listOf("qwen-3-coder-480b", "llama3.3-70b"),
-        ),
-        Provider(
-            id = "together",
-            label = "Together",
-            baseUrl = "https://api.together.xyz/v1",
-            capability = Provider.Capability.CODE,
-            suggestions = listOf("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
-        ),
-        Provider(
-            id = "fireworks",
-            label = "Fireworks",
-            baseUrl = "https://api.fireworks.ai/inference/v1",
-            capability = Provider.Capability.CODE,
-            suggestions = listOf("accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"),
-        ),
-        Provider(
-            id = "mistral",
-            label = "Mistral",
-            baseUrl = "https://api.mistral.ai/v1",
-            freeTier = true,
-            capability = Provider.Capability.CODE,
-            suggestions = listOf("codestral-latest", "mistral-large-latest"),
-        ),
-        Provider(
-            id = "google",
-            label = "Google AI Studio",
-            baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
-            freeTier = true,
-            capability = Provider.Capability.REASONING,
-            suggestions = listOf("gemini-2.5-pro", "gemini-2.5-flash"),
-            notes = "Google's OpenAI-compatible endpoint; the key goes in the bearer header.",
-        ),
-        Provider(
-            id = "openai",
-            label = "OpenAI",
-            baseUrl = "https://api.openai.com/v1",
-            capability = Provider.Capability.REASONING,
-            suggestions = listOf("gpt-5", "gpt-5-mini"),
-        ),
-        Provider(
-            id = "anthropic",
-            authStyle = Provider.AuthStyle.X_API_KEY,
-            label = "Anthropic (OpenAI-compatible gateway)",
-            baseUrl = "https://api.anthropic.com/v1",
-            capability = Provider.Capability.REASONING,
-            supportsTools = false,
-            suggestions = listOf("claude-sonnet-4-5"),
-            notes = "Native Anthropic uses a different body shape; point this at a gateway that speaks /chat/completions.",
+            modelsPath = "/models",
+            // Their docs: base_url "https://router.huggingface.co/v1", the key
+            // is an HF token, and the model id is "<repo>:<provider>" or
+            // "<repo>:fastest". Not an owner-free route: free accounts get no
+            // monthly credits, PRO (paid) gets $2 of them.
+            suggestions = listOf(
+                "deepseek-ai/DeepSeek-V4.1-Flash:fastest",
+                "deepseek-ai/DeepSeek-V4.1-Flash:cheapest",
+            ),
+            notes = "OpenAI-compatible router over many providers; the key is a Hugging Face token. " +
+                "Not a no-cost route: free accounts get no monthly credits — you buy credits, or PRO " +
+                "gets $2 of them a month.",
         ),
         Provider(
             id = "custom",

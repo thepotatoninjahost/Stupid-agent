@@ -58,16 +58,16 @@ class BrainTargetTest {
         assertEquals("openrouter/free", t.modelId)
 
         assertEquals(
-            "https://api.deepseek.com/v1",
-            BrainTarget.baseFor("", "deepseek"),
+            "https://router.huggingface.co/v1",
+            BrainTarget.baseFor("", "huggingface"),
         )
         assertEquals(
             "https://mine.test/v1",
-            BrainTarget.baseFor("https://mine.test/v1", "deepseek"),
+            BrainTarget.baseFor("https://mine.test/v1", "huggingface"),
         )
         // A provider with no compiled default model must not borrow another
         // vendor's id: the blank stays blank, and refusal says what to do.
-        assertEquals("", BrainTarget.modelFor("", "deepseek"))
-        assertNotNull(BrainTarget.refusal(BrainTarget.baseFor("", "deepseek"), ""))
+        assertEquals("", BrainTarget.modelFor("", "huggingface"))
+        assertNotNull(BrainTarget.refusal(BrainTarget.baseFor("", "huggingface"), ""))
     }
 }

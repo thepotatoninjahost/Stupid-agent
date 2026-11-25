@@ -31,7 +31,7 @@ object ModelRescue {
         entries.asSequence()
             // The owner will never pay for a model, so a rescue that lands on a
             // priced id is not a rescue.
-            .filter { it.free }
+            .filter { it.free && !ProviderRegistry.isRemovedModelId(it.id) }
             .map { it.id }
             .filter { it.isNotBlank() && it !in tried }
             .distinct()
