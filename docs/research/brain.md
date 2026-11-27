@@ -48,7 +48,7 @@ states: *"For CPU training, compile llama.cpp without any additional backends
 such as CUDA."* Reports finetuning working for a 260K-parameter model, and a
 1B model needing about 24 GB of RAM.
 
-**Consequence.** Inside Vorv's own Alpine guest, `apk add build-base` then
+**Consequence.** Inside Vorv's own Debian guest, `apt-get install -y build-essential` then
 `make` gives a real trainer: a tiny model can be trained on the phone's CPU,
 offline, with weights that genuinely move. A 1B model on the phone is not on the
 table; a 260K–10M model is.
@@ -116,7 +116,7 @@ thing and look at the output.
 | Reasoning core: memory + inference + control, evidence-weighted | NARS / OpenNARS | published, Java, phone-capable |
 | Skill growth: success becomes a reusable abstraction | DreamCoder, Voyager, Stitch, HOUDINI | published, applied |
 | Weights that move from owner-supplied data | PocketLLM, MobiZO, PockEngine, llm.c, llama.cpp | published, measured on phones |
-| Execution, compiling, testing | Vorv's own Alpine guest | working, verified on the owner's S25 in 0.9.3 |
+| Execution, compiling, testing | Vorv's own Debian guest | working, verified on the owner's S25 in 0.9.3 |
 | Forgetting control | continual-learning literature | known problem, known mitigations |
 
 ## What is proven, what is not

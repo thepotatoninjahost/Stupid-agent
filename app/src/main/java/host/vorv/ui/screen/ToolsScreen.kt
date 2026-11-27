@@ -15,20 +15,17 @@ import host.vorv.ui.theme.*
 
 @Composable
 fun ToolsScreen(state: AgentState) {
-    // Audit N-M3 (VRA-2026-1103): the inventory lists ALL registered tools —
-    // self_fix was missing from this screen entirely, and three other places
-    // counted "15" while AgentViewModel registers 17.
-    // M-5 (code review, 2026-11): crash_logs (the 17th registered tool,
-    // wired in v0.7.0) was missing from this inventory — the screen showed
-    // "16 tools" while the agent actually has 17. The list now matches
-    // AgentViewModel's tool list one-for-one (memory_write … self_fix).
-    // v0.8.0: memory_web (the 18th registered tool) — the agent's window
-    // into its own knowledge web, added with the graph memory itself.
+    // This inventory must name every tool AgentViewModel registers. It has
+    // drifted before — 16 listed while 17 were registered, then 18 listed
+    // while 24 were registered (computer_run, web_test, build_app, linux_run,
+    // brain and native_test were missing). Register a tool and add it here in
+    // the same change.
     val ready = listOf(
         "memory_write" to "Persist a fact for future sessions (Room + FTS4)",
         "memory_recall" to "FTS4 keyword search + LIKE fallback",
         "memory_web" to "Inspect the associative knowledge web: stats, keyword query, one node by id — the graph that grows from every chat and task",
         "js_exec" to "Rhino sandbox: ClassShutter, no Java interop, 5s budget",
+        "computer_run" to "Run a program on the app's own computer: js (sandboxed JavaScript, no file/network) or python (the sandboxed interpreter); real output under a hard deadline",
         "file_read" to "Read a file from granted workspace (SAF, 50KB cap)",
         "file_write" to "Write/overwrite a file in workspace (SAF, 1MB cap)",
         "file_list" to "Recursive list of workspace files (SAF)",
@@ -38,10 +35,15 @@ fun ToolsScreen(state: AgentState) {
         "web_fetch" to "OkHttp fetch, 2MB cap, private-network blocked, jsoup extraction",
         "app_intent" to "Android intents (view/share/dial/open_app) — every action needs your confirmation",
         "shell" to "A real shell in Vorv's own Linux system with REAL stdout/stderr/exit-code capture (no root, nothing to install; your confirmation first)",
+        "linux_run" to "Debian 12 shell in the same Linux system — apt-get install and run any language the distribution carries; your confirmation first",
         "notify" to "Post a system notification (checks permission, honest error if missing)",
         "schedule" to "WorkManager delayed reminder — unique name, 7-day cap, survives reboot",
         "schedule_cancel" to "Cancel pending reminders by title or all",
         "browser_automate" to "Headless WebView: http/https only, no file://, private hosts blocked",
+        "web_test" to "Serve a built web app on loopback, load it in a real WebView, run your checks and save a screenshot — a pass/fail verdict, not a guess",
+        "build_app" to "Compile a project on the phone into a signed APK (Main.java entry point); the APK native_test then installs",
+        "native_test" to "Install the APK you built, open it, and tap through your steps with a pass/fail for each — needs Vorv app testing enabled in Settings > Accessibility",
+        "brain" to "Train and query Vorv's own small on-device model (train/generate/status), reporting the loss before and after; the weights persist across restarts",
         "self_fix" to "Fix or modify Vorv's own code: Vorv writes a plan naming each class it will change, you approve that plan ONCE, then the on-device coder writes each class, Vorv's own compiler builds it, the public API is checked, it is signed, and a crash rolls it back. Nothing outside the plan is touched; a step that fails stops the plan",
     )
     val engines = listOf(

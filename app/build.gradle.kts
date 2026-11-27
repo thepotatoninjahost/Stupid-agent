@@ -260,7 +260,7 @@ val payloadSdkDir: String by lazy {
 }
 
 val provisionPayload = tasks.register<Exec>("provisionPayload") {
-    description = "Fetches the in-app computer (proot, Alpine rootfs, JVM, on-phone toolchain) when the tree lacks it."
+    description = "Fetches the in-app computer (proot, Debian 12 rootfs, JVM, on-phone toolchain) when the tree lacks it."
     group = "build"
     workingDir = rootDir
     environment("ANDROID_HOME", payloadSdkDir)
@@ -439,7 +439,7 @@ androidComponents {
                 if (missing.isNotEmpty()) {
                     throw GradleException(
                         "healer classpath jar ${jar.name} is incomplete: missing ${missing.joinToString()}. " +
-                            "The self-repair pipeline would fail on-device (see REVIEW.md F-8)."
+                            "The self-repair pipeline would fail on-device: the healer compiles against this jar."
                     )
                 }
             }

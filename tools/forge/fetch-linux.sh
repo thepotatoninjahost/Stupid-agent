@@ -4,7 +4,7 @@
 #
 # Same rule as fetch-runtime.sh — every download is checked against the
 # sha256 in runtime-manifest.json before it is unpacked, so a swapped or
-# truncated file fails here instead of on the phone. The rootfs (~4 MB) and
+# truncated file fails here instead of on the phone. The rootfs (~28 MB) and
 # the binaries are ignored by git; this script is how they come back.
 set -euo pipefail
 

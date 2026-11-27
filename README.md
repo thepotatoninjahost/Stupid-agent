@@ -54,7 +54,7 @@ python3 tools/forge/verify-apk-payload.py app/build/outputs/apk/debug/app-debug.
 | `DEVELOPMENT.md` | How to build, run and test the project |
 | `CONTRIBUTING.md` | Conventions for changes |
 | `WORKLOG.md` | What each build changed, with evidence |
-| `REVIEW.md`, `CODE-REVIEW.md`, `ACCEPTANCE_LOG.md` | Review findings and how each was verified |
+| `AGENTS.md` | Working rules and field lessons that shape every change |
 | `SECURITY.md` | How to report a vulnerability |
 | `NOTICES.md` | Third-party components and licences |
 

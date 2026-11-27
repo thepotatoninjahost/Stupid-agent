@@ -1,3 +1,34 @@
+## 2026-11-27 — 24/24 tools, package visibility, Debian docs, debug + release + 930 tests
+
+**What was wrong.** The Tools screen still listed 18 of the 24 tools
+`AgentViewModel` registers — `computer_run`, `web_test`, `build_app`,
+`linux_run`, `brain` and `native_test` were invisible to the owner. Android 11+
+does not expose apps installed by Vorv to Vorv, so `native_test`'s
+`getLaunchIntentForPackage()` on a freshly built APK returned null and
+`app_intent(open_app)` called a real app "not installed". The guest docs and
+the `provisionPayload` description still described Alpine and a 9 MB rootfs,
+while the shipped payload is Debian 12.15 (28 MB, 4,217 entries, `apt`/`dpkg`).
+README linked three deleted review documents, and two build/doc messages cited
+the deleted `REVIEW.md`.
+
+**What changed.** `ToolsScreen` now lists all 24 tools with the registry's real
+descriptions; the manifest declares a narrow MAIN/LAUNCHER `<queries>` block
+(not `QUERY_ALL_PACKAGES`) so apps Vorv installs are visible; `app_intent`'s
+error says "no launchable activity" instead of claiming "not installed". The
+guest docs, research note, `fetch-linux.sh` comment and Gradle task description
+now say Debian 12.15 with the tar's real size and entry count. README's docs
+table points at `AGENTS.md`. The source mirror matches `app/src/main/java`
+byte for byte.
+
+**Checked.** `:app:assembleDebug` BUILD SUCCESSFUL (3m 28s, 371,936,570-byte
+APK); `verify-apk-payload.py` reports 10 required entries (>= 223 MB unpacked);
+`:app:testDebugUnitTest` BUILD SUCCESSFUL — 119 result files, 930 tests, 0
+failures, 0 errors, 2 skipped; `:app:assembleRelease` BUILD SUCCESSFUL
+(4m 11s, 286,631,470-byte unsigned APK, R8); `:app:syncSourceMirror` +
+`diff -rq` identical. Not checked: on-device proot, accessibility,
+GenieX/NPU, and anything needing the owner's S25. Built with JDK 17.0.21.1 and
+SDK platform 37.0 / build-tools 37.0.0.
+
 ## Docs and CI — four empty files, the APK gate, and the scope that blocked it
 
 **What was wrong.** `DEVELOPMENT.md`, `CONTRIBUTING.md`, `SECURITY.md` and

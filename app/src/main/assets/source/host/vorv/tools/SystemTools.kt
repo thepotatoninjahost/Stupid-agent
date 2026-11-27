@@ -166,7 +166,8 @@ class AppIntentTool(private val appContext: Context) : Tool {
                 "open_app" -> appContext.packageManager.getLaunchIntentForPackage(data)
                     ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     ?: return@withContext ToolResult(ok = false, output = "",
-                        error = "App '$data' not installed",
+                        error = "No launchable activity for '$data' — it is not installed, " +
+                            "is disabled, or has no launcher screen",
                         durationMs = System.currentTimeMillis() - t0)
                 else -> return@withContext ToolResult(ok = false, output = "",
                     error = "unknown action: $action",

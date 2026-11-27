@@ -29,6 +29,21 @@
       shared-preferences file; the encrypted secrets file is excluded) take
       part in backup. SECURITY.md states this explicitly.
     -->
+    <!--
+      Package visibility (Android 11+). An app installed by Vorv is NOT visible
+      automatically: only the app that installed Vorv is. Without this block,
+      native_test's getLaunchIntentForPackage() on a freshly built APK returns
+      null and app_intent(open_app) reports a real app as "not installed".
+      MAIN/LAUNCHER is enough for both — neither can act on an app with nothing
+      to launch — and it is far narrower than QUERY_ALL_PACKAGES.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".VorvApplication"
         android:allowBackup="true"
