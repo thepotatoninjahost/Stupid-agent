@@ -3,7 +3,6 @@ package host.vorv.llm.provider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,21 +52,29 @@ class ProviderRegistryTest {
     }
 
     @Test
-    fun `the shipped list is three routes, and nothing else grows back`() {
+    fun `every route the app has shipped with is present, and a saved id resolves to itself`() {
         assertEquals(
-            listOf("openrouter", "huggingface", "custom"),
+            listOf(
+                "openrouter", "huggingface",
+                "deepseek", "groq", "cerebras", "together", "fireworks", "mistral",
+                "google", "openai", "anthropic",
+                "custom",
+            ),
             ProviderRegistry.presets.map { it.id },
         )
-        // A provider that was removed keeps its key in storage but never the
-        // selection: the app lands on the default route instead of a dead id.
-        assertEquals("openrouter", ProviderRegistry.orDefault("deepseek").id)
-        assertEquals("openrouter", ProviderRegistry.orDefault("groq").id)
-        assertNull(ProviderRegistry.byId("google"))
-        assertNull(ProviderRegistry.byId("openai"))
-        assertNull(ProviderRegistry.byId("anthropic"))
-        // A typed address still works for a provider that is no longer shipped.
-        val adHoc = ProviderRegistry.byIdOrCustom("deepseek", "https://api.deepseek.com/v1")
-        assertEquals("https://api.deepseek.com/v1", adHoc.baseUrl)
+        // The 2026-11-25 cut to three routes deleted nine working providers and
+        // left any saved selection pointing at nothing. A saved id must resolve
+        // to itself again instead of silently landing on the default route.
+        listOf(
+            "deepseek", "groq", "cerebras", "together", "fireworks", "mistral",
+            "google", "openai", "anthropic",
+        ).forEach { id ->
+            assertEquals(id, ProviderRegistry.orDefault(id).id)
+            assertNotNull("$id must carry an address", ProviderRegistry.byId(id)?.baseUrl)
+        }
+        // A typed address still works for a provider that is not shipped.
+        val adHoc = ProviderRegistry.byIdOrCustom("mine", "https://llm.example.test/v1")
+        assertEquals("https://llm.example.test/v1", adHoc.baseUrl)
     }
 
     @Test

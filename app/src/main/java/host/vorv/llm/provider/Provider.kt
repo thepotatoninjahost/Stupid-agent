@@ -57,12 +57,13 @@ data class Provider(
 }
 
 /**
- * The routes the app ships with: free or bring-your-own, and only those.
+ * The routes the app ships with.
  *
- * The owner does not pay for a model and does not want a wall of provider
- * buttons, so this list is deliberately short — OpenRouter (free ids), Hugging
- * Face (a router, honestly labelled as paid), and the owner's own address.
- * Anything else is added as Custom, not compiled in.
+ * Each entry is a preset — an address, a key slot, and suggested ids — not a
+ * gate. The nine routes deleted on 2026-11-25 are back: that cut removed
+ * working options the owner never asked to lose, and a version number is not a
+ * feature. What stays blocked is what the owner actually crossed out by hand:
+ * the GLM family and the seven ids in [removedIds] below.
  */
 object ProviderRegistry {
 
@@ -134,6 +135,75 @@ object ProviderRegistry {
             notes = "OpenAI-compatible router over many providers; the key is a Hugging Face token. " +
                 "Not a no-cost route: free accounts get no monthly credits — you buy credits, or PRO " +
                 "gets $2 of them a month.",
+        ),
+        Provider(
+            id = "deepseek",
+            label = "DeepSeek",
+            baseUrl = "https://api.deepseek.com/v1",
+            capability = Provider.Capability.CODE,
+            suggestions = listOf("deepseek-coder", "deepseek-chat"),
+        ),
+        Provider(
+            id = "groq",
+            label = "Groq",
+            baseUrl = "https://api.groq.com/openai/v1",
+            freeTier = true,
+            capability = Provider.Capability.GENERAL,
+            suggestions = listOf("qwen/qwen3-32b", "llama-3.3-70b-versatile"),
+        ),
+        Provider(
+            id = "cerebras",
+            label = "Cerebras",
+            baseUrl = "https://api.cerebras.ai/v1",
+            freeTier = true,
+            capability = Provider.Capability.GENERAL,
+            suggestions = listOf("qwen-3-coder-480b", "llama3.3-70b"),
+        ),
+        Provider(
+            id = "together",
+            label = "Together",
+            baseUrl = "https://api.together.xyz/v1",
+            capability = Provider.Capability.CODE,
+            suggestions = listOf("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
+        ),
+        Provider(
+            id = "fireworks",
+            label = "Fireworks",
+            baseUrl = "https://api.fireworks.ai/inference/v1",
+            capability = Provider.Capability.CODE,
+            suggestions = listOf("accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"),
+        ),
+        Provider(
+            id = "mistral",
+            label = "Mistral",
+            baseUrl = "https://api.mistral.ai/v1",
+            freeTier = true,
+            capability = Provider.Capability.CODE,
+            suggestions = listOf("codestral-latest", "mistral-large-latest"),
+        ),
+        Provider(
+            id = "google",
+            label = "Google AI Studio",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+            freeTier = true,
+            capability = Provider.Capability.REASONING,
+            suggestions = listOf("gemini-2.5-pro", "gemini-2.5-flash"),
+            notes = "Google's OpenAI-compatible endpoint; the key goes in the bearer header.",
+        ),
+        Provider(
+            id = "openai",
+            label = "OpenAI",
+            baseUrl = "https://api.openai.com/v1",
+            capability = Provider.Capability.REASONING,
+            suggestions = listOf("gpt-5", "gpt-5-mini"),
+        ),
+        Provider(
+            id = "anthropic",
+            label = "Anthropic (OpenAI-compatible gateway)",
+            baseUrl = "https://api.anthropic.com/v1",
+            capability = Provider.Capability.REASONING,
+            suggestions = listOf("claude-sonnet-4-5"),
+            notes = "Native Anthropic uses a different body shape; point this at a gateway that speaks /chat/completions.",
         ),
         Provider(
             id = "custom",
