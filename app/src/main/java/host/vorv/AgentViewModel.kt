@@ -449,6 +449,33 @@ class AgentViewModel(
         )
     }
 
+    /**
+     * The kernel's tool result, written down while it is still true.
+     *
+     * This is the wire the review asked for. Before it, the ledger held only
+     * chat and corrections, so the trainer could never see a build fail or a
+     * build succeed — every build taught it nothing. A ledger write must never
+     * interrupt a task, so a failure is logged; cancellation still propagates.
+     */
+    private suspend fun recordToolOutcome(step: TraceStep.ToolEnd) {
+        try {
+            learningStore.record(
+                host.vorv.learn.LearningLedger.toolRow(
+                    ts = System.currentTimeMillis(),
+                    tool = step.tool,
+                    ok = step.result.ok,
+                    output = step.result.output,
+                    stderr = step.result.stderr,
+                    error = step.result.error,
+                )
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("Vorv/Learn", "tool outcome not recorded: ${e.message}")
+        }
+    }
+
     // M3 (code review, 2026-11): the exact bridge lambdas THIS ViewModel
     // installed. Kept so onCleared() can clear the singleton references
     // ONLY when they still point into this instance — never nulling a
@@ -662,6 +689,10 @@ class AgentViewModel(
         viewModelScope.launch {
             kernel.trace.collect { step ->
                 _state.update { it.copy(liveTrace = it.liveTrace + step) }
+                // Every tool call becomes a ledger row — including the ones
+                // that failed. Without this the trainer only ever saw chat, so
+                // Vorv could learn how it talks and never how it builds.
+                if (step is TraceStep.ToolEnd) recordToolOutcome(step)
             }
         }
     }

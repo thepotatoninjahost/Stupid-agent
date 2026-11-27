@@ -110,6 +110,40 @@ object LearningLedger {
     fun dedupeKey(kind: Kind, input: String, output: String): String =
         sha256("$kind|${normalise(input)}|${normalise(output)}")
 
+    /** A tool log can be megabytes; a ledger row is evidence, not a dump. */
+    const val MAX_TEXT = 4_000
+
+    /**
+     * One tool call, as a ledger row.
+     *
+     * The two tools that build and install an APK land as [Kind.BUILD_RESULT]
+     * so a failed build can be weighed differently from a chat turn; every
+     * other tool is [Kind.TOOL_CALL]. Neither is a training *target* — they are
+     * the context that says what actually happened, which is the half the
+     * trainer has never had.
+     */
+    fun toolRow(
+        ts: Long,
+        tool: String,
+        ok: Boolean,
+        output: String,
+        stderr: String,
+        error: String? = null,
+    ): Row = Row(
+        ts = ts,
+        kind = if (tool == "build_app" || tool == "native_test") Kind.BUILD_RESULT else Kind.TOOL_CALL,
+        sessionId = "tool",
+        inputText = tool.take(MAX_TEXT),
+        outputText = buildString {
+            append(output)
+            if (!error.isNullOrBlank()) append("\n--- error ---\n").append(error)
+            if (stderr.isNotBlank()) append("\n--- stderr ---\n").append(stderr)
+        }.take(MAX_TEXT),
+        toolCsv = tool,
+        ok = ok,
+        errorClass = if (ok) null else "tool:$tool",
+    )
+
     /**
      * Adds the row to [existing], or strengthens the row it duplicates.
      * Returns the ledger that should be stored.

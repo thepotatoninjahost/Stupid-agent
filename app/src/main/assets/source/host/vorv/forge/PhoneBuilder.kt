@@ -124,7 +124,14 @@ class PhoneBuilder(
             ?: return@withContext fail("verify", "signature verified but no signer was reported")
         steps += "verify: $signer"
 
-        Build(true, signed, steps, null)
+        // NativeTestTool refuses an APK that is not inside the project folder,
+        // and the work dir is a sibling of it. The deliverable therefore lands
+        // in the project; the work dir keeps the intermediate artifacts.
+        val deliverable = deliverableApk(project, outputName)
+        signed.copyTo(deliverable, overwrite = true)
+        steps += "deliver: ${deliverable.absolutePath} (${deliverable.length()}b)"
+
+        Build(true, deliverable, steps, null)
     }
 
     /** Copies the template, swaps in the freshly built dex, and stores it uncompressed. */
@@ -190,3 +197,13 @@ class PhoneBuilder(
         const val KEY_ALIAS = "vorv"
     }
 }
+
+/**
+ * Where the finished APK must land: inside the project folder.
+ *
+ * [host.vorv.tools.NativeTestTool] canonicalises the path it is given and
+ * refuses anything that is not under the project root, so an APK written to
+ * the build directory beside the project could never be installed or tested.
+ */
+internal fun deliverableApk(project: File, outputName: String): File =
+    File(project, "$outputName.apk")
