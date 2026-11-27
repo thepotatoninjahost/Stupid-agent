@@ -75,7 +75,9 @@ object NativeCrashHistory {
             }
         }.onFailure { note = "the trace could not be read: ${it.message}" }
         if (trace == null && note == null) {
-            note = "Android kept no trace for this exit (only debuggable builds keep tombstones)."
+            note = "Android keeps traces for an ANR, and (from API 31) a native-crash tombstone. " +
+                "A Java uncaught exception (REASON_CRASH) has no OS trace: the stack has to come " +
+                "from the app's own crash handler."
         }
         return Exit(
             timestampMs = info.timestamp,

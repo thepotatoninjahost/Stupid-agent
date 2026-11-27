@@ -3,26 +3,29 @@ package host.vorv
 import android.content.Context
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import host.vorv.healer.CrashText
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Writes the full crash trace to a file from a fresh WorkManager process.
+ * Second chance at a full crash trace, written from a fresh WorkManager process.
  *
- * WHY A WORKER (not the UncaughtExceptionHandler directly):
- *   The handler runs in the crashing process with maybe 10-50ms before the
- *   process is killed. File I/O in that window races the kill — the write
- *   might not flush to disk. WorkManager.enqueue() is a fast IPC + transactional
- *   Room write that SURVIVES process death. The worker then runs later in a
- *   fresh, stable process with all the time it needs to write the full trace.
+ * WHY A WORKER AT ALL:
+ *   The UncaughtExceptionHandler runs in the crashing process with the process
+ *   about to be killed. File I/O there can lose the race, and WorkManager.enqueue
+ *   is a request to run later — not a guarantee that anything was persisted
+ *   before death. So the handler writes its report FIRST, synchronously, and
+ *   only then enqueues this worker.
  *
- *   So the handler's job is: capture the trace into a WorkManager input, enqueue
- *   this worker, then die. The worker's job is: write it out reliably.
+ *   This worker therefore exists for the case where that write failed (no
+ *   external storage, a transient I/O fault): it runs later in a stable
+ *   process and retries. When the handler's report is already on disk it does
+ *   nothing — one crash, one report.
  *
- *   (For native SIGSEGV crashes, the handler doesn't fire at all — see
- *   [BootTracer] for the breadcrumb approach that catches those.)
+ *   (For native SIGSEGV crashes, no Java handler fires at all — see
+ *   [BootTracer] and [host.vorv.healer.NativeCrashHistory].)
  */
 class CrashReportWorker(
     appContext: Context,
@@ -30,54 +33,61 @@ class CrashReportWorker(
 ) : Worker(appContext, params) {
 
     override fun doWork(): Result {
+        // The handler's synchronous report is authoritative; a second file for
+        // the same crash would make the report list lie about how many
+        // crashes there were.
+        val alreadyReported = inputData.getString(KEY_REPORT_PATH)?.let { File(it) }
+        if (alreadyReported != null && alreadyReported.isFile) {
+            android.util.Log.i(TAG, "Crash already reported synchronously: ${alreadyReported.absolutePath}")
+            return Result.success()
+        }
+
         return runCatching {
             val threadName = inputData.getString(KEY_THREAD) ?: "unknown"
             val exceptionClass = inputData.getString(KEY_EXCEPTION_CLASS) ?: "unknown"
             val exceptionMessage = inputData.getString(KEY_EXCEPTION_MESSAGE) ?: ""
             val stackTrace = inputData.getString(KEY_STACK_TRACE) ?: ""
-            val crashNumber = inputData.getInt(KEY_CRASH_NUMBER, 0)
 
             // Audit M-10: millisecond resolution + pid in the filename — two
             // crashes in the same second no longer overwrite each other's logs.
             val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(Date())
-            val crashDir = File(applicationContext.getExternalFilesDir(null), "crash_logs").apply { mkdirs() }
+            val crashDir = File(
+                applicationContext.getExternalFilesDir(null) ?: applicationContext.filesDir,
+                "crash_logs",
+            ).apply { mkdirs() }
             val crashFile = File(crashDir, "crash_${timestamp}_pid${android.os.Process.myPid()}.txt")
 
-            val sb = StringBuilder()
-            sb.appendLine("========================================")
-            sb.appendLine("Vorv crash report (written by CrashReportWorker)")
-            sb.appendLine("========================================")
-            sb.appendLine("Timestamp: ${Date()}")
-            sb.appendLine("Crash number in loop: $crashNumber")
-            sb.appendLine("Thread: $threadName")
-            sb.appendLine("Exception: $exceptionClass")
-            sb.appendLine("Message: $exceptionMessage")
-            sb.appendLine("========================================")
-            sb.appendLine("Stack trace:")
-            sb.appendLine("========================================")
-            sb.appendLine(stackTrace)
-            sb.appendLine()
-            sb.appendLine("========================================")
-            sb.appendLine("Boot trace (breadcrumbs from this launch):")
-            sb.appendLine("========================================")
-            sb.appendLine(BootTracer.readTrace(applicationContext))
+            crashFile.writeText(
+                CrashText.format(
+                    threadName = threadName,
+                    exceptionClass = exceptionClass,
+                    message = exceptionMessage,
+                    stackTrace = stackTrace,
+                    bootTrace = BootTracer.readTrace(applicationContext),
+                    writtenBy = "CrashReportWorker, in a fresh process after the crash",
+                ),
+            )
 
-            crashFile.writeText(sb.toString())
-
-            android.util.Log.e("Vorv/CrashReportWorker", "Crash log written to ${crashFile.absolutePath}")
+            android.util.Log.e(TAG, "Crash log written to ${crashFile.absolutePath}")
             Result.success()
         }.getOrElse {
-            android.util.Log.e("Vorv/CrashReportWorker", "Failed to write crash log: ${it.message}", it)
+            android.util.Log.e(TAG, "Failed to write crash log: ${it.message}", it)
             Result.retry()
         }
     }
 
     companion object {
+        private const val TAG = "Vorv/CrashReportWorker"
+
         const val KEY_THREAD = "thread"
         const val KEY_EXCEPTION_CLASS = "exception_class"
         const val KEY_EXCEPTION_MESSAGE = "exception_message"
         const val KEY_STACK_TRACE = "stack_trace"
         const val KEY_CRASH_NUMBER = "crash_number"
+
+        /** Set when the crashing process already wrote this report itself. */
+        const val KEY_REPORT_PATH = "report_path"
+
         const val UNIQUE_WORK_NAME = "vorv_crash_report"
     }
 }

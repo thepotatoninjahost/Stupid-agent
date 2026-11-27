@@ -1,3 +1,47 @@
+## 2026-11-27 (later) — the crash that left no stack, and the watchdog overwriting it
+
+**What was wrong.** The owner's S25 crashed while a Linux command was being run.
+Android's exit history said `CRASH (uncaught Java exception)` at 11:58:55
+(pid 2733), and there was NO Java report in `crash_logs/` — no class, no
+message, no line. Two separate defects made that happen:
+
+1. `VorvApplication`'s UncaughtExceptionHandler only *enqueued* a WorkManager
+   job. Enqueue queues work to run later; the handler returns and the process
+   is killed immediately, so a worker that never runs writes nothing. The
+   handler now writes the report itself, synchronously, through the dying
+   process (`crash_java_<ts>_pid<pid>.txt`), and the worker is kept only as a
+   fallback that skips itself when that file already exists.
+2. `BootTracer` kept ONE trace file for every process. `:watchdog` writes its
+   own BOOT_STARTED seconds after the main process and never writes
+   BOOT_COMPLETE, so the "previous boot trace" a crash report read was the
+   watchdog's two-line section (pid 2768) while the process that died was
+   pid 2733. The watchdog now writes `boot_trace_watchdog.txt`; the main
+   process keeps `boot_trace.txt`, which is what crash reports read.
+
+Also closed a crash path found while reading the Linux command route:
+`GuestEgressProxy` runs one bare thread per guest connection with no caller.
+An IOException mid-request (a guest that opens and drops a connection —
+normal traffic) reached the app's default handler and killed the whole
+process. It is now caught, logged and closed. `NativeCrashHistory` also no
+longer claims "only debuggable builds keep tombstones": Android supplies
+traces for ANRs and native tombstones from API 31, never for a Java uncaught
+exception, so the Java stack must come from this app's own handler.
+
+**Checked.** `:app:testDebugUnitTest` BUILD SUCCESSFUL — 120 result files, 934
+tests, 0 failures, 0 errors, 2 skipped. Three new tests: the report names the
+thread/exception/message/frame, the watchdog gets `boot_trace_watchdog.txt`,
+and a dropped guest connection never reaches the crash handler. The last one
+was run against the unguarded code first — `8 tests completed, 1 failed` — so
+it genuinely pins that defect rather than describing it. `:app:assembleDebug`
+BUILD SUCCESSFUL (374,352,768-byte APK, 20s); source mirror re-synced and
+`diff -rq` identical. `SilentFailureGuardTest` kept at its 153 baseline: the
+new fallible calls go through `Attempt.of`/`orDefault`, so no failure is
+swallowed.
+
+**Not checked.** The crash that started this is still unexplained: no trace
+existed at the time, so the next occurrence is the one that can name the line.
+Nothing here was run on the owner's S25; release/R8 is left to CI.
+
 ## 2026-11-27 — 24/24 tools, package visibility, Debian docs, debug + release + 930 tests
 
 **What was wrong.** The Tools screen still listed 18 of the 24 tools

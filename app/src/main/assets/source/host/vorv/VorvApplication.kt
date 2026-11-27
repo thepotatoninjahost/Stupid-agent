@@ -10,7 +10,9 @@ import androidx.work.WorkManager
 import host.vorv.data.SecretsStore
 import host.vorv.data.VorvDatabase
 import host.vorv.data.VorvPrefs
+import host.vorv.healer.CrashText
 import host.vorv.llm.ModelRepository
+import host.vorv.tools.Attempt
 import host.vorv.watchdog.HotPatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -100,9 +102,15 @@ class VorvApplication : Application() {
         private set
 
     override fun onCreate() {
+        // The watchdog process must not write the MAIN process's boot trace:
+        // it starts seconds later, never writes BOOT_COMPLETE, and would become
+        // the "previous boot" a crash report reads. It gets its own file.
+        val watchdogProcess = isWatchdogProcess()
+        val traceTag = if (watchdogProcess) "watchdog" else null
+
         // L-7: the boot marker must exist BEFORE any step that can crash —
         // including the crash handler install and the hot-patch load.
-        BootTracer.start(this)
+        BootTracer.start(this, traceTag)
 
         // L5 (code review, 2026-11): SECOND, not first — the boot marker
         // above must already exist so a crash in here is attributable to
@@ -111,11 +119,11 @@ class VorvApplication : Application() {
         installCrashHandler()
         super.onCreate()
 
-        if (isWatchdogProcess()) {
+        if (watchdogProcess) {
             // H-1: the watchdog process gets NO app initialization. It must
             // not init Room/GenieX, and above all it must not write
             // heartbeats — that poisoned the crash detection for good.
-            BootTracer.step(this, "watchdog_process_skip", "pid=${Process.myPid()}")
+            BootTracer.step(this, "watchdog_process_skip", "pid=${Process.myPid()}", traceTag)
             Log.i(TAG, "Watchdog process detected — application init skipped")
             return
         }
@@ -346,16 +354,47 @@ class VorvApplication : Application() {
     private fun installCrashHandler() {
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            try {
-                enqueueCrashReport(thread, throwable)
-            } catch (e: Exception) {
-                Log.e(TAG, "crash handler failed: ${e.message}", e)
+            // FIRST, and synchronously: this handler runs in the process that
+            // is about to be killed. WorkManager only queues work for later,
+            // so relying on it alone is how the 2026-11-27 crash ended up with
+            // Android's "uncaught Java exception" record and NO Java report:
+            // no class, no message, no line anywhere on disk.
+            val report = Attempt.of("write the crash report before the process exited") {
+                writeCrashReportNow(thread, throwable)
+            }
+            // The worker stays as a second chance (fresh process, all the time
+            // it needs) and skips its own write when the report above landed.
+            Attempt.of("enqueue the crash report worker") {
+                enqueueCrashReport(thread, throwable, report)
             }
             previousHandler?.uncaughtException(thread, throwable)
         }
     }
 
-    private fun enqueueCrashReport(thread: Thread, throwable: Throwable) {
+    /**
+     * The one crash artifact that cannot be lost: written and flushed by the
+     * dying process itself, before the default handler kills it.
+     *
+     * Deliberately small — the boot trace is capped at what a report embeds,
+     * because this can be running while the heap is exhausted.
+     */
+    private fun writeCrashReportNow(thread: Thread, throwable: Throwable): java.io.File {
+        val dir = java.io.File(getExternalFilesDir(null) ?: filesDir, "crash_logs")
+        dir.mkdirs()
+        val file = java.io.File(
+            dir,
+            "crash_java_${System.currentTimeMillis()}_pid${Process.myPid()}.txt",
+        )
+        val trace = Attempt.orDefault(
+            what = "read the boot trace for the crash report",
+            fallback = "(boot trace unavailable)",
+        ) { BootTracer.readTrace(this).takeLast(BootTracer.EMBED_BYTES) }
+        file.writeText(CrashText.format(thread.name, throwable, trace))
+        Log.e(TAG, "crash report written before exit: ${file.absolutePath}")
+        return file
+    }
+
+    private fun enqueueCrashReport(thread: Thread, throwable: Throwable, syncReport: java.io.File?) {
         val sw = StringWriter()
         val pw = PrintWriter(sw)
         throwable.printStackTrace(pw)
@@ -367,6 +406,7 @@ class VorvApplication : Application() {
             .putString(CrashReportWorker.KEY_EXCEPTION_MESSAGE, throwable.message ?: "")
             .putString(CrashReportWorker.KEY_STACK_TRACE, sw.toString())
             .putInt(CrashReportWorker.KEY_CRASH_NUMBER, crashNumber)
+            .apply { syncReport?.let { putString(CrashReportWorker.KEY_REPORT_PATH, it.absolutePath) } }
             .build()
 
         val request = OneTimeWorkRequestBuilder<CrashReportWorker>()
@@ -402,12 +442,17 @@ class VorvApplication : Application() {
      * probation gate, and indirectly by the agent's crash_logs tool.
      */
     fun getLatestCrashLog(): java.io.File? {
-        val extDir = getExternalFilesDir(null) ?: return null
-        val crashDir = java.io.File(extDir, "crash_logs")
-        val newestReport = crashDir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
-            ?.maxByOrNull { it.lastModified() }
+        val extDir = getExternalFilesDir(null)
+        // The synchronous handler falls back to filesDir when external storage
+        // is unavailable, so both locations are read here.
+        val reports = listOfNotNull(extDir, filesDir).flatMap { base ->
+            java.io.File(base, "crash_logs").listFiles()?.toList().orEmpty()
+        }
+        val newestReport = reports
+            .filter { it.isFile && it.name.endsWith(".txt") && !it.name.startsWith("handled_") }
+            .maxByOrNull { it.lastModified() }
         if (newestReport != null) return newestReport
+        if (extDir == null) return null
 
         val wdDir = java.io.File(extDir, "watchdog")
         return wdDir.listFiles()

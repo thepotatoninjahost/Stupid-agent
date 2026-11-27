@@ -66,35 +66,59 @@ internal class GuestEgressProxy(
                 socket.accept()
             } catch (e: java.io.IOException) {
                 return // the listener was closed under us: nothing left to serve
+            } catch (e: RuntimeException) {
+                note("accept failed (${e.javaClass.simpleName}: ${e.message}); the guard stops here")
+                return
             }
             Thread({ handle(client) }, "vorv-guest-egress-conn").apply { isDaemon = true }.start()
         }
     }
 
+    /**
+     * One guest connection.
+     *
+     * Nothing may escape this function. It runs on a bare thread with no
+     * caller, so an uncaught exception reaches the app's default handler and
+     * KILLS THE WHOLE APP. A guest that opens a connection and drops it is
+     * normal traffic (curl probes the proxy exactly this way), not a crash.
+     */
     private fun handle(client: Socket) {
-        client.use { socket ->
-            val input = BufferedInputStream(socket.getInputStream())
-            val head = readHead(input)
-            if (head == null) {
-                respond(socket.getOutputStream(), 400, "Bad Request", "missing or oversized request headers")
-                return
-            }
-            val requestLine = head.substringBefore("\r\n")
-            val parts = requestLine.split(' ')
-            if (parts.size != 3) {
-                respond(socket.getOutputStream(), 400, "Bad Request", "malformed request line")
-                return
-            }
-            val (method, target, _) = parts
-            when {
-                method.equals("CONNECT", ignoreCase = true) -> tunnel(socket, input, target)
-                target.startsWith("http://", ignoreCase = true) -> relay(socket, input, head, method, target)
-                else -> respond(
-                    socket.getOutputStream(), 400, "Bad Request",
-                    "the guest egress guard only handles HTTP proxy requests (CONNECT and absolute-form http://)",
-                )
-            }
+        try {
+            serve(client)
+        } catch (e: Exception) {
+            note("connection ended early (${e.javaClass.simpleName}: ${e.message})")
+        } finally {
+            closeQuietly(client)
         }
+    }
+
+    private fun serve(client: Socket) {
+        val input = BufferedInputStream(client.getInputStream())
+        val head = readHead(input)
+        if (head == null) {
+            respond(client.getOutputStream(), 400, "Bad Request", "missing or oversized request headers")
+            return
+        }
+        val requestLine = head.substringBefore("\r\n")
+        val parts = requestLine.split(' ')
+        if (parts.size != 3) {
+            respond(client.getOutputStream(), 400, "Bad Request", "malformed request line")
+            return
+        }
+        val (method, target, _) = parts
+        when {
+            method.equals("CONNECT", ignoreCase = true) -> tunnel(client, input, target)
+            target.startsWith("http://", ignoreCase = true) -> relay(client, input, head, method, target)
+            else -> respond(
+                client.getOutputStream(), 400, "Bad Request",
+                "the guest egress guard only handles HTTP proxy requests (CONNECT and absolute-form http://)",
+            )
+        }
+    }
+
+    /** Log line for failures this thread has no caller to report to. */
+    private fun note(message: String) {
+        System.err.println("Vorv guest egress guard: $message")
     }
 
     // ------------------------------------------------------------------ CONNECT

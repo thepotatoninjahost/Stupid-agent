@@ -163,6 +163,45 @@ class GuestEgressProxyTest {
         assertFalse("the upstream must never be contacted", accepted.get())
     }
 
+    // -------------------------------------------------------------- liveness
+
+    /**
+     * The 2026-11-27 crash: the process died with an uncaught Java exception
+     * while the Linux system was being used. The proxy's connection threads run
+     * with no caller, so an exception there reaches the app's default handler
+     * and kills the whole process. A guest dropping its connection is ordinary
+     * traffic — it must never leave the proxy thread.
+     */
+    @Test
+    fun `a guest dropping its connection does not reach the crash handler`() {
+        val guard = GuestEgressProxy().also { proxy = it }
+        val port = guard.ensureStarted()
+
+        val escaped = AtomicReference<Throwable?>(null)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { _, t -> escaped.set(t) }
+        try {
+            Socket("127.0.0.1", port).use { client ->
+                // RST on close: the proxy's read fails mid-header, which is the
+                // exact IOException the old code let escape the thread.
+                client.setSoLinger(true, 0)
+                client.getOutputStream().apply {
+                    write("CONNECT dr".toByteArray())
+                    flush()
+                }
+            }
+            val deadline = System.currentTimeMillis() + 3_000
+            while (escaped.get() == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+            assertEquals(
+                "a dropped guest connection must be a closed socket, not an app crash",
+                null,
+                escaped.get(),
+            )
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous)
+        }
+    }
+
     // ------------------------------------------------------------------ frames
 
     @Test

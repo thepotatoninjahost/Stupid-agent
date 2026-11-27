@@ -59,8 +59,18 @@ object BootTracer {
 
     private val timestampFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
-    fun traceFile(ctx: Context): File =
-        File(ctx.getExternalFilesDir(null), TRACE_FILE)
+    /**
+     * [processSuffix] names the file for a non-main process. The watchdog gets
+     * its own trace: it writes BOOT_STARTED seconds after the main process and
+     * never writes BOOT_COMPLETE, so sharing one file made the "previous boot"
+     * of a crash report the watchdog's two-line section instead of the session
+     * that died (2026-11-27: pid 2768 in the trace, pid 2733 in the crash).
+     */
+    fun traceFile(ctx: Context, processSuffix: String? = null): File =
+        File(ctx.getExternalFilesDir(null), traceFileName(processSuffix))
+
+    internal fun traceFileName(processSuffix: String?): String =
+        if (processSuffix.isNullOrBlank()) TRACE_FILE else "boot_trace_$processSuffix.txt"
 
     fun crashCountFile(ctx: Context): File =
         File(ctx.getExternalFilesDir(null), CRASH_COUNT_FILE)
@@ -97,27 +107,28 @@ object BootTracer {
     }
 
     @Synchronized
-    fun start(ctx: Context) {
+    fun start(ctx: Context, processSuffix: String? = null) {
         runCatching {
-            val file = traceFile(ctx)
+            val file = traceFile(ctx, processSuffix)
             file.parentFile?.mkdirs()
             // Don't delete — we need to read the OLD trace to detect a crash loop.
             // Instead, write a separator + new start marker.
             file.appendText("\n" + "=".repeat(60) + "\n")
         }
-        trimIfHuge(ctx)
+        trimIfHuge(ctx, processSuffix)
         writeStep(
             ctx,
             "BOOT_STARTED",
             "pid=${android.os.Process.myPid()} install=${installId(ctx)} epoch=${System.currentTimeMillis()}",
+            processSuffix,
         )
     }
 
     /**
      * Write a breadcrumb. Call this BEFORE the step you're about to do.
      */
-    fun step(ctx: Context, name: String, detail: String? = null) {
-        writeStep(ctx, name, detail)
+    fun step(ctx: Context, name: String, detail: String? = null, processSuffix: String? = null) {
+        writeStep(ctx, name, detail, processSuffix)
     }
 
     /**
@@ -179,9 +190,9 @@ object BootTracer {
      * cannot grow without limit: the newest sections (the ones a crash report
      * needs) are kept, older ones are dropped.
      */
-    internal fun trimIfHuge(ctx: Context) {
+    internal fun trimIfHuge(ctx: Context, processSuffix: String? = null) {
         runCatching {
-            val file = traceFile(ctx)
+            val file = traceFile(ctx, processSuffix)
             if (!file.exists() || file.length() <= MAX_BYTES) return
             // Trim to half the cap: the file is appended to on every boot, so
             // cutting exactly at the cap would exceed it again immediately.
@@ -254,11 +265,16 @@ object BootTracer {
     }
 
     @Synchronized
-    private fun writeStep(ctx: Context, name: String, detail: String?) {
+    private fun writeStep(
+        ctx: Context,
+        name: String,
+        detail: String?,
+        processSuffix: String? = null,
+    ) {
         runCatching {
             val ts = timestampFormat.format(Date())
             val line = if (detail != null) "[$ts] $name — $detail\n" else "[$ts] $name\n"
-            val file = traceFile(ctx)
+            val file = traceFile(ctx, processSuffix)
             file.parentFile?.mkdirs()
             file.appendText(line)
             // fsync via RandomAccessFile to ensure the write hits disk before

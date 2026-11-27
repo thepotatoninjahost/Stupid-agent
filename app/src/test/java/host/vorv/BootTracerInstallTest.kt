@@ -1,5 +1,6 @@
 package host.vorv
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -43,6 +44,13 @@ class BootTracerInstallTest {
         // DeathEvidence's call (it needs Android's exit record, a Java report
         // or a watchdog detection) — this check alone must never be a verdict.
         assertFalse(BootTracer.sectionCompleted(real, mine))
+    }
+
+    @Test
+    fun `only the main process writes the trace a crash report reads`() {
+        assertEquals("boot_trace.txt", BootTracer.traceFileName(null))
+        assertEquals("boot_trace.txt", BootTracer.traceFileName(""))
+        assertEquals("boot_trace_watchdog.txt", BootTracer.traceFileName("watchdog"))
     }
 
     @Test
