@@ -40,6 +40,17 @@ class PhoneBuilder(
             return Build(false, null, steps, detail)
         }
 
+        // A build that fails must not leave the previous APK in the project.
+        // native_test installs whatever APK it is pointed at, so a stale one
+        // passes every check and the new app is reported as working without
+        // ever having been built. Clearing it first is the only ordering that
+        // makes a failure visible.
+        val deliverable = deliverableApk(project, outputName)
+        val hadPrevious = deliverable.isFile
+        clearPreviousApk(deliverable)?.let { return@withContext fail("clean", it) }
+        steps += if (hadPrevious) "clean: removed the previous ${deliverable.name}"
+        else "clean: no previous APK in the project"
+
         runtime.provision().onFailure { return@withContext fail("runtime", it.message ?: it.javaClass.simpleName) }
 
         val sources = project.walkTopDown().filter { it.isFile && it.extension == "java" }.toList()
@@ -127,7 +138,6 @@ class PhoneBuilder(
         // NativeTestTool refuses an APK that is not inside the project folder,
         // and the work dir is a sibling of it. The deliverable therefore lands
         // in the project; the work dir keeps the intermediate artifacts.
-        val deliverable = deliverableApk(project, outputName)
         signed.copyTo(deliverable, overwrite = true)
         steps += "deliver: ${deliverable.absolutePath} (${deliverable.length()}b)"
 
@@ -207,3 +217,15 @@ class PhoneBuilder(
  */
 internal fun deliverableApk(project: File, outputName: String): File =
     File(project, "$outputName.apk")
+
+/**
+ * Deletes the APK a previous build delivered, before this build does anything
+ * else. Returns null when there is nothing left to test by mistake, or the
+ * reason the build must not continue.
+ */
+internal fun clearPreviousApk(deliverable: File): String? {
+    if (!deliverable.exists()) return null
+    if (deliverable.delete()) return null
+    return "could not remove the previous ${deliverable.name}; a stale APK would pass the test " +
+        "in place of this build"
+}
