@@ -63,7 +63,7 @@ commons-compress = "1.28.0"
 # Debian .debs ship data.tar.xz, and commons-compress only speaks XZ when this
 # library is on the classpath; without it release R8 fails and the phone throws
 # NoClassDefFoundError mid-install.
-xz = "1.10"
+xz = "1.12"
 # Test-only
 junit = "4.13.2"
 robolectric = "4.17"
