@@ -40,6 +40,7 @@ fun SettingsScreen(
     onSaveProviderKey: (String) -> Unit = {},
     onRefreshModels: () -> Unit = {},
     onTestProvider: () -> Unit = {},
+    onSaveGitHubToken: (String) -> Unit = {},
 ) {
     var key by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
@@ -659,6 +660,56 @@ fun SettingsScreen(
                         fontSize = 11.sp,
                     )
                 }
+            }
+        }
+
+        // ------------------------------------------------ self-modification (0.9.37)
+        // The one-time key that lets Vorv change its own code for real: the
+        // change is pushed to the repository, the build machine rebuilds Vorv,
+        // and self_update downloads and installs the result. Without a key the
+        // app can still read the repository and check builds; it cannot push.
+        Text("Self-modification", color = OnBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Vorv can rewrite its own code and have its build machine rebuild the app. " +
+                "That needs one GitHub token, saved once. Vorv never shows it again.",
+            color = OnSurfaceVariant, fontSize = 11.sp,
+        )
+        var ghToken by remember { mutableStateOf("") }
+        var ghJustSaved by remember { mutableStateOf(false) }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (state.hasGitHubToken) Success.copy(alpha = 0.08f) else SurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    if (state.hasGitHubToken) "✓ GitHub key saved — Vorv can push a change and install the build"
+                    else "○ No GitHub key — Vorv can read the repository and check builds, but cannot push",
+                    color = if (state.hasGitHubToken) Success else OnSurfaceVariant,
+                    fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedTextField(
+                    value = ghToken,
+                    onValueChange = { ghToken = it; ghJustSaved = false },
+                    label = { Text("GitHub token (Contents: read and write)", fontSize = 11.sp) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = { onSaveGitHubToken(ghToken); ghToken = ""; ghJustSaved = true },
+                    enabled = ghToken.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Save key") }
+                if (ghJustSaved) {
+                    Text("Saved — Vorv will use it on the next change.", color = Success, fontSize = 11.sp)
+                }
+                Text(
+                    "Create it on GitHub: Settings → Developer settings → Personal access tokens → " +
+                        "Fine-grained tokens. Give it access to this one repository, Contents: Read and write.",
+                    color = OnSurfaceVariant, fontSize = 10.sp,
+                )
             }
         }
 

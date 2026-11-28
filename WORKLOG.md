@@ -1,3 +1,29 @@
+## 2026-11-28 — the mirror becomes the build's job, and AgentViewModel is cut in two
+
+**What was wrong.** `app/src/main/assets/source` was a committed copy of
+`src/main/java` that the owner had to re-sync by hand after every source edit,
+and a `verifySourceMirror` gate failed the build when he had not. That is a file
+the build can write itself from the tree it is about to compile; making a person
+maintain it produced 149 tracked copies and a red build with no defect behind
+it. `AgentViewModel.kt` was also 2,417 lines and owned seven unrelated jobs.
+
+**What changed.** `syncSourceMirror` runs from `preBuild`, every test task and
+every asset merge; `assets/source` is git-ignored and left the index (149 files);
+`verifySourceMirror` and `SourceMirrorTest` are gone, because with the copy
+generated during the build a drift check cannot fail and proves nothing.
+`self_update push` writes the source file only. `AgentState.kt` now holds the
+state the screens read and `tools/ToolRoster.kt` holds the tool list;
+`AgentViewModel.kt` is 2,244 lines, with chat, settings/providers and training
+next.
+
+**Checked.** `:app:compileDebugKotlin` BUILD SUCCESSFUL; the mirror was deleted
+and the next compile recreated it, which is the fresh-checkout case CI runs.
+`:app:testDebugUnitTest` BUILD SUCCESSFUL — 958 tests, 0 failures, 0 errors,
+2 skipped (the live-key tests). One real failure was found on the way:
+`PatchRegistryTest` pins the tool construction sites in `AgentViewModel.kt`, and
+the roster had moved; the test now reads both files. Not checked: device, push,
+CI, release.
+
 ## 2026-11-27 (later) — the crash that left no stack, and the watchdog overwriting it
 
 **What was wrong.** The owner's S25 crashed while a Linux command was being run.

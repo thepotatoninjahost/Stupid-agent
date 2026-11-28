@@ -58,6 +58,7 @@ object PatchRegistry {
         "host.vorv.tools.ScheduleCancelTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.BrowserAutomateTool" to host.vorv.tools.Tool::class.java,
         "host.vorv.tools.SelfFixTool" to host.vorv.tools.Tool::class.java,
+        "host.vorv.tools.SelfUpdateTool" to host.vorv.tools.Tool::class.java,
         // ---- kernel (dispatch as KernelApi) ----
         "host.vorv.kernel.CognitiveKernel" to host.vorv.kernel.KernelApi::class.java,
         // ---- healer (dispatch as HealerApi) ----

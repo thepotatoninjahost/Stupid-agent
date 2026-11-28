@@ -49,10 +49,12 @@ import host.vorv.tools.ReminderRegistry
 import host.vorv.tools.ScheduleCancelTool
 import host.vorv.tools.ScheduleTool
 import host.vorv.tools.SelfFixTool
+import host.vorv.tools.SelfUpdateTool
 import host.vorv.tools.SessionGrants
 import host.vorv.tools.ShellTool
 import host.vorv.tools.WebFetchTool
 import host.vorv.tools.WebSearchTool
+import host.vorv.tools.buildToolRoster
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -66,161 +68,16 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
 
-data class ChatMessage(
-    val id: String = java.util.UUID.randomUUID().toString(),
-    val role: String,                // "user" | "assistant"
-    val content: String,
-    val citations: List<host.vorv.tools.Citation> = emptyList(),
-    val ts: Long = System.currentTimeMillis(),
-)
-
-/** A pending user-consent dialog raised by a tool (audit H-1/L-2/L-3). */
-data class PendingConfirmation(
-    val id: String,
-    val message: String,
-    val response: CompletableDeferred<Boolean>,
-    /**
-     * v0.6.15: true only for SHELL consents — the dialog then offers the
-     * third button "Allow all this session" (SessionGrants). Set by
-     * [AgentViewModel.requestConfirmation] from ShellTool.CONSENT_PREFIX,
-     * the single source of truth — no other tool's dialog ever gets it.
-     */
-    val offerSessionGrant: Boolean = false,
-)
-
-/**
- * A pending ANDROID runtime-permission dialog (v0.6.14). The UI observes
- * this, calls Activity.requestPermissions(), and reports back through
- * [AgentViewModel.respondPermissionRequest]. For any runtime grant a tool
- * needs — the standard one-tap dialog, never a Settings walk.
- */
-data class PendingPermissionRequest(
-    val id: String,
-    val permission: String,
-    val response: CompletableDeferred<Boolean>,
-)
-
-/** Full-output viewer state (audit M-7). */
-data class FullOutputView(
-    val title: String,
-    val content: String,
-)
-
-data class AgentState(
-    val screen: String = "chat",     // "chat" | "tasks" | "memory" | "tools" | "files" | "settings"
-    val busy: Boolean = false,
-    val messages: List<ChatMessage> = emptyList(),
-    val liveTrace: List<TraceStep> = emptyList(),
-    val memoryCount: Int = 0,
-    /** Step 9 — what the Brain screen shows: champion, generations, runs. */
-    val brain: host.vorv.learn.BrainReport.View? = null,
-    /** A training run is going right now (read back from the run log). */
-    val brainBusy: Boolean = false,
-    /** The last thing the Brain screen did, in the owner's words. */
-    val brainNote: String = "",
-    /** Step 7 — what the learning ledger actually holds, read from the table. */
-    val ledgerRows: Int = 0,
-    val ledgerExamples: Int = 0,
-    val ledgerValRows: Int = 0,
-    /** What the last export did, in the owner's words. Never a silent success. */
-    val exportNote: String = "",
-    val skillCount: Int = 0,
-    /** Number of tools actually registered — the Setup text quotes this, not a
-     *  remembered number (F-10: it said 17 while the registry held 24). */
-    val toolCount: Int = 0,
-    val recentTasks: List<AgentTask> = emptyList(),
-    val skills: List<Skill> = emptyList(),
-    val episodes: List<Episode> = emptyList(),
-    val llmMode: String = "cloud",       // "local" | "cloud"
-    val hasApiKey: Boolean = false,
-    /** 0.9.13 — a different provider's address; blank means the owner's default. */
-    val cloudBaseUrl: String = "",
-    /** 0.9.13 — that provider's model name; required when an address is set. */
-    val cloudCustomModel: String = "",
-    /** v0.7.0 — cloud→offline fallback armed (needs a downloaded local model). */
-    val autoFallback: Boolean = true,
-    /** v0.7.0 — key+model probe in flight (Setup screen). */
-    val keyTesting: Boolean = false,
-    /** v0.7.0 — verbatim result of the last key/model probe (Setup screen). */
-    val keyTestResult: String? = null,
-    val localModelReady: Boolean = false,
-    val downloadingModel: Boolean = false,
-    val downloadProgress: Int = 0,
-    val selectedModelId: String = "omnicoder9b",
-    val downloadedModelIds: Set<String> = emptySet(),
-    val workspaceUri: String = "",
-    /** Which provider the cloud brain uses ("" = [ProviderRegistry.DEFAULT_ID]). */
-    val providerId: String = host.vorv.llm.provider.ProviderRegistry.DEFAULT_ID,
-    /** 0.9.18 — model ids the provider itself listed; empty until refreshed. */
-    val catalogIds: List<String> = emptyList(),
-    /** What the refresh left out and why (e.g. GLM ids the owner does not use). */
-    val catalogNote: String? = null,
-    val catalogLoading: Boolean = false,
-    /** 0.9.18 — why the model list could not be read. Shown, never swallowed. */
-    val catalogError: String? = null,
-    /** 0.9.18 — the encrypted key store itself failed; distinct from "no key". */
-    val keyReadError: String? = null,
-    /** 0.9.18 — the same facts the send gate uses, shown in Setup → Brain health. */
-    val brainChecks: List<BrainDoctor.Check> = emptyList(),
-    /** 0.9.18 — the Copy-button text for Brain health. */
-    val brainReport: String = "",
-    val currentLlmLabel: String = host.vorv.llm.provider.BrainTarget.DEFAULT_MODEL + " (cloud)",
-    /**
-     * Setup-screen error message — when a download or model operation fails,
-     * the error is surfaced here so the SettingsScreen can display it inline
-     * below the affected model card. NEVER added to the chat message list.
-     * Cleared on next successful operation or explicit user dismissal.
-     */
-    val setupError: String? = null,
-    /** Active consent dialog (one at a time; concurrent requests queue via the mutex). */
-    val pendingConfirmation: PendingConfirmation? = null,
-    /** Active Android runtime-permission request (v0.6.14; one at a time). */
-    val pendingPermissionRequest: PendingPermissionRequest? = null,
-    /** The app carries the Linux payload (proot + Debian rootfs). */
-    val linuxAvailable: Boolean = false,
-    /** The guest filesystem has been unpacked and stamped. */
-    val linuxProvisioned: Boolean = false,
-    /** A Linux-system test is running (Setup tab). */
-    val linuxTesting: Boolean = false,
-    /** Verbatim result of the last Linux-system test (Setup tab). */
-    val linuxTestResult: String? = null,
-    /** What the payload check actually looked for, worded for the Setup card. */
-    val linuxDiagnostics: String? = null,
-    /** The Debian build tools are downloading/unpacking into the guest. */
-    val toolchainInstalling: Boolean = false,
-    /** One live line: "12/169 packages — 8.4 MB of 203.0 MB — fetching libc6". */
-    val toolchainProgress: String? = null,
-    /** javac and aapt really exist in the guest right now. */
-    val toolchainInstalled: Boolean = false,
-    /** Verbatim outcome of the last install attempt, shown as-is. */
-    val toolchainResult: String? = null,
-    /** The APK carries proot even if Android has not unpacked it (two different facts). */
-    val linuxPayloadInApk: Boolean = false,
-    /** A real command completed inside the guest this session (knowledge). */
-    val shellVerifiedThisSession: Boolean = false,
-    /** v0.6.17: the dead-shell circuit breaker is active (live in Setup). */
-    val shellBlockedThisSession: Boolean = false,
-    /** v0.6.15: the user granted all shell commands for this session. */
-    val shellSessionGrant: Boolean = false,
-    /** v0.6.15: commands run under the session grant (audit counter). */
-    val shellAutoRunCount: Int = 0,
-    /** Full-output dialog (audit M-7). */
-    val fullOutputView: FullOutputView? = null,
-    /** Tasks screen: which task's tool calls are expanded. */
-    val expandedTaskId: String? = null,
-    /** Tool calls for the expanded task. */
-    val toolCallsForTask: List<ToolCall> = emptyList(),
-)
 
 class AgentViewModel(
-    private val db: VorvDatabase,
-    private val prefs: VorvPrefs,
-    private val secrets: SecretsStore,
+    internal val db: VorvDatabase,
+    internal val prefs: VorvPrefs,
+    internal val secrets: SecretsStore,
     private val modelRepository: ModelRepository,
-    private val appContext: Context,
+    internal val appContext: Context,
 ) : ViewModel() {
 
-    private val reminderRegistry = ReminderRegistry(prefs)
+    internal val reminderRegistry = ReminderRegistry(prefs)
 
     /**
      * 0.9.18 — provider health and the list of models a provider actually
@@ -238,7 +95,7 @@ class AgentViewModel(
     )
 
     /** Vorv's own computer: one instance, shared by the shell and linux_run. */
-    private val linuxSystem = host.vorv.linux.LinuxSystem(appContext)
+    internal val linuxSystem = host.vorv.linux.LinuxSystem(appContext)
 
     /**
      * Every patchable tool is built through [PatchRegistry] so an approved
@@ -246,41 +103,15 @@ class AgentViewModel(
      * applied" notice was true on disk and false at runtime: the app kept
      * using its own copy of the class. Non-patchable tools are constructed
      * directly on purpose — the healer refuses to generate a patch for them.
+     *
+     * The roster itself lives in `tools/ToolRoster.kt` (0.9.37): one file whose
+     * only job is to answer "which tools exist".
      */
     @Suppress("UNCHECKED_CAST")
-    private fun <T : host.vorv.tools.Tool> patched(fqcn: String, vararg args: Any?, make: () -> T): T =
+    internal fun <T : host.vorv.tools.Tool> patched(fqcn: String, vararg args: Any?, make: () -> T): T =
         (PatchRegistry.create(host.vorv.tools.Tool::class.java, fqcn, *args) as T?) ?: make()
 
-    private val tools: List<host.vorv.tools.Tool> = listOf(
-        patched("host.vorv.tools.MemoryWriteTool", db) { MemoryWriteTool(db) },
-        patched("host.vorv.tools.MemoryRecallTool", db) { MemoryRecallTool(db) },
-        MemoryWebTool(db.knowledgeGraphDao()),
-        patched("host.vorv.tools.JsExecTool") { JsExecTool() },
-        ComputerTool(appContext),
-        WebTestTool(appContext),
-        BuildAppTool(appContext),
-        LinuxRunTool(linuxSystem),
-        BrainTool(appContext),
-        NativeTestTool(appContext),
-        patched("host.vorv.tools.FileReadTool", appContext) { FileReadTool(appContext) },
-        patched("host.vorv.tools.FileWriteTool", appContext) { FileWriteTool(appContext) },
-        patched("host.vorv.tools.FileListTool", appContext) { FileListTool(appContext) },
-        patched("host.vorv.tools.CrashLogsTool", appContext) { CrashLogsTool(appContext) },
-        patched("host.vorv.tools.PythonExecTool", appContext) { PythonExecTool(appContext) },
-        patched("host.vorv.tools.WebSearchTool", secrets) { WebSearchTool(secrets) },
-        patched("host.vorv.tools.WebFetchTool") { WebFetchTool() },
-        patched("host.vorv.tools.AppIntentTool", appContext) { AppIntentTool(appContext) },
-        patched("host.vorv.tools.ShellTool", linuxSystem, appContext) { ShellTool(linuxSystem, appContext) },
-        patched("host.vorv.tools.NotifyTool", appContext) { NotifyTool(appContext) },
-        patched("host.vorv.tools.ScheduleTool", appContext, reminderRegistry) {
-            ScheduleTool(appContext, reminderRegistry)
-        },
-        patched("host.vorv.tools.ScheduleCancelTool", appContext, reminderRegistry) {
-            ScheduleCancelTool(appContext, reminderRegistry)
-        },
-        patched("host.vorv.tools.BrowserAutomateTool", appContext) { BrowserAutomateTool(appContext) },
-        patched("host.vorv.tools.SelfFixTool", appContext, prefs) { SelfFixTool(appContext, prefs) },
-    )
+    private val tools: List<host.vorv.tools.Tool> = buildToolRoster()
 
     private val outputDir = File(appContext.cacheDir, "tool_outputs")
 
@@ -563,7 +394,12 @@ class AgentViewModel(
             secrets.keys.collect {
                 val id = _state.value.providerId.let(::normalizeProviderId)
                 _state.update { st ->
-                    refresh(st.copy(hasApiKey = secrets.keyFor(id).isNotBlank()))
+                    refresh(
+                        st.copy(
+                            hasApiKey = secrets.keyFor(id).isNotBlank(),
+                            hasGitHubToken = secrets.keyFor(host.vorv.selfupdate.SelfUpdate.KEY_ID).isNotBlank(),
+                        ),
+                    )
                 }
             }
         }
@@ -922,6 +758,26 @@ class AgentViewModel(
                 val reason = probe.exceptionOrNull()?.message ?: "unknown error"
                 _state.update { it.copy(keyTesting = false, keyTestResult = "✗ $reason") }
             }
+        }
+    }
+
+    /**
+     * 0.9.37 — the one-time GitHub key that lets Vorv push a change to its own
+     * code (self_update). Stored in the same encrypted store as the model keys,
+     * never logged and never shown back. A blank value is "nothing to save",
+     * not an error: the field is a paste target and an empty Save tap is a slip.
+     */
+    fun setGitHubToken(token: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val one = try {
+                host.vorv.llm.provider.ApiKey.normalize(token)
+            } catch (e: IllegalArgumentException) {
+                _state.update { it.copy(setupError = e.message) }
+                return@launch
+            }
+            if (one.isBlank()) return@launch
+            secrets.setProviderKey(host.vorv.selfupdate.SelfUpdate.KEY_ID, one)
+            _state.update { it.copy(hasGitHubToken = true) }
         }
     }
 

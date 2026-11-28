@@ -1,3 +1,53 @@
+# One copy of the code, and a ViewModel that starts getting smaller (2026-11-28)
+
+The owner asked why Vorv needs a source mirror when it can read GitHub, whether
+it can build anything on its own computer, and for the app to be modular again,
+with each file doing one to three jobs.
+
+**The mirror.** It has exactly one reason: `self_fix` patches the class the
+INSTALLED APK was compiled from, and `main` can already be ahead of that build.
+Reading GitHub is real and `read_source, from: github` does it; the two copies
+are both readable and `driftNote` reports when they differ. What was wrong was
+the upkeep: the copy was committed, so every source edit needed a hand-run
+`syncSourceMirror` and a second commit, and `verifySourceMirror` failed the build
+when the owner had not done it. A file the build can produce from the sources it
+is about to compile should never be the owner's job. The build now writes it
+(`preBuild`, every test task, every asset merge), `assets/source` is git-ignored,
+and the 149 committed mirror files leave the repository. `verifySourceMirror` and
+`SourceMirrorTest` are deleted: with the copy generated they cannot fail, and a
+check that cannot fail is not evidence. `self_update push` now writes the source
+file only, instead of also writing a mirror file into the repository where it
+could drift.
+
+**Modularity.** `AgentViewModel.kt` was 2,417 lines and held the state the
+screens read, the tool roster, chat, settings, providers, training and Linux
+control. Package-level modularity was already fine (19 packages); the damage was
+in files. First cut, both complete and compiling:
+
+- `AgentState.kt` (167 lines) — the data the screens read. Nothing in it needed
+the ViewModel to be understood.
+- `tools/ToolRoster.kt` (54 lines) — the one place that answers "which tools
+exist", each patchable tool built through `PatchRegistry` so an approved patch
+can actually run.
+
+`AgentViewModel.kt` is 2,244 lines now. Chat/task control, settings/providers and
+training are the next cuts; this is the first, not the last.
+
+**Found by the checks, not by the phone.** Moving the roster broke
+`PatchRegistryTest`'s construction-site pin, which read only
+`AgentViewModel.kt`. The test was right and the move was what changed, so it now
+reads both files — the assertion still fails if any patchable tool is built
+directly.
+
+**Checked.** `:app:compileDebugKotlin` BUILD SUCCESSFUL. The mirror was deleted
+entirely and the same compile regenerated `AgentState.kt` and `ToolRoster.kt`
+from `src/main/java`, which is the state a fresh CI checkout is in. Full suite:
+958 tests, 0 failures, 0 errors, 2 skipped (the live-key tests).
+`git check-ignore` confirms the rule; `git status` shows no untracked mirror
+files. Not checked: no phone, no push, no CI run, and versionName/versionCode are
+untouched until the owner orders a build.
+
+
 # The brain, run for real — and the key that could not be sent (2026-11-23)
 
 Priority 1 was "get the AI and the brain working correctly", and it had never

@@ -80,6 +80,7 @@ fun VorvApp(
                         onSaveProviderKey = vm::saveProviderKey,
                         onRefreshModels = vm::refreshProviderModels,
                         onTestProvider = vm::testProvider,
+                        onSaveGitHubToken = vm::setGitHubToken,
                     )
                 }
             }

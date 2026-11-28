@@ -105,11 +105,13 @@ a device; `WORKLOG.md` records what was checked where.
 | `healer/`, `watchdog/` | crash capture, patch signing, hot patching |
 | `llm/`, `data/` | model providers, model manager, stores |
 | `ui/` | Compose screens |
-| `app/src/main/assets/source/` | a mirror of `app/src/main/java`, checked by the build (see below) |
+| `app/src/main/assets/source/` | a build-generated mirror of `app/src/main/java` (git-ignored, see below) |
 | `tools/forge/` | payload fetch, verification and packaging scripts |
 
-`AgentViewModel` is the largest file and holds several concerns (chat, consent,
-task control, persistence). Extract along those seams when you touch it.
+`AgentViewModel` is still the largest file and holds several concerns (chat,
+consent, task control, persistence). It is being split along those seams:
+0.9.37 moved the state it publishes to `AgentState.kt` and the tool roster to
+`tools/ToolRoster.kt`; chat, settings/providers and training are next.
 
 ## CI
 
@@ -135,13 +137,8 @@ every other file in the same push.
 ## The source mirror
 
 The healer reads its own code from `app/src/main/assets/source/`, so that copy
-must match `app/src/main/java`. After editing anything under
-`app/src/main/java`, run:
-
-```bash
-./gradlew :app:syncSourceMirror
-```
-
-and commit the result. Since the M-4 fix the build does not sync it for you:
-`verifySourceMirror` runs before every build and test run and fails, naming the
-missing, differing or deleted files, when the committed mirror is out of date.
+must be the code in the APK. The build generates it from `app/src/main/java`
+with `syncSourceMirror`, wired into `preBuild`, every test task and every asset
+merge, and the folder is git-ignored. Nothing else writes it and there is
+nothing to commit. `./gradlew :app:syncSourceMirror` still runs it by hand when
+you want to look at the copy.

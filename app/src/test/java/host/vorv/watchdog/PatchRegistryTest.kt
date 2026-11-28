@@ -29,12 +29,16 @@ class PatchRegistryTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun `the dispatch surface is exactly the 19 dispatchable classes`() {
+    fun `the dispatch surface is exactly the 20 dispatchable classes`() {
         // Night session 2026-11-08: 18 → 19 — crash_logs joined the patchable
         // surface (the agent's eyes on its own crash evidence).
-        assertEquals(19, PatchRegistry.DISPATCH_BASES.size)
+        // 2026-11-28: 19 → 20 — self_update joined it (the tool that changes
+        // Vorv's own source and installs the rebuilt app; it must be
+        // repairable by the same pipeline it uses).
+        assertEquals(20, PatchRegistry.DISPATCH_BASES.size)
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.ShellTool"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.SelfFixTool"))
+        assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.SelfUpdateTool"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.tools.CrashLogsTool"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.kernel.CognitiveKernel"))
         assertTrue(PatchRegistry.isPatchableClass("host.vorv.healer.HealingAgent"))
@@ -46,7 +50,13 @@ class PatchRegistryTest {
         // because AgentViewModel built every tool with `Tool(appContext)`
         // instead of `PatchRegistry.create`. A patch that cannot dispatch is
         // a lie told to the owner, so this pins the construction sites.
-        val source = java.io.File("src/main/java/host/vorv/AgentViewModel.kt").readText()
+        //
+        // 0.9.37 moved the roster to tools/ToolRoster.kt: the test reads both
+        // files, so the construction sites are pinned wherever they live.
+        val source = listOf(
+            "src/main/java/host/vorv/AgentViewModel.kt",
+            "src/main/java/host/vorv/tools/ToolRoster.kt",
+        ).joinToString("\n") { java.io.File(it).readText() }
         val toolClasses = PatchRegistry.DISPATCH_BASES.keys.filter { it.startsWith("host.vorv.tools.") }
         assertTrue("tool patch surface is suspiciously small", toolClasses.size >= 17)
         val missing = toolClasses.filter { !source.contains("patched(\"$it\"") }

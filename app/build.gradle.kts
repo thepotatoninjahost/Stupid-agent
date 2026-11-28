@@ -144,62 +144,36 @@ chaquopy {
 // ======================================================================
 
 /**
- * H-5 / M-4: the bundled source mirror (assets/source) is what the healer's
- * LLM reads, so it must match the code that is running.
+ * H-5: the bundled source mirror (assets/source) is what the healer's LLM
+ * reads, so it must be the code that is running.
  *
- * M-4 (code review, 2026-11): this used to run inside preBuild, which meant a
- * stale committed mirror was silently rewritten before tests — the mirror test
- * could never fail, and the committed tree never showed the drift. Syncing is
- * now a manual step, and the build VERIFIES the committed mirror instead:
+ * The build WRITES it, from the same `src/main/java` it is about to compile,
+ * and `app/src/main/assets/source` is git-ignored. There is no second copy to
+ * keep in step and no committed file that can drift: 0.9.37 removed the
+ * `verifySourceMirror` gate and its test because, with the mirror generated, a
+ * failed verification is impossible and a test that can never fail is a lie
+ * dressed as evidence. The previous manual-sync rule made the owner responsible
+ * for a file the build can always produce itself.
  *
- *   ./gradlew :app:syncSourceMirror     # after editing src/main/java
- *   ./gradlew :app:verifySourceMirror   # runs before every build and test run
+ * Ordering matters: the copy is written before anything reads it (preBuild), and
+ * again before each test task, because `testDebugUnitTest` does not depend on
+ * preBuild.
  */
-tasks.register<Sync>("syncSourceMirror") {
+val syncSourceMirror = tasks.register<Sync>("syncSourceMirror") {
+    description = "Copies src/main/java into assets/source, the copy the healer reads."
     from("src/main/java")
     into("src/main/assets/source")
 }
 
-/**
- * M-4: fails the build when the committed mirror is missing, different or
- * holds deleted files. Never writes: the fix is always syncSourceMirror.
- * Every file is compared, not just .kt, because Sync copies everything.
- */
-tasks.register("verifySourceMirror") {
-    // No declared outputs: the comparison must run every time, not be skipped
-    // as up-to-date when only the sources changed.
-    outputs.upToDateWhen { false }
-    doLast {
-        val live = file("src/main/java")
-        val mirror = file("src/main/assets/source")
-        fun relativeFiles(root: java.io.File): Map<String, java.io.File> =
-            root.walkTopDown()
-                .filter { it.isFile }
-                .associateBy { it.relativeTo(root).invariantSeparatorsPath }
-        val liveFiles = relativeFiles(live)
-        val mirrorFiles = relativeFiles(mirror)
-        val missing = liveFiles.keys - mirrorFiles.keys
-        val orphan = mirrorFiles.keys - liveFiles.keys
-        val differing = (liveFiles.keys intersect mirrorFiles.keys)
-            .filter { liveFiles.getValue(it).readBytes().contentEquals(mirrorFiles.getValue(it).readBytes()) == false }
-        if (missing.isNotEmpty() || orphan.isNotEmpty() || differing.isNotEmpty()) {
-            throw GradleException(
-                buildString {
-                    appendLine("assets/source is out of date with src/main/java (M-4).")
-                    if (missing.isNotEmpty()) appendLine("  missing from the mirror: $missing")
-                    if (differing.isNotEmpty()) appendLine("  differs from the source: $differing")
-                    if (orphan.isNotEmpty()) appendLine("  in the mirror but deleted from the source: $orphan")
-                    appendLine("  run ./gradlew :app:syncSourceMirror and commit the result.")
-                },
-            )
-        }
-    }
-}
-
-tasks.named("preBuild") { dependsOn("verifySourceMirror") }
+tasks.named("preBuild") { dependsOn(syncSourceMirror) }
 // testDebugUnitTest does not depend on preBuild, so wire it explicitly.
 tasks.matching { it.name.startsWith("test") }.configureEach {
-    dependsOn("verifySourceMirror")
+    dependsOn(syncSourceMirror)
+}
+// merge<Variant>Assets reads this folder, so the write must happen first even
+// when a task graph reaches assets without passing through preBuild.
+tasks.withType<com.android.build.gradle.tasks.MergeSourceSetFolders>().configureEach {
+    dependsOn(syncSourceMirror)
 }
 
 /**
